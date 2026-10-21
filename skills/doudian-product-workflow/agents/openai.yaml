@@ -1,0 +1,4 @@
+interface:
+  display_name: "抖店商品改版"
+  short_description: "按真实商品资料重做抖店标题主图详情并核验提交结果保留价格库存规格"
+  default_prompt: "使用 $doudian-product-workflow 处理指定抖店商品的标题、主图和详情页，并保留价格库存。"

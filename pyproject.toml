@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doudian-auto"
+version = "0.1.0"
+description = "Local Douyin Shop existing-product uploader with resumable verification"
+requires-python = ">=3.11"
+dependencies = ["Pillow>=10"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+doudian-auto = "doudian_auto.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+doudian_auto = ["*.js"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
