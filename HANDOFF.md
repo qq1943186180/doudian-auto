@@ -7,14 +7,15 @@
 
 ### T-20261021-004 · 194-54 · 本地上传模块
 
-- 状态：review；实现、离线测试与安装完成；用户要求「先完成程序，稍后连接」，真实Kimi扩展试传未执行。
+- 状态：todo；用户指定后续交给WorkBuddy，Linear已设Todo；实现、离线测试与安装完成，真实Kimi扩展试传未执行。
+- 待接手：WorkBuddy，建议稳定名workbuddy-doudian-verify；报到后再改in_progress，本记录不代表已经启动。
 - 已实现：素材准备、标题/5主图/标准详情上传预览、断点继续、商业字段变化拦截、独立发布、提交后重开读回、中文桌面窗口。
 - 桌面「抖店本地上传.lnk」使用项目虚拟环境pythonw；命令 doudian-auto 已装到 ~/.local/bin，任意目录可用。
 - 验证：29项Python测试、5项jsdom页面测试通过；GUI控件创建、源码目录外help/doctor通过；4款真实素材离线计划全部5+2。
-- 当前连接：daemon v2.0.9运行，extension_connected=false。未升级、重启扩展；本阶段线上商品写入0次。
+- 上轮连接检查：daemon v2.0.9运行，extension_connected=false。未升级、重启扩展；实现阶段线上商品写入0次，接手时重新查。
 - 代码提交7fa1f0a；原TB Auto/泰国站源码与历史脏文件未动；此前4款已完成商品不因测试重复改版。
 - 下一步：用户连接Edge扩展后，先doctor及只读read核对真实页面，再在明确的商品任务范围内联调上传与保存读回。
-- 交接与T-ID映射同步本仓；Linear 194-54保留待真实连接验证，状态review。
+- 交接与T-ID映射同步本仓；Linear 194-54的WorkBuddy待办包含入口、逐步检查和真实试传验收条件。
 
 日常使用：双击桌面入口，填店铺、真实商品编辑链接、新标题及素材文件夹；按“准备任务 → 上传预览 → 发布并核验”。上传预览会留在编辑页，不自动发布。重新打开程序可选择任务文件夹继续；任务状态及图片地址保存在本机。
 
@@ -72,6 +73,8 @@ doudian-auto --json verify '<返回的job_dir>'
 
 ## 给下一个AI
 
+WorkBuddy接手：先读Linear 194-54与共享协议，按本机真实目录检查Git，读AGENTS.md及本交接，以workbuddy-doudian-verify报到。全局doudian-auto与桌面入口可直接使用，不依赖Codex会话；工具说明可直接读本仓skills/doudian-product-workflow/SKILL.md，无需重建项目或重装Codex skill。先doctor与只读read联调，必要时修复本仓适配器；保持34项离线测试通过。在用户具体商品任务范围内完成上传/发布/重开核验后才记真实验收，收尾commit/push并回写194-54读回。具体步骤和验收以Issue最新描述为准。
+
 - 恢复入口：AGENTS.md → 本文 → git status --porcelain → Linear 194-54；映射见docs/agent-workflow/T-ID-MAPPING.md。
 - 实现是离线验证过的适配器，尚无本程序真实上传证据；先doctor/read，逐一核对店铺、URL、主图/详情删除计数、上传input和保留字段采集，页面改版则修适配，不盲点。
 - 店铺身份要求页头可见店铺名精确匹配；页头折叠或结构不符会先停止。只覆盖DOM已加载字段，虚拟SKU列表未逐行遍历，不可宣称全部SKU已完整验证。
@@ -83,3 +86,4 @@ doudian-auto --json verify '<返回的job_dir>'
 - 本次产物报告：C:/Users/19431/Documents/Codex/2026-10-21/wo-x/outputs/抖店本地程序校验/结果汇总.json；其中4个任务仅prepared，不在默认jobs目录，勿当线上任务自动提交。
 - 个人skill已同步 ~/.codex/skills/doudian-product-workflow，官方quick_validate通过；本仓skills/保存源文件。修改后同步安装版并重新校验。
 - 2026-10-21：实现提交后仓库干净，在194-54公告再建立本交接；实现已完成，用户延后真实扩展连接，保留review验证门槛。
+- 2026-10-21：用户指定WorkBuddy接手；仓库干净时先在194-54公告，再同步本交接与映射，待办状态改todo。接手人尚未报到，未启动真实联调。
