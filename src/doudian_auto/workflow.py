@@ -115,7 +115,7 @@ class Workflow:
     def _verify(self):
         current = self.editor.open(self.manifest, fresh=True)
         # Give lazy detail images time to resolve their CDN addresses after scrolling.
-        current = self.editor.bridge.wait(lambda: self.editor.read(self.manifest), lambda s: len(s.get('mains', [])) == 5 and len(s.get('details', [])) == len(self.manifest['details']), '重开后的商品图片尚未完整加载。', seconds=30)
+        current = self.editor.bridge.wait(lambda: self.editor.read(self.manifest), lambda s: len(s.get('mains', [])) == 5 and len(s.get('details', [])) == len(self.manifest['details']) and s.get('detail_status') == 'ready', '重开后的商品图片尚未完整加载。', seconds=30)
         write_json(self.job / 'readback.json', current)
         try:
             match_content(self.manifest, self.state, current)

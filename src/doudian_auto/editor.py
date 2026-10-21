@@ -41,6 +41,21 @@ class Editor:
     def read(self, manifest):
         return self.dom('snapshot', manifest)
 
+    def wait_details(self, manifest, seconds=30):
+        # Polling, deadline and final classification live here so read, replace, the
+        # pre-publish check and verify all share one detail-read semantic.
+        def ready(snapshot):
+            return snapshot.get('detail_status') in ('ready', 'empty')
+        try:
+            return self.bridge.wait(lambda: self.read(manifest), ready, '详情图数据源未就绪。', seconds=seconds)
+        except DoudianError as exc:
+            if exc.code != 'page_timeout':
+                raise
+            snapshot = self.read(manifest)
+            raise DoudianError('detail_source_not_ready', '详情图数据源未就绪：状态={0}，来源={1}，商详声明={2}，缩略卡片={3}，已加载={4}。{5}'.format(
+                snapshot.get('detail_status'), snapshot.get('detail_source'), snapshot.get('detail_declared'),
+                snapshot.get('detail_cards'), len(snapshot.get('details', [])), snapshot.get('detail_reason') or ''))
+
     def replace(self, manifest, kind, before_upload):
         self.dom('scroll', manifest, kind=kind)
         count_key = 'main_delete_count' if kind == 'mains' else 'detail_delete_count'
@@ -54,12 +69,30 @@ class Editor:
             self.bridge.wait(lambda: self.read(manifest), lambda s: s[count_key] < count, '删除图片未完成，请检查页面。', seconds=15)
         else:
             raise DoudianError('delete_limit', '原图数量超过本地上传模块上限。')
-        if self.read(manifest)[kind]:
+        if kind == 'details':
+            # A stale hidden canvas must stop the run instead of being ignored; matching
+            # counts alone would let old URLs be recorded as the fresh upload result.
+            def cleared(snapshot):
+                return snapshot.get('detail_status') == 'empty'
+            try:
+                self.bridge.wait(lambda: self.read(manifest), cleared, '详情图未清空。', seconds=15)
+            except DoudianError as exc:
+                if exc.code != 'page_timeout':
+                    raise
+                snapshot = self.read(manifest)
+                raise DoudianError('delete_incomplete', '详情图仍有残留：状态={0}，剩余={1}张，未开始上传。'.format(
+                    snapshot.get('detail_status'), len(snapshot.get('details', []))))
+        elif self.read(manifest)[kind]:
             raise DoudianError('delete_incomplete', '图片仍在页面中，未开始上传。')
         selector = self.dom('upload_selector', manifest, kind=kind)['selector']
         before_upload()
         self.bridge.command('upload', {'selector': selector, 'files': [r['path'] for r in manifest[kind]]})
-        result = self.bridge.wait(lambda: self.read(manifest), lambda s: len(s[kind]) == len(manifest[kind]) and s[count_key] == len(manifest[kind]), '上传尚未完成或图片数量不匹配。', seconds=90)
+        def uploaded(snapshot):
+            if len(snapshot.get(kind, [])) != len(manifest[kind]) or snapshot.get(count_key) != len(manifest[kind]):
+                return False
+            # Counts are necessary but not sufficient; the cross-check must agree too.
+            return snapshot.get('detail_status') == 'ready' if kind == 'details' else True
+        result = self.bridge.wait(lambda: self.read(manifest), uploaded, '上传尚未完成或图片数量不匹配。', seconds=90)
         return result[kind]
 
     def fill_title(self, manifest):

@@ -149,7 +149,7 @@ def run(args):
             if 'edit_url' not in identity:
                 raise DoudianError('missing_url', 'read需要完整编辑链接。')
             editor.open(identity)
-            snapshot = bridge.wait(lambda:editor.read(identity), lambda s:bool(s.get('details')), '详情图片未加载。', seconds=30)
+            snapshot = editor.wait_details(identity)
             if args.out:
                 write_json(args.out, snapshot)
             return snapshot

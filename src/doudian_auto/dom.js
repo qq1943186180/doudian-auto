@@ -32,6 +32,39 @@
   const target = e => e.id === 'pg-title-input' || main.contains(e) || detail.contains(e);
   const canonical = value => {try {const u = new URL(value); return u.origin + u.pathname;} catch {return value;}};
   const images = root => [...new Set(all('img', root).filter(visible).map(e => e.currentSrc || e.src).filter(s => /^https:\/\//.test(s) && s.includes('ecom-shop-material/') && !/\.svg(?:\?|$)/.test(s)).map(canonical))];
+  const material = e => {const s = e.currentSrc || e.src; return /^https:\/\//.test(s) && s.includes('ecom-shop-material/') && !/\.svg(?:\?|$)/.test(s);};
+  // `complete` alone is also true for a failed load, so require decoded dimensions too.
+  const decoded = e => e.complete && e.naturalWidth > 1 && e.naturalHeight > 1;
+  // On current pages the visible detail strip keeps permanent 1x1 placeholders that never
+  // resolve, so the only loaded detail images live inside the hidden decorate wrapper.
+  // Read them from one bounded source only; the right-hand component editor mirrors the
+  // same images and would otherwise be counted twice or mix in stale ones.
+  const detailImages = () => {
+    const standard = all('img', detail).filter(e => visible(e) && material(e) && decoded(e)).map(e => canonical(e.currentSrc || e.src));
+    const declaredMatch = text(detail).match(/商详图片[（(](\d+)\s*\/\s*(\d+)[）)]/);
+    const declared = declaredMatch ? Number(declaredMatch[1]) : null;
+    const cards = all('[class*="previewInstanceImgSortableItem"]', detail).filter(visible).length;
+    let urls = standard;
+    let source = 'standard';
+    if (!standard.length) {
+      source = 'canvas_preview';
+      const anchor = document.querySelector('#goods-decorate-wrapper');
+      const previews = anchor ? all('[class*="previewContainer"]', anchor) : [];
+      urls = previews.length === 1
+        ? all('img', previews[0]).filter(e => !e.closest('[class*="style_right__"]') && material(e) && decoded(e)).map(e => canonical(e.currentSrc || e.src))
+        : [];
+    }
+    const count = urls.length;
+    let status = 'pending';
+    let reason = '未识别详情图数据源。';
+    if (count && declared !== null && declared !== count) {status = 'ambiguous'; reason = `商详计数为${declared}张，读取到${count}张，两者不一致。`;}
+    else if (count && cards && cards !== count) {status = 'ambiguous'; reason = `缩略卡片${cards}个，读取到${count}张，两者不一致。`;}
+    else if (count) {status = 'ready'; reason = '';}
+    else if (declared === 0) {status = 'empty'; reason = '标准区声明为0张详情图。';}
+    else if (declared) {status = 'pending'; reason = `商详声明${declared}张，但未读到已加载地址。`;}
+    // Order is kept per slot on purpose: a product may legitimately reuse one image.
+    return {details: urls, detail_status: status, detail_source: source, detail_declared: declared, detail_cards: cards, detail_reason: reason};
+  };
   const deletes = kind => kind === 'mains'
     ? all('.styles-module_hoverBottomWrapper__YPnf1', main).filter(e=>visible(e.parentElement)).map(e => e.children[1]).filter(Boolean)
     : all('i.styles_iconDelete__y_88a', detail).filter(e => visible(e.parentElement));
@@ -49,7 +82,7 @@
       images: [...new Set(all('img',section).filter(e=>!target(e) && visible(e)).map(e=>e.currentSrc||e.src).filter(s=>s.includes('ecom-shop-material/')).map(canonical))]
     }));
     return {...identity, shop_confirmed:!!shopFound, title:document.querySelector('#pg-title-input').value,
-      mains:images(main), details:images(detail), main_delete_count:deletes('mains').length, detail_delete_count:deletes('details').length,
+      mains:images(main), ...detailImages(), main_delete_count:deletes('mains').length, detail_delete_count:deletes('details').length,
       protected:protectedFields, coverage:'仅DOM实际加载字段；虚拟SKU列表未逐行遍历。程序只写标题、方主图及标准详情。',
       errors:all('[class*="form-item-explain-error"],[role="alert"]').filter(visible).map(text).filter(Boolean).slice(0,20)};
   }
