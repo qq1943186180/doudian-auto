@@ -1,9 +1,22 @@
 # 抖店本地上传
 
-更新：2026-10-21（Asia/Shanghai）；Agent：codex-douyin-products-20261021。
+更新：2026-10-22（Asia/Shanghai）；Agent：codex-douyin-products-20261021 / workbuddy-doudian-verify。
 源码：C:/Users/19431/code/clis/doudian-auto；main；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261022-001 · 194-54 · 详情图读取缺陷修复（WorkBuddy 接手第二轮）
+
+- 状态：in_progress；代码已提交并推送 `f77620d`（HEAD=origin/main）。仍未上传、未发布、未改任何线上商品。
+- 浏览器：Edge 原本完全未运行（0 进程），daemon 空转约 5 小时——这是此前 `extension_connected=false` 的唯一根因。启动 Edge 后 Kimi 扩展自动连上，无需改配置或端口。
+- 缺陷：`doudian-auto read` 恒报 `page_timeout: 详情图片未加载`。根因是当前抖店编辑页的**可见详情缩略卡片为永久 1×1 占位符**（ImageX 组件始终不替换 src），三组滚动/等待实验均无效；唯一已加载的真实图在隐藏的 `#goods-decorate-wrapper` 内。
+- 协商：我原提「放宽可见性 + 全局 Set 去重」，Codex（gpt-6.1-sol/high）独立探测后否决——隐藏区有**两套真实图副本**（有序画布 previewContainer + 右侧 `style_right__zErlp` 编辑面板），全局去重后得正确结果纯属巧合。我实测确认后采纳其修正。
+- 实施：限定数据源（`#goods-decorate-wrapper` 内唯一 previewContainer，排除 `style_right__`）；解码判定 `complete && naturalWidth>1 && naturalHeight>1`；按槽位保序不去重；新增 `detail_status/source/declared/cards/reason` 诊断分层；`editor.py` 新增 `wait_details()` 统一轮询与错误分类；`replace` 删除后要求详情状态为 `empty` 才继续上传。
+- 验证：12 项 jsdom + 29 项 pytest 全通过（34 → 41 项）；真实页面 `ffa/g/create?product_id=3784643089604411407` 的 `read` 由 page_timeout 变为 ok，`detail_status=ready`、声明 2/卡片 2/读到 2 一致，右侧副本未计入。
+- **仍为 0 次验证的部分**：`replace → upload → submit → verify` 全链路；删除/上传是否同步隐藏画布只读无法证明。
+- 已知环境坑：程序 session 可能出现两个标签页均 `active:false`，导致 `find_tab` 后 evaluate 仍落在列表页，报「商品编辑页尚未加载」。用 `navigate(newTab=False)` 手动修正即可，非代码缺陷。
+- 修正我上一轮的两处错误：① `bridge.wait` 不吞底层异常（probe 抛错直接传播）；② 仓库文档早就是 `ffa/g/list`，不存在「SKILL.md 地址过时」；商品 ID 校验为 `\d{16,22}` 而非 19 位。
+- 下一步：在用户明确指定的商品上做一次完整 `prepare → upload → submit → verify`，观察隐藏画布同步行为与 CDN 地址转换。
 
 ### T-20261021-004 · 194-54 · 本地上传模块
 
