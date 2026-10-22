@@ -111,6 +111,12 @@ def unresolved_siblings(jobs_root, product_id, exclude=None):
     because the new version starts at `prepared` and would sail past the old job's
     `submitting` state. The global browser lock only prevents concurrent writes, not two
     versions shipping one after another.
+
+    Failure is biased towards blocking: a sibling known to belong to this product whose
+    state cannot be read is reported, because an unreadable state is not evidence that
+    the job finished. Only records without a readable manifest are skipped -- there is
+    no product to compare them against, and retrospective records are history rather
+    than live tasks.
     """
     blockers = []
     root = Path(jobs_root)
@@ -123,15 +129,25 @@ def unresolved_siblings(jobs_root, product_id, exclude=None):
             continue
         try:
             manifest = read_json(sibling / 'manifest.json')
-            state = read_json(state_path)
         except (OSError, ValueError):
-            # An unreadable sibling is not evidence of safety, but it also carries no
-            # manifest to compare; leave it to the per-job checks.
+            # No manifest means no product_id to compare; leave it to the per-job checks.
             continue
         if manifest.get('product_id') != product_id:
             continue
+        if manifest.get('record_kind') == 'retrospective':
+            # A written-up record of a past run, not a task holding the listing.
+            continue
+        try:
+            state = read_json(state_path)
+        except (OSError, ValueError):
+            blockers.append({'job_dir': str(sibling), 'stage': 'unreadable',
+                             'title': manifest.get('title'),
+                             'submission_status': None})
+            continue
         stage = state.get('stage')
-        if stage in _UNRESOLVED_STAGES:
+        # An unknown stage is treated as blocking: only a stage explicitly known to be
+        # safe may let a new version write to the listing.
+        if stage is None or stage in _UNRESOLVED_STAGES:
             blockers.append({'job_dir': str(sibling), 'stage': stage,
                              'title': manifest.get('title'),
                              'submission_status': state.get('submission_status')})
@@ -195,11 +211,38 @@ def compare_protected(before, after):
             raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
 
 
+def compare_images_unchanged(before, after):
+    """Report how far image verification goes for a task that never replaces images.
+
+    `compare_protected` deliberately excludes the image blocks, so for a title-only run
+    this is the only place image state is judged. When both reads produced a decoded
+    detail source the addresses must match. When either side could not be read, that is
+    recorded as a gap: two empty lists comparing equal is not evidence, and the detail
+    panel never rendering is a known state on some listings.
+    """
+    before_status = before.get('detail_status')
+    after_status = after.get('detail_status')
+    if before_status == 'ready' and after_status == 'ready':
+        for kind in ('mains', 'details'):
+            if ([resource_key(u) for u in before.get(kind) or []]
+                    != [resource_key(u) for u in after.get(kind) or []]):
+                raise DoudianError('images_changed', '图片地址或顺序与改标题前不一致，已停止提交。')
+        return 'verified_unchanged', None
+    return ('not_verified',
+            '图片未核验：详情图数据源一侧未就绪（改前={0}，改后={1}）。'
+            '两个空数组相等不是证据，因此本次不声称图片未变。'.format(before_status, after_status))
+
+
 def match_content(manifest, state, snapshot):
     if snapshot.get('product_id') != manifest['product_id'] or not snapshot.get('shop_confirmed'):
         raise DoudianError('wrong_identity', '核验商品或店铺不匹配。')
     if snapshot.get('title') != manifest['title']:
         raise DoudianError('title_mismatch', '读回标题与任务不符。')
+    if manifest.get('mode') == 'title_only':
+        # A title-only task deliberately leaves images alone, and its manifest carries
+        # no asset list to compare against. Image scope is recorded separately by the
+        # caller instead of being silently skipped here.
+        return
     for kind in ('mains', 'details'):
         expected = state.get(kind + '_urls')
         recorded = [resource_key(url) for url in snapshot.get(kind) or []]
@@ -343,24 +386,8 @@ class Workflow:
                 and snapshot.get('detail_cards') == details
                 and snapshot.get('detail_slots') == details)
 
-    def _verify(self):
-        current = self.editor.open(self.manifest, fresh=True)
-        # Give lazy detail images time to resolve their CDN addresses after scrolling.
-        current = self.editor.bridge.wait(lambda: self.editor.read(self.manifest), self._images_settled, '重开后的商品图片尚未完整加载。', seconds=30)
-        write_json(self.job / 'readback.json', current)
-        # A match against a draft proves nothing about the live listing: the editor loads
-        # the latest draft automatically, so new images plus identical protected fields are
-        # exactly what a *rejected, unpublished* draft looks like. The scope of what was
-        # read is therefore recorded before any success is claimed.
-        draft = bool(current.get('draft_loaded'))
-        rejected = bool(current.get('rejected'))
-        scope = 'draft' if draft else 'unknown'
-        if rejected:
-            self.save('rejected', content_scope=scope, verified_at=time.time(),
-                      review_status='rejected',
-                      rejection_reasons=current.get('rejection_reasons') or self.state.get('rejection_reasons') or [],
-                      rejection_observed_at=time.time(), last_error='platform_rejected')
-            raise DoudianError('platform_rejected', '商品处于驳回状态，改动未生效：' + ('；'.join(current.get('rejection_reasons') or []) or '详见页面驳回原因'))
+    def _verdict(self, current, scope, draft):
+        """Record the readback verdict once identity and protected fields have passed."""
         try:
             match_content(self.manifest, self.state, current)
             compare_protected(self.baseline(), current)
@@ -380,7 +407,58 @@ class Workflow:
                   # A clean page with no rejection mark means the resubmission cleared it;
                   # carrying a historical `rejected` forward would misreport the live state.
                   review_status='pending')
-        return {'stage': 'saved', 'verified': True, 'job_dir': str(self.job), 'coverage': current.get('coverage'), 'notice': '已重开编辑页核验；消费者端生效仍以平台审核为准。'}
+        return {'stage': 'saved', 'verified': True, 'job_dir': str(self.job),
+                'coverage': current.get('coverage'),
+                'notice': '已重开编辑页核验；消费者端生效仍以平台审核为准。'}
+
+    def _verify_title(self):
+        # Title-only tasks never wait for the detail panel: on listings where the live
+        # preview never renders, waiting here would make every verification time out.
+        current = self.editor.open(self.manifest, fresh=True)
+        write_json(self.job / 'readback.json', current)
+        draft = bool(current.get('draft_loaded'))
+        rejected = bool(current.get('rejected'))
+        scope = 'draft' if draft else 'unknown'
+        if rejected:
+            self.save('rejected', content_scope=scope, verified_at=time.time(),
+                      review_status='rejected',
+                      rejection_reasons=current.get('rejection_reasons') or self.state.get('rejection_reasons') or [],
+                      rejection_observed_at=time.time(), last_error='platform_rejected')
+            raise DoudianError('platform_rejected', '商品处于驳回状态，改动未生效：' + ('；'.join(current.get('rejection_reasons') or []) or '详见页面驳回原因'))
+        note = None
+        try:
+            scope_flag, note = compare_images_unchanged(self.baseline(), current)
+            self.save(image_scope=scope_flag, image_scope_note=note)
+        except DoudianError as exc:
+            self.save('submitted', last_error=exc.code, verification_failed_at=time.time(),
+                      content_scope=scope)
+            raise
+        result = self._verdict(current, scope, draft)
+        return dict(result, image_scope=scope_flag,
+                    image_scope_note=note,
+                    notice=(result['notice'] + ('　' + note if note else '')))
+
+    def _verify(self):
+        if self.manifest.get('mode') == 'title_only':
+            return self._verify_title()
+        current = self.editor.open(self.manifest, fresh=True)
+        # Give lazy detail images time to resolve their CDN addresses after scrolling.
+        current = self.editor.bridge.wait(lambda: self.editor.read(self.manifest), self._images_settled, '重开后的商品图片尚未完整加载。', seconds=30)
+        write_json(self.job / 'readback.json', current)
+        # A match against a draft proves nothing about the live listing: the editor loads
+        # the latest draft automatically, so new images plus identical protected fields are
+        # exactly what a *rejected, unpublished* draft looks like. The scope of what was
+        # read is therefore recorded before any success is claimed.
+        draft = bool(current.get('draft_loaded'))
+        rejected = bool(current.get('rejected'))
+        scope = 'draft' if draft else 'unknown'
+        if rejected:
+            self.save('rejected', content_scope=scope, verified_at=time.time(),
+                      review_status='rejected',
+                      rejection_reasons=current.get('rejection_reasons') or self.state.get('rejection_reasons') or [],
+                      rejection_observed_at=time.time(), last_error='platform_rejected')
+            raise DoudianError('platform_rejected', '商品处于驳回状态，改动未生效：' + ('；'.join(current.get('rejection_reasons') or []) or '详见页面驳回原因'))
+        return self._verdict(current, scope, draft)
 
     def verify(self):
         with Lock(self.lock_root / 'browser.lock'), Lock(self.job / 'job.lock'):

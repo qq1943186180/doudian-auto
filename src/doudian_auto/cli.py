@@ -153,15 +153,20 @@ def run_title_apply(args):
     """Change only the title of a live listing, leaving images untouched.
 
     The revision workflow always replaces images, so a listing that only needs a title
-    change had no supported path and was being driven by ad-hoc scripts. This records a
-    job the same way so the change is reproducible and the cross-job guard sees it.
+    change had no supported path and was being driven by ad-hoc scripts -- scripts that
+    wrote to the listing without a job record and without the cross-job guard. This
+    records the change the same way the revision path does, and holds the same gates:
+    identity confirmation before any write, a baseline snapshot, protected-field and
+    final-title comparison after the platform check, and one publish click only.
     """
     from . import title as title_rules
-    from .workflow import guard_siblings
+    from .jobs import make_title_job
+    from .workflow import compare_images_unchanged, compare_protected, guard_siblings, match_content
 
-    facts = None
+    facts_payload = None
     if getattr(args, 'facts', None):
-        facts = title_rules.TitleFacts(read_json(Path(args.facts)))
+        facts_payload = read_json(Path(args.facts))
+    facts = title_rules.TitleFacts(facts_payload) if facts_payload else None
     report = title_rules.diagnose_title(args.title, facts)
     if report['errors']:
         raise DoudianError('invalid_title', '；'.join(report['errors']))
@@ -172,55 +177,109 @@ def run_title_apply(args):
     product = resolve_product(args.url)
     product_id = product['product_id']
     edit_url = product.get('edit_url') or ('https://fxg.jinritemai.com/ffa/g/create?product_id=' + product_id)
+    shop = args.shop.strip()
+    if not shop:
+        raise DoudianError('missing_identity', '需要店铺名称。')
+    if facts and facts.product_id and facts.product_id != product_id:
+        raise DoudianError('facts_mismatch', '事实文件属于商品 {0}，与本次目标 {1} 不一致，已停止。'.format(
+            facts.product_id, product_id))
+
     jobs_root = DATA_ROOT / 'jobs'
-    guard_siblings(jobs_root, product_id)
-
-    job = jobs_root / 'title-{0}-{1}'.format(product_id, time.strftime('%Y%m%d-%H%M%S'))
-    manifest = {'product_id': product_id, 'shop': args.shop.strip(), 'edit_url': edit_url,
-                'title': args.title, 'mode': 'title_only'}
-    write_json(job / 'manifest.json', manifest)
-    write_json(job / 'state.json', {'stage': 'prepared', 'updated_at': time.time()})
-
     bridge = Bridge(args.endpoint)
     bridge.require_ready()
     editor = Editor(bridge)
     editor.bridge.session = 'doudian-auto-title-' + product_id
-    with Lock(DATA_ROOT / 'browser.lock'), Lock(job / 'job.lock'):
-        before = editor.read(manifest)
-        write_json(job / 'before.json', before)
-        write_json(job / 'title_record.json', dict(report, before_title=before.get('title'),
-                                                   recorded_at=time.time()))
-        editor.fill_title(manifest)
-        editor.check(manifest)
-        # Persist before sending: a timeout past this point must reach verify, not re-publish.
-        write_json(job / 'state.json', {'stage': 'submitting', 'submission_status': 'unknown',
-                                        'updated_at': time.time()})
-        result = editor.publish(manifest)
-        state = result.get('state')
-        if state == 'accepted':
-            final = {'stage': 'submitted', 'submission_status': 'accepted',
-                     'review_status': 'pending'}
-        elif state == 'rejected':
-            final = {'stage': 'rejected', 'submission_status': 'accepted',
-                     'review_status': 'rejected',
-                     'rejection_reasons': result.get('rejection_reasons') or []}
-        elif state == 'validation_failed':
-            final = {'stage': 'prepared', 'submission_status': 'not_submitted',
-                     'platform_errors': result.get('errors') or []}
-        else:
-            # Unknown stays unknown; falling back to `prepared` would re-arm publishing.
-            write_json(job / 'state.json', {'stage': 'submitting', 'submission_status': 'unknown',
-                                            'last_error': 'submit_result_unknown',
-                                            'updated_at': time.time()})
-            raise DoudianError('submit_result_unknown', '提交结果尚未确认；请人工核对页面，勿重复发布。')
-        write_json(job / 'state.json', dict(final, job_dir=str(job), updated_at=time.time()))
-        try:
-            editor.screenshot(job / 'submitted.png')
-        except DoudianError:
-            pass
-    return dict(report, dry_run=False, job_dir=str(job), stage=final['stage'],
-                submission_status=final['submission_status'],
-                review_status=final.get('review_status'),
+    with Lock(DATA_ROOT / 'browser.lock'):
+        # Re-checked inside the lock. A sibling can enter a blocking stage while this run
+        # waits for the lock, so a check performed before acquiring it proves nothing.
+        guard_siblings(jobs_root, product_id)
+        job, manifest = make_title_job(product_id, shop, edit_url, args.title, jobs_root)
+        with Lock(job / 'job.lock'):
+            state = read_json(job / 'state.json')
+
+            def save(stage=None, **fields):
+                state.update(fields)
+                if stage:
+                    state['stage'] = stage
+                state['updated_at'] = time.time()
+                write_json(job / 'state.json', state)
+
+            if facts_payload is not None:
+                write_json(job / 'facts.json', facts_payload)
+            # open() navigates and confirms the listing; read() alone would trust
+            # whatever page the session happens to be on.
+            before = editor.open(manifest)
+            if before.get('success'):
+                raise DoudianError('verify_required', '当前是提交成功页，请先核验已有任务。')
+            # Comparing the baseline with itself is the cheap way to insist that every
+            # protected block was actually observed before it is trusted as evidence.
+            compare_protected(before, before)
+            write_json(job / 'before.json', before)
+            write_json(job / 'title_record.json', dict(report, before_title=before.get('title'),
+                                                       recorded_at=time.time()))
+            if before.get('title') == manifest['title']:
+                save('prepared', submission_status='not_submitted', noop=True,
+                     noop_reason='title_already_current')
+                return dict(report, dry_run=False, job_dir=str(job), stage='noop',
+                            submission_status='not_submitted',
+                            notice='页面当前标题已是目标标题，未填写、未发布。')
+            # From here on the page is being modified, so the job must block new work on
+            # this product even if the next step fails.
+            save('editing')
+            editor.fill_title(manifest)
+            try:
+                checked = editor.check(manifest)
+            except DoudianError:
+                save('editing', submission_status='not_submitted',
+                     last_error='platform_validation')
+                raise
+            write_json(job / 'checked.json', checked)
+            try:
+                scope, note = compare_images_unchanged(before, checked)
+                save('editing', image_scope=scope, image_scope_note=note)
+                compare_protected(before, checked)
+                # The title is compared against the task, not merely accepted as typed: it
+                # is the one field this run is allowed to change, so it is the one field
+                # that must be provably right on the page before publishing.
+                match_content(manifest, state, checked)
+            except DoudianError as exc:
+                # The page now carries the typed title, so the task stays blocking and the
+                # reason is recorded instead of the run silently becoming publishable again.
+                save('editing', submission_status='not_submitted', last_error=exc.code)
+                raise
+            write_json(job / 'title_record.json', dict(report, before_title=before.get('title'),
+                                                       checked_title=checked.get('title'),
+                                                       recorded_at=time.time()))
+            # Persist before sending: a timeout past this point must reach verify, not re-publish.
+            save('submitting', submission_status='unknown', submitted_at=time.time())
+            result = editor.publish(manifest)
+            result_state = result.get('state')
+            if result_state == 'accepted':
+                save('submitted', submission_status='accepted', review_status='pending')
+            elif result_state == 'rejected':
+                save('rejected', submission_status='accepted', review_status='rejected',
+                     rejection_reasons=result.get('rejection_reasons') or [],
+                     rejection_observed_at=time.time())
+                raise DoudianError('platform_rejected', '商品已被平台驳回：{0}。任务：{1}'.format(
+                    '；'.join(result.get('rejection_reasons') or []) or '详见页面驳回原因', job))
+            elif result_state == 'validation_failed':
+                save('prepared', submission_status='not_submitted', last_error='platform_validation',
+                     validation_errors=result.get('errors') or [])
+                raise DoudianError('platform_validation', '平台未提交成功，请在页面检查必填项。任务：{0}'.format(job))
+            else:
+                # Unknown stays unknown; falling back to `prepared` would re-arm publishing.
+                save('submitting', submission_status='unknown', last_error='submit_result_unknown')
+                raise DoudianError('submit_result_unknown',
+                                   '提交结果尚未确认，请运行verify核对，不要重复发布。任务：{0}'.format(job))
+            try:
+                editor.screenshot(job / 'submitted.png')
+            except DoudianError:
+                pass
+    return dict(report, dry_run=False, job_dir=str(job), stage=state['stage'],
+                submission_status=state['submission_status'],
+                review_status=state.get('review_status'),
+                image_scope=state.get('image_scope'),
+                image_scope_note=state.get('image_scope_note'),
                 notice='已提交，审核周期以平台为准；图片未改动。')
 
 

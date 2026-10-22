@@ -164,17 +164,22 @@ def diagnose_title(title, facts=None):
 
     # Verbatim phrase repetition, e.g. "吸音棉...吸音棉". A bigram that spans two
     # *different* confirmed spec values is not repetition: "2件套3件套" repeats "件套"
-    # only because both variants are being listed, which is desirable. A bigram that
-    # repeats inside a single spec value still counts.
+    # only because both variants are being listed, which is desirable.
+    #
+    # The excuse is granted per distinct spec value that the title actually contains --
+    # not per value the facts happen to list. Counting the facts alone would excuse
+    # "2件套2件套" whenever 3件套 is also a confirmed value, which is exactly the
+    # duplication this check exists to catch. A bigram that repeats inside a single
+    # value still counts, and so does any occurrence beyond the distinct values present.
     seen = {}
     for gram in _bigrams(text):
         seen[gram] = seen.get(gram, 0) + 1
-    spec_hits = {}
-    for value in facts.spec_values:
-        for gram in set(_bigrams(value)):
-            spec_hits[gram] = spec_hits.get(gram, 0) + 1
-    spans_variants = {gram for gram, n in spec_hits.items() if n > 1}
-    repeated = sorted(g for g, n in seen.items() if n > 1 and g not in spans_variants)
+    spec_values = list(dict.fromkeys(facts.spec_values))
+
+    def explained(gram):
+        return sum(1 for value in spec_values if value in text and gram in _bigrams(value))
+
+    repeated = sorted(g for g, n in seen.items() if n > 1 and n > explained(g))
     if repeated:
         warnings.append('疑似重复用词：{0}。请确认不是堆砌。'.format('、'.join(repeated)))
 

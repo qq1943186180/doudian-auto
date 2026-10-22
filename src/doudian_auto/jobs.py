@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import time
+import uuid
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from PIL import Image
@@ -44,7 +45,13 @@ def sha_file(path):
 
 
 def content_hash(manifest):
-    payload = {k: manifest[k] for k in ('product_id', 'edit_url', 'shop', 'title', 'mains', 'details')}
+    # A title-only task writes no assets, so its identity is the listing plus the exact
+    # title. Hashing it with the asset keys would make every manifest comparison fail on
+    # keys that by design do not exist.
+    keys = ('product_id', 'edit_url', 'shop', 'title')
+    if manifest.get('mode') != 'title_only':
+        keys += ('mains', 'details')
+    payload = {k: manifest[k] for k in keys}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -100,10 +107,42 @@ def prepare(asset_dir, title, edit_url, shop, jobs_root=None):
     return {'job_dir': str(job), 'manifest': manifest, 'state': read_json(job / 'state.json')}
 
 
+def make_title_job(product_id, shop, edit_url, title, jobs_root=None, attempts=20):
+    """Create a unique, exclusively owned job directory for a title-only change.
+
+    Unlike `prepare` these are not content addressed on purpose: every title change is
+    its own record, so repeating the same title still produces a new directory. That
+    means the name cannot rely on a timestamp alone -- two runs starting in the same
+    second would otherwise share a directory and overwrite each other's manifest and
+    state. A random suffix plus an exclusive `mkdir` makes that collision impossible.
+    """
+    root = Path(jobs_root or DATA_ROOT / 'jobs').resolve()
+    for _ in range(attempts):
+        name = 'title-{0}-{1}-{2}'.format(product_id, time.strftime('%Y%m%d-%H%M%S'), uuid.uuid4().hex[:6])
+        job = root / name
+        try:
+            job.mkdir(parents=True)
+        except FileExistsError:
+            continue
+        manifest = {'schema_version': 1, 'product_id': product_id, 'edit_url': edit_url,
+                    'shop': shop, 'title': title, 'mode': 'title_only', 'job_id': name}
+        manifest['content_hash'] = content_hash(manifest)
+        write_json(job / 'manifest.json', manifest)
+        write_json(job / 'state.json', {'stage': 'prepared', 'content_hash': manifest['content_hash'],
+                                        'updated_at': time.time()})
+        return job, manifest
+    raise DoudianError('job_create_failed', '无法创建唯一的任务目录，请重试。')
+
+
 def load_job(job):
     data = read_json(Path(job) / 'manifest.json')
     if data.get('content_hash') != content_hash(data):
         raise DoudianError('manifest_changed', '任务内容已改变，请重新准备任务。')
+    if data.get('mode') == 'title_only':
+        # Nothing local to re-hash: the task changed a title on the page, it did not
+        # stage files. Status and verify must still work, or an unknown result would
+        # have no recovery path at all.
+        return data
     for record in data['mains'] + data['details']:
         if not Path(record['path']).is_file() or sha_file(record['path']) != record['sha256']:
             raise DoudianError('asset_changed', '素材已改变或丢失，请重新准备任务。')
