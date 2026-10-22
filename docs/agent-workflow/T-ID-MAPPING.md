@@ -2,6 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
+| T-20261022-007 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 按 Codex 评审修 `title apply` 四个 P1（锁内重查兄弟任务、title job 加载/核验闭环、protected 与最终标题闸门、写页面期间落 editing）＋ 三个 P2；补临时脚本操作的追溯记录；修规格豁免漏报 |
 | T-20261022-006 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 商品 3848316916011762046 标题改版（神器+套装问题、补磁吸/不锈钢/2-3件套），已提交等审核；新增 `title apply` 只改标题路径；修夸大词漏报与规格变体误报（commit 5a8ef1d） |
 | T-20261022-005 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 新增 `title check/diagnose` 离线校验（不生成标题）；修正长度下限 15→16（平台 8-30 汉字即 16-60 字符）；新增跨任务提交保护；同步 skill 文档（commit 4ef2645） |
 | T-20261022-004 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 按用户授权改类目为「家装建材 > 隔音保温 > 隔音材料」并重新提交成功；verify=saved/pending，驳回标记消失（commit d1c3590）；另修 CDN host 误报与 review_status 残留 |

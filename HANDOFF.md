@@ -5,6 +5,23 @@
 
 ## 给人的说明
 
+### T-20261022-007 · 194-54 · 按 Codex 评审修 title apply 的 P1 缺陷 ＋ 追溯补档
+
+- 状态：done（代码已提交）；`title apply` 真实写入路径仍为 **review**，待下个授权商品首次验收。
+- Codex（gpt-6.1-sol/high）评审结论：**先用临时脚本改线上商品再补命令＝P1 流程缺陷**。不只是「不可审计」——那次操作同时失去了重复提交与越界改动的防护，最终没发现数据错误不能反推当时安全。诚实补档不算伪造，但不能冒充原始执行记录。
+- **追溯记录**（`retrospective.json`，放 jobs 下但无 manifest/state → 不被任务扫描、status、verify 处理）：
+  - `record_kind=retrospective` / `execution_mode=ad_hoc_editor` / 补档时间 / 操作时间（依据＝临时脚本 mtime，17:51:29→17:55:10）/ 前后标题注明来源
+  - `reported_submission_status=accepted`（当时 `Editor.publish()` 返回值与页面文案，未落盘），**不用 `stage=submitted` 冒充程序可核验状态**
+  - 证据缺口清单：无原始 before 快照、无 protected 比对、无提交前状态文件、未走互斥检查、无当时截图
+- **修掉的 P1**（`title apply` 此前四条都缺）：
+  1. 跨任务检查原来在**锁外** → 改为先取全局锁、锁内重查 `guard_siblings()`
+  2. title manifest 缺 `mains/details/content_hash/job_id`，`load_job()` 直接 `KeyError` → `status`/`verify` 无法处理，未知结果没有恢复闭环 → 加载器按 `mode=title_only` 分支，`verify` 走只读核验（不发布），`match_content` 对 title 任务跳过图片比对
+  3. 未做 protected 与最终标题比对 → 现在 `editor.open()` 确认商品 → 存 before → `compare_protected(before, before)` 校验基线完整 → `editing` → 填标题 → `check` 取快照 → `compare_protected(before, checked)` → `match_content` 核对商品/店铺/标题 → 才发布。**不走 `wait_details()`**（`detail_status=pending` 不影响 protected 比对）
+  4. 写页面期间仍是 `prepared` → 从填标题起即 `editing`，中断时保持阻塞
+- **修掉的 P2**：目录名加随机后缀且独占 `mkdir`（避免同秒覆盖）；驳回/校验失败改为抛错并**非零退出**（原来正常退出还提示「已提交」）；facts 原件存 `facts.json` 且核对 `facts.product_id`；标题已相同返回 `noop`；图片核验范围如实记录（详情源未就绪记 `not_verified`，不把两个空数组当证据）
+- 另修 `title.py` **规格豁免漏报**：原来按 facts 全局豁免 bigram，facts 同时含 2/3 件套时「2件套2件套」也漏报。改为只豁免标题中实际出现过的不同规格值所贡献的重复。
+- 测试：**114 项 Python + 24 项 jsdom 全过**（新增 15 项，覆盖四类发布结果、传输异常、锁内冲突、check 后字段变化、noop、title job 加载与只读核验）。
+
 ### T-20261022-006 · 194-54 · 商品 3848316916011762046 标题改版 ＋ title apply
 
 - 状态：done（已提交，等平台审核）。代码 `5a8ef1d`。
@@ -27,7 +44,8 @@
   - 改版流程必然重传图片，只改标题此前只能靠临时脚本，不落档也绕过同商品互斥
   - 现在省略 `--apply` 只校验（不连浏览器）；带 `--apply` 建 `title-<pid>-<时间>` 任务留档
   - 跨任务检查抽成模块级 `unresolved_siblings()` / `guard_siblings()`，与改版共用一份实现
-  - **未在该商品重复跑 `--apply`**：标题已由等价流程改完，再跑是同一标题的第二次提交，会多触发一次审核。真实 apply 路径待下个商品首次使用时验证
+  - **未在该商品重复跑 `--apply`**：标题已改完并提交，再跑是同一标题的第二次提交，会多触发一次审核。**调用了相同 Editor 方法不等于等价**——任务状态、互斥与恢复路径当时都不存在，该结果不计作正式命令的端到端证据
+  - 追溯记录：`~/.doudian-auto/jobs/title-3848316916011762046-retrospective/retrospective.json`（无 manifest/state，不是可 verify 的任务）
 - 测试：99 项 Python + 24 项 jsdom 全过。
 - 未做：清洁对象属性仍未填（非标题问题，属类目属性，需确认清洁对象是什么再补）。
 
