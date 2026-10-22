@@ -623,6 +623,46 @@ def test_abandon_records_the_reason_and_releases_the_product(apply_run, capsys):
     assert apply_run['run']() == 0
 
 
+def test_abandon_refuses_a_job_whose_submit_result_is_unknown(apply_run, capsys):
+    # The publish click is already out at `submitting`; only verify may decide what
+    # happened. Abandoning here would release the hold while a submission may be in
+    # flight, and the sibling scan would then let a second publish through.
+    from doudian_auto.jobs import read_json as load
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='submitting',
+                                        submission_status='unknown'))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'abandon', str(job), '--reason', '想放弃']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'not_abandonable'
+    # The hold was not released: the job still blocks its product.
+    assert load(job / 'state.json')['stage'] == 'submitting'
+    assert not (job / 'abandon.json').exists()
+    capsys.readouterr()
+    assert apply_run['run']() == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'product_job_conflict'
+
+
+def test_resume_refuses_when_the_live_title_is_a_third_value(apply_run, capsys):
+    # Between the interrupted run and the resume someone else changed the title. The
+    # target title would silently overwrite their change, so resume stops instead.
+    from doudian_auto.jobs import read_json as load
+    apply_run['page'] = {'product_id': PID, 'shop_confirmed': True, 'title': '原有标题',
+                         'mains': ['https://cdn/a.jpg'], 'details': ['https://cdn/d.jpg'],
+                         'detail_status': 'ready', 'protected': _protected()}
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    apply_run['page']['title'] = '别人在后台改的标题'
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='editing',
+                                        last_error='simulated_interrupt'))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'resume', str(job), '--apply']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'baseline_stale'
+    assert apply_run['log']['publishes'] == 1  # the interrupted run only; nothing republished
+
+
 def test_abandon_requires_a_stated_reason(apply_run, capsys):
     assert apply_run['run']() == 0
     job = str(_single_job(apply_run['jobs']))

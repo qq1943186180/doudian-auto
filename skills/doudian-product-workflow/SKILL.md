@@ -72,6 +72,8 @@ doudian-auto --json title abandon '<job_dir>' --reason '<原因>'   # 人工核�
 - `resume` 不新建任务、不重新采基线覆盖旧证据；标题按不可变 manifest 重新填写，因此不依赖上一个标签页里未保存的输入是否还在。
 - 已进入 `submitting` 或之后阶段的任务**不能** resume，只能 `verify`——发布点击已经出去了，不能靠续跑再点一次。
 - `abandon` 会落盘 `abandon.json`（原因、操作者、manifest 内容哈希、before.json 哈希）并进入终态 `abandoned`；**只是记录决策，不碰线上商品**，遗留草稿和脏页仍由人工处理。
+- **`submitting`（发布结果未知）既不能 resume 也不能 abandon**：发布点击已经出去，只有 `verify` 能定性；此时放弃会释放占用，而扫描器会放行第二次发布。
+- `resume` 会重开新页与建基线时的快照比对（保留字段＋标题）：线上标题既不是基线标题也不是本次目标标题时拒绝续跑（`baseline_stale`），那是第三方改过的信号，由人工确认归属。
 
 **真实写入路径尚未在真实商品上验收**（见 HANDOFF T-20261022-008）：首次用于授权商品时按「先 dry-run，再 `--apply`，提交后立刻 `verify`」的顺序走。
 

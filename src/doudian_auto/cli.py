@@ -400,8 +400,22 @@ def run_title_resume(args):
                 'not_resumable',
                 '等待期间任务阶段变为 {0}，不能续跑：请先运行 verify。'.format(stage))
         guard_siblings(DATA_ROOT / 'jobs', manifest['product_id'], exclude=job)
-        # The stored baseline must still describe the listing as it stands now.
-        compare_protected(before, _baseline(editor, manifest))
+        # The stored baseline must still describe the listing as it stands now. Protected
+        # fields are compared, and so is the title: the title is excluded from
+        # `compare_protected` precisely because this task changes it, so without this
+        # check a title written by someone else in the meantime would be overwritten
+        # silently. Two live titles are legitimate -- the baseline (nothing happened
+        # since) and the target (the interrupted run's input survived on the page). Any
+        # third value means the world moved, and only a human can say whose change it is.
+        current = _baseline(editor, manifest)
+        compare_protected(before, current)
+        live_title = current.get('title')
+        if live_title not in (before.get('title'), manifest['title']):
+            raise DoudianError(
+                'baseline_stale',
+                '线上标题既不是建基线时的标题，也不是本次目标标题（基线={0!r}，现在={1!r}，'
+                '目标={2!r}）：期间有人改过标题，请先人工确认该改动归属，再决定续跑还是新建任务。'.format(
+                    before.get('title'), live_title, manifest['title']))
         final = _write_and_publish_title(job, manifest, state, save, editor, before, report)
     scope = final.get('image_scope')
     notice = ('续跑完成：已提交，审核周期以平台为准；图片未改动。' if scope == 'verified_unchanged'
@@ -431,10 +445,14 @@ def run_title_abandon(args):
     if manifest.get('mode') != 'title_only':
         raise DoudianError('unsupported_mode', '该任务不是只改标题任务，不能放弃。')
     state = read_json(job / 'state.json')
-    if state.get('stage') in ('submitted', 'saved', 'abandoned'):
+    if state.get('stage') in ('submitting', 'submitted', 'saved', 'abandoned'):
+        # `submitting` is the one stage where the publish click is already out and the
+        # outcome is unknown. Abandoning it would release the hold while a submission may
+        # be in flight, and the sibling scan would then let a second publish happen.
+        # Only verify may decide what happened there.
         raise DoudianError(
             'not_abandonable',
-            '阶段 {0} 已终结，无需放弃；结果未知的任务请运行 verify。'.format(state.get('stage')))
+            '阶段 {0} 不能放弃：发布结果未知或已终结，请运行 verify 定性。'.format(state.get('stage')))
     baseline = job / 'before.json'
     record = {
         'record_kind': 'abandon',
