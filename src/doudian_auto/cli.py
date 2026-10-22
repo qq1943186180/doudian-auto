@@ -171,6 +171,22 @@ def run_title(args):
 # the hold can be released.
 _RESUMABLE_STAGES = ('prepared', 'editing', 'uploaded')
 
+# Releasing a hold is only legitimate from a stage whose outcome is already known. Each
+# stage is paired with the submission statuses that are consistent with it, so an
+# unrecognised stage -- or a state this version never wrote -- fails closed instead of
+# quietly freeing the product.
+_ABANDONABLE_STAGES = {
+    'prepared': (None, 'not_submitted'),
+    'editing': (None, 'not_submitted'),
+    # In the title-only flow `uploaded` only ever comes from a platform refusal
+    # (validation_failed); nothing was uploaded and nothing was accepted.
+    'uploaded': ('not_submitted',),
+    # A rejection is a known outcome: the platform accepted the submission and refused
+    # it. The basis for releasing is that the result is known and a human closed the
+    # task, not that nothing was ever submitted.
+    'rejected': ('accepted',),
+}
+
 
 def _state_writer(job, state):
     def save(stage=None, **fields):
@@ -264,6 +280,31 @@ def _write_and_publish_title(job, manifest, state, save, editor, before, report)
     except DoudianError:
         pass
     return state
+
+
+def _title_already_current(job, state, save, report, was_noop):
+    """Read-only exit when a resumed job finds the target title already on the page.
+
+    Two very different situations look identical here: the interrupted run's input
+    survived on the page, or somebody else already completed the same change. Neither
+    justifies publishing again -- a second submit starts another review cycle on top of
+    an outcome nobody has read back. So nothing is written to the page, no `accepted` is
+    claimed, and the job keeps its stage. A job that was recorded as a no-op stays one.
+    """
+    if was_noop:
+        save('prepared', submission_status='not_submitted', last_error=None,
+             title_already_current=True)
+        stage = 'noop'
+    else:
+        save(last_error='title_already_current', title_already_current=True)
+        stage = state['stage']
+    return dict(report, dry_run=False, job_dir=str(job), stage=stage,
+                submission_status=state.get('submission_status'),
+                review_status=state.get('review_status'),
+                title_already_current=True,
+                notice='重开的编辑页读回已是目标标题，本次未填写、未提交。这可能是上次中断的'
+                       '输入被保留，也可能是第三方已完成同一目标；请人工核对线上结果，'
+                       '确认后用 title abandon 记录结论，不要重复发布。')
 
 
 def run_title_apply(args):
@@ -395,10 +436,16 @@ def run_title_resume(args):
         save = _state_writer(job, state)
         # Re-read under the lock: another process may have moved the job on while we waited.
         stage = state.get('stage')
-        if stage not in _RESUMABLE_STAGES:
+        # The stage alone is not enough: a stage this code recognises paired with a
+        # submission status it could not have produced (e.g. `editing` + `accepted`)
+        # means the state was written by something else, and resuming would publish on
+        # top of an outcome nobody has read.
+        if (stage not in _RESUMABLE_STAGES
+                or state.get('submission_status') not in (None, 'not_submitted')):
             raise DoudianError(
                 'not_resumable',
-                '等待期间任务阶段变为 {0}，不能续跑：请先运行 verify。'.format(stage))
+                '任务阶段 {0}（提交状态 {1}）不能续跑：已进入提交阶段或状态不一致的任务请先'
+                '运行 verify，不要重新发布。'.format(stage, state.get('submission_status')))
         guard_siblings(DATA_ROOT / 'jobs', manifest['product_id'], exclude=job)
         # The stored baseline must still describe the listing as it stands now. Protected
         # fields are compared, and so is the title: the title is excluded from
@@ -410,7 +457,14 @@ def run_title_resume(args):
         current = _baseline(editor, manifest)
         compare_protected(before, current)
         live_title = current.get('title')
-        if live_title not in (before.get('title'), manifest['title']):
+        if live_title == manifest['title']:
+            # The target is already on the page. That is not evidence that this job's
+            # publish happened, and it is not permission to publish again: a second
+            # submit starts another review cycle on top of an outcome nobody has read.
+            # Stop before any write and leave the outcome to a human.
+            return _title_already_current(job, state, save, report,
+                                          was_noop=bool(state.get('noop')))
+        if live_title != before.get('title'):
             raise DoudianError(
                 'baseline_stale',
                 '线上标题既不是建基线时的标题，也不是本次目标标题（基线={0!r}，现在={1!r}，'
@@ -431,44 +485,51 @@ def run_title_resume(args):
 def run_title_abandon(args):
     """Release a job's hold on its product, with the reason recorded.
 
-    Only reachable while the job is still blocking. It writes the decision to
-    `abandon.json` and parks the job in the terminal `abandoned` stage. It does not touch
-    the listing: any draft or dirty tab it left behind still has to be handled by the human
-    who confirmed the page.
+    Only reachable from a stage whose outcome is already known, and the stage is
+    re-read under the same locks `resume` uses: an abandon that read `editing` before a
+    concurrent resume published and moved the job to `submitting` would otherwise
+    overwrite that unknown result with a safe-looking `abandoned` and free the product
+    for a second publish. It writes the decision to `abandon.json` and parks the job in
+    the terminal `abandoned` stage. It does not touch the listing: any draft or dirty
+    tab it left behind still has to be handled by the human who confirmed the page.
     """
     from .jobs import sha_file
 
+    reason = (getattr(args, 'reason', None) or '').strip()
+    if not reason:
+        raise DoudianError('reason_required', '必须写明放弃原因（--reason），说明人工核对了什么。')
     job = Path(args.job).resolve()
     if not (job / 'manifest.json').is_file():
         raise DoudianError('job_missing', '任务目录不存在或没有 manifest.json：{0}'.format(job))
     manifest = load_job(job)
     if manifest.get('mode') != 'title_only':
         raise DoudianError('unsupported_mode', '该任务不是只改标题任务，不能放弃。')
-    state = read_json(job / 'state.json')
-    if state.get('stage') in ('submitting', 'submitted', 'saved', 'abandoned'):
-        # `submitting` is the one stage where the publish click is already out and the
-        # outcome is unknown. Abandoning it would release the hold while a submission may
-        # be in flight, and the sibling scan would then let a second publish happen.
-        # Only verify may decide what happened there.
-        raise DoudianError(
-            'not_abandonable',
-            '阶段 {0} 不能放弃：发布结果未知或已终结，请运行 verify 定性。'.format(state.get('stage')))
     baseline = job / 'before.json'
-    record = {
-        'record_kind': 'abandon',
-        'abandoned_at': time.time(),
-        'reason': args.reason,
-        'declared_by': args.operator,
-        'stage_before': state.get('stage'),
-        'submission_status_before': state.get('submission_status'),
-        'manifest_content_hash': manifest.get('content_hash'),
-        'before_sha256': sha_file(baseline) if baseline.is_file() else None,
-        'note': '仅落盘放弃记录，未修改线上商品；遗留草稿与脏页由人工处理。',
-    }
-    write_json(job / 'abandon.json', record)
-    state.update({'stage': 'abandoned', 'abandoned_at': record['abandoned_at'],
-                  'last_error': 'abandoned_by_operator', 'updated_at': time.time()})
-    write_json(job / 'state.json', state)
+    # Same lock order as resume, and the state is read again after both are held: the
+    # check that matters is the one made against the state as it stands now.
+    with Lock(DATA_ROOT / 'browser.lock'), Lock(job / 'job.lock'):
+        state = read_json(job / 'state.json')
+        stage = state.get('stage')
+        if state.get('submission_status') not in _ABANDONABLE_STAGES.get(stage, ()):
+            raise DoudianError(
+                'not_abandonable',
+                '阶段 {0}（提交状态 {1}）不能放弃：发布结果未知或已终结的任务请运行 verify，'
+                '只读核对后由人工结束。'.format(stage, state.get('submission_status')))
+        record = {
+            'record_kind': 'abandon',
+            'abandoned_at': time.time(),
+            'reason': reason,
+            'declared_by': args.operator,
+            'stage_before': stage,
+            'submission_status_before': state.get('submission_status'),
+            'manifest_content_hash': manifest.get('content_hash'),
+            'before_sha256': sha_file(baseline) if baseline.is_file() else None,
+            'note': '仅落盘放弃记录，未修改线上商品；遗留草稿与脏页由人工处理。',
+        }
+        write_json(job / 'abandon.json', record)
+        state.update({'stage': 'abandoned', 'abandoned_at': record['abandoned_at'],
+                      'last_error': 'abandoned_by_operator', 'updated_at': time.time()})
+        write_json(job / 'state.json', state)
     return {'job_dir': str(job), 'stage': 'abandoned', 'record': str(job / 'abandon.json'),
             'notice': '已记录放弃原因与基线哈希；线上商品未改动，遗留草稿请人工确认后处理。'}
 

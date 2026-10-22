@@ -334,9 +334,15 @@ class FakeBridge:
 
 
 class FakeTitleEditor:
-    """A page that behaves: fill changes the title, check returns a snapshot, publish once."""
+    """A page that behaves: fill changes the title, check returns a snapshot, publish once.
 
-    def __init__(self, bridge, log, page=None, result=None, fail=None):
+    `server` holds the state a fresh tab would load -- what was actually submitted.
+    Typing into the page does not change it; only publish does. That is the whole point
+    of reading the baseline in a fresh tab: unsubmitted input must not survive into the
+    next run's view of the listing.
+    """
+
+    def __init__(self, bridge, log, page=None, result=None, fail=None, server=None):
         self.bridge = bridge
         self.log = log
         self.page = page or {'product_id': PID, 'shop_confirmed': True, 'title': '原有标题',
@@ -345,10 +351,15 @@ class FakeTitleEditor:
         self.result = result or {'state': 'accepted', 'success': True}
         self.fail = fail
         self.publishes = 0
+        self.server = server if server is not None else {'title': self.page['title']}
 
     def open(self, manifest, fresh=False):
         self.log['opens'] = self.log.get('opens', 0) + 1
-        return self.snapshot()
+        snapshot = self.snapshot()
+        if fresh:
+            # navigate(newTab=True) loads the submitted state, not the current inputs.
+            snapshot['title'] = self.server['title']
+        return snapshot
 
     def read(self, manifest):
         return self.snapshot()
@@ -369,6 +380,7 @@ class FakeTitleEditor:
         self.log['publishes'] = self.publishes
         if self.fail == 'submit_transport':
             raise DoudianError('bridge_transport', 'unknown submit')
+        self.server['title'] = self.page['title']
         return self.result
 
     def screenshot(self, path):
@@ -387,8 +399,13 @@ def apply_run(tmp_path, monkeypatch):
     holder = {}
 
     def editor_factory(bridge):
-        editor = FakeTitleEditor(bridge, log, holder.get('page'), holder.get('result'),
-                                 holder.get('fail'))
+        page = holder.get('page')
+        if holder.get('server') is None:
+            # The listing as submitted -- what a fresh tab loads. Tests that replace the
+            # page set the listing state, so the server starts from that page's title.
+            holder['server'] = {'title': (page or {'title': '原有标题'})['title']}
+        editor = FakeTitleEditor(bridge, log, page, holder.get('result'),
+                                 holder.get('fail'), holder['server'])
         holder['editor'] = editor
         return editor
 
@@ -578,17 +595,21 @@ def test_replacing_images_without_an_asset_list_deletes_nothing():
 def test_a_stopped_title_job_can_be_resumed_from_the_same_job(apply_run, capsys):
     from doudian_auto.workflow import Workflow
     from doudian_auto.jobs import read_json as load
-    # Simulate an interruption right after fill_title: the job blocks its product and
-    # `verify` refuses it, so the only way out is to continue the same job.
-    assert apply_run['run']() == 0
+    # Interrupt before publishing: the platform check moves a protected field, the run
+    # stops at `editing`, and nothing was ever submitted -- so a fresh tab still loads
+    # the old title, exactly like the real page would.
+    apply_run['fail'] = 'commercial'
+    assert apply_run['run']() == 1
     job = _single_job(apply_run['jobs'])
-    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='editing',
-                                        last_error='simulated_interrupt'))
+    assert load(job / 'state.json')['stage'] == 'editing'
+    assert 'publishes' not in apply_run['log']
     with pytest.raises(DoudianError):
         Workflow(job, apply_run['editor'], lock_root=apply_run['jobs'].parent).verify()
+    apply_run['fail'] = None
     from doudian_auto.cli import main
     assert main(['--json', 'title', 'resume', str(job), '--apply']) == 0
     assert load(job / 'state.json')['stage'] == 'submitted'
+    assert apply_run['log']['publishes'] == 1  # resume's publish is the first one
     # Resume reuses the job: no second directory, and the old baseline survives.
     assert len(_job_dirs(apply_run['jobs'])) == 1
     assert load(job / 'before.json')['product_id'] == PID
@@ -608,9 +629,12 @@ def test_resume_refuses_a_job_already_in_submitting(apply_run, capsys):
 
 def test_abandon_records_the_reason_and_releases_the_product(apply_run, capsys):
     from doudian_auto.jobs import read_json as load
-    assert apply_run['run']() == 0
+    # A job that stopped before publishing: nothing was ever submitted, so the
+    # submission status is the one the interrupted state actually carries.
+    apply_run['fail'] = 'commercial'
+    assert apply_run['run']() == 1
     job = _single_job(apply_run['jobs'])
-    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='editing'))
+    apply_run['fail'] = None
     from doudian_auto.cli import main
     assert main(['--json', 'title', 'abandon', str(job), '--reason',
                  '人工核对页面：标题已生效，草稿已清除']) == 0
@@ -645,22 +669,137 @@ def test_abandon_refuses_a_job_whose_submit_result_is_unknown(apply_run, capsys)
 
 
 def test_resume_refuses_when_the_live_title_is_a_third_value(apply_run, capsys):
-    # Between the interrupted run and the resume someone else changed the title. The
-    # target title would silently overwrite their change, so resume stops instead.
+    # Between the interrupted run and the resume someone else changed the title on the
+    # listing. The target title would silently overwrite their change, so resume stops.
     from doudian_auto.jobs import read_json as load
-    apply_run['page'] = {'product_id': PID, 'shop_confirmed': True, 'title': '原有标题',
-                         'mains': ['https://cdn/a.jpg'], 'details': ['https://cdn/d.jpg'],
-                         'detail_status': 'ready', 'protected': _protected()}
-    assert apply_run['run']() == 0
+    apply_run['fail'] = 'commercial'
+    assert apply_run['run']() == 1
     job = _single_job(apply_run['jobs'])
-    apply_run['page']['title'] = '别人在后台改的标题'
-    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='editing',
-                                        last_error='simulated_interrupt'))
+    apply_run['server']['title'] = '别人在后台改的标题'
     from doudian_auto.cli import main
     capsys.readouterr()
     assert main(['--json', 'title', 'resume', str(job), '--apply']) == 1
     assert json.loads(capsys.readouterr().out)['error']['code'] == 'baseline_stale'
-    assert apply_run['log']['publishes'] == 1  # the interrupted run only; nothing republished
+    assert 'publishes' not in apply_run['log']  # nothing was ever submitted
+
+
+def test_resume_stops_when_the_listing_already_shows_the_target_title(apply_run, capsys):
+    # Codex's reproduction: the job state says the run never finished, but the listing
+    # already carries the target title. Publishing again would start a second review
+    # cycle on top of an outcome nobody has read, so resume stops read-only instead.
+    from doudian_auto.jobs import read_json as load
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    assert apply_run['server']['title'] == NEW_TITLE  # the publish landed
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='editing',
+                                        submission_status='not_submitted',
+                                        last_error='state_lost_after_publish'))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'resume', str(job), '--apply']) == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['title_already_current'] is True
+    assert data['stage'] == 'editing'  # the job keeps holding its product
+    assert apply_run['log']['publishes'] == 1  # the original run only; no second submit
+    state = load(job / 'state.json')
+    assert state['last_error'] == 'title_already_current'
+    assert '不要重复发布' in data['notice']
+
+
+def test_resuming_a_noop_job_keeps_it_a_noop(apply_run, capsys):
+    # A job that found the title already current must not be turned into a publish by
+    # resuming it: the recorded no-op stays a no-op and nothing is submitted.
+    from doudian_auto.jobs import read_json as load
+    apply_run['page'] = {'product_id': PID, 'shop_confirmed': True, 'title': NEW_TITLE,
+                         'mains': ['https://cdn/a.jpg'], 'details': ['https://cdn/d.jpg'],
+                         'detail_status': 'ready', 'protected': _protected()}
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    assert load(job / 'state.json')['noop'] is True
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'resume', str(job), '--apply']) == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['stage'] == 'noop'
+    assert data['title_already_current'] is True
+    assert 'publishes' not in apply_run['log']
+    state = load(job / 'state.json')
+    assert state['stage'] == 'prepared' and state['noop'] is True
+
+
+def test_abandon_refuses_stages_it_does_not_know(apply_run, capsys):
+    # The blacklist was the bug: an unrecognised stage used to be abandonable, which
+    # released the product for a state no version of this code ever wrote.
+    from doudian_auto.jobs import read_json as load
+    apply_run['fail'] = 'commercial'
+    assert apply_run['run']() == 1
+    job = _single_job(apply_run['jobs'])
+    from doudian_auto.cli import main
+    for stage in ('future_unknown', '', 'abandoned'):
+        state = load(job / 'state.json')
+        state.update(stage=stage)
+        write_json(job / 'state.json', state)
+        capsys.readouterr()
+        assert main(['--json', 'title', 'abandon', str(job), '--reason', '试放弃']) == 1
+        assert json.loads(capsys.readouterr().out)['error']['code'] == 'not_abandonable'
+        assert not (job / 'abandon.json').exists()
+        assert load(job / 'state.json')['stage'] == stage
+    # A missing stage key fails closed for the same reason.
+    state = load(job / 'state.json')
+    state.pop('stage')
+    write_json(job / 'state.json', state)
+    capsys.readouterr()
+    assert main(['--json', 'title', 'abandon', str(job), '--reason', '试放弃']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'not_abandonable'
+    assert not (job / 'abandon.json').exists()
+
+
+def test_abandon_refuses_a_whitespace_reason(apply_run, capsys):
+    apply_run['fail'] = 'commercial'
+    assert apply_run['run']() == 1
+    job = str(_single_job(apply_run['jobs']))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'abandon', job, '--reason', '   ']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'reason_required'
+
+
+def test_abandon_checks_the_stage_after_taking_both_locks(apply_run, capsys, monkeypatch):
+    # Codex's race: abandon read `editing`, a concurrent resume published and moved the
+    # job to `submitting`, and the stale read was written back as `abandoned` --
+    # releasing the product while a submission was in flight. The check must happen
+    # after both locks are held, and the lock order must match resume's.
+    import doudian_auto.cli as cli
+    from doudian_auto.jobs import read_json as load
+    apply_run['fail'] = 'commercial'
+    assert apply_run['run']() == 1
+    job = _single_job(apply_run['jobs'])
+    order = []
+
+    class RecordingLock:
+        def __init__(self, path):
+            self.path = path
+
+        def __enter__(self):
+            order.append(self.path.name)
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(cli, 'Lock', RecordingLock)
+    # What a concurrent resume leaves behind while abandon waits for the lock.
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='submitting',
+                                        submission_status='unknown'))
+    from types import SimpleNamespace
+    from doudian_auto.errors import DoudianError
+    with pytest.raises(DoudianError) as exc:
+        cli.run_title_abandon(SimpleNamespace(job=str(job), reason='人工核对后放弃',
+                                              operator='review-probe'))
+    assert exc.value.code == 'not_abandonable'
+    assert order[:2] == ['browser.lock', 'job.lock']
+    assert load(job / 'state.json')['stage'] == 'submitting'  # untouched
+    assert not (job / 'abandon.json').exists()
 
 
 def test_abandon_requires_a_stated_reason(apply_run, capsys):
