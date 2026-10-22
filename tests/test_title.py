@@ -238,3 +238,35 @@ def test_a_phrase_repeated_inside_one_spec_value_still_counts():
     facts = TitleFacts({'confirmed': {'specs': {'件数': ['2件套']}}})
     report = diagnose_title('折叠扫把簸箕2件套2件套家用扫地刮水器不锈钢杆', facts)
     assert any('重复' in w for w in report['warnings'])
+
+
+# --- title apply ------------------------------------------------------------
+# The revision workflow always replaces images, so a listing needing only a title
+# change had no supported path. `title apply` fills that gap; these tests pin the
+# safe half (validation and dry-run) without touching a browser.
+
+def test_apply_dry_run_reports_but_does_not_connect(tmp_path, monkeypatch, capsys):
+    from doudian_auto import bridge
+    monkeypatch.setattr(bridge.Bridge, 'require_ready',
+                        lambda self: (_ for _ in ()).throw(AssertionError('browser touched')))
+    from doudian_auto.cli import main
+    assert main(['--json', 'title', 'apply', '--url', '3848316916011762046',
+                 '--shop', '销霁百货', '--title', CJK * 12]) == 0
+    payload = json.loads(capsys.readouterr().out)['data']
+    assert payload['dry_run'] is True
+    assert payload['writes'] == ['标题']
+
+
+def test_apply_refuses_a_short_title_before_any_write(capsys):
+    from doudian_auto.cli import main
+    assert main(['--json', 'title', 'apply', '--url', '3848316916011762046',
+                 '--shop', '销霁百货', '--title', CJK * 5, '--apply']) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['error']['code'] == 'invalid_title'
+
+
+def test_apply_rejects_an_invalid_product_reference(capsys):
+    from doudian_auto.cli import main
+    assert main(['--json', 'title', 'apply', '--url', 'https://evil.example/x',
+                 '--shop', '销霁百货', '--title', CJK * 12, '--apply']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'invalid_product'

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 from . import __version__
 from .bridge import Bridge
@@ -57,6 +58,12 @@ def parser():
     title_diagnose = title_sub.add_parser('diagnose', help='在确定性规则外，对照已确认事实给出提示')
     title_diagnose.add_argument('--title', required=True)
     title_diagnose.add_argument('--facts', help='已确认事实JSON；省略时只做无事实对照的诊断')
+    title_apply = title_sub.add_parser('apply', help='只改标题：校验→填写检查→发布，不换图')
+    title_apply.add_argument('--url', required=True, help='商品编辑链接或商品ID')
+    title_apply.add_argument('--shop', required=True)
+    title_apply.add_argument('--title', required=True)
+    title_apply.add_argument('--facts', help='已确认事实JSON，用于诊断')
+    title_apply.add_argument('--apply', action='store_true', help='真正写入并发布；省略时只校验')
     sub.add_parser('gui', help='打开中文桌面窗口')
     unlock = sub.add_parser('unlock', help='仅清除所属进程已结束的操作锁')
     unlock.add_argument('--job', help='同时清理此任务的job.lock')
@@ -134,10 +141,87 @@ def run_title(args):
         return {'ok': True, 'title': args.title, 'units': units,
                 'limits': {'min': title_rules.MIN_UNITS, 'max': title_rules.MAX_UNITS},
                 'next': '仅通过本地确定性规则；平台合规以发布检查为准。'}
+    if args.title_command == 'apply':
+        return run_title_apply(args)
     report = title_rules.diagnose_title(args.title, facts)
     if report['errors']:
         raise DoudianError('invalid_title', '；'.join(report['errors']))
     return report
+
+
+def run_title_apply(args):
+    """Change only the title of a live listing, leaving images untouched.
+
+    The revision workflow always replaces images, so a listing that only needs a title
+    change had no supported path and was being driven by ad-hoc scripts. This records a
+    job the same way so the change is reproducible and the cross-job guard sees it.
+    """
+    from . import title as title_rules
+    from .workflow import guard_siblings
+
+    facts = None
+    if getattr(args, 'facts', None):
+        facts = title_rules.TitleFacts(read_json(Path(args.facts)))
+    report = title_rules.diagnose_title(args.title, facts)
+    if report['errors']:
+        raise DoudianError('invalid_title', '；'.join(report['errors']))
+    if not args.apply:
+        return dict(report, dry_run=True, writes=['标题'],
+                    next='加 --apply 才会写入并发布；本步未连接浏览器。')
+
+    product = resolve_product(args.url)
+    product_id = product['product_id']
+    edit_url = product.get('edit_url') or ('https://fxg.jinritemai.com/ffa/g/create?product_id=' + product_id)
+    jobs_root = DATA_ROOT / 'jobs'
+    guard_siblings(jobs_root, product_id)
+
+    job = jobs_root / 'title-{0}-{1}'.format(product_id, time.strftime('%Y%m%d-%H%M%S'))
+    manifest = {'product_id': product_id, 'shop': args.shop.strip(), 'edit_url': edit_url,
+                'title': args.title, 'mode': 'title_only'}
+    write_json(job / 'manifest.json', manifest)
+    write_json(job / 'state.json', {'stage': 'prepared', 'updated_at': time.time()})
+
+    bridge = Bridge(args.endpoint)
+    bridge.require_ready()
+    editor = Editor(bridge)
+    editor.bridge.session = 'doudian-auto-title-' + product_id
+    with Lock(DATA_ROOT / 'browser.lock'), Lock(job / 'job.lock'):
+        before = editor.read(manifest)
+        write_json(job / 'before.json', before)
+        write_json(job / 'title_record.json', dict(report, before_title=before.get('title'),
+                                                   recorded_at=time.time()))
+        editor.fill_title(manifest)
+        editor.check(manifest)
+        # Persist before sending: a timeout past this point must reach verify, not re-publish.
+        write_json(job / 'state.json', {'stage': 'submitting', 'submission_status': 'unknown',
+                                        'updated_at': time.time()})
+        result = editor.publish(manifest)
+        state = result.get('state')
+        if state == 'accepted':
+            final = {'stage': 'submitted', 'submission_status': 'accepted',
+                     'review_status': 'pending'}
+        elif state == 'rejected':
+            final = {'stage': 'rejected', 'submission_status': 'accepted',
+                     'review_status': 'rejected',
+                     'rejection_reasons': result.get('rejection_reasons') or []}
+        elif state == 'validation_failed':
+            final = {'stage': 'prepared', 'submission_status': 'not_submitted',
+                     'platform_errors': result.get('errors') or []}
+        else:
+            # Unknown stays unknown; falling back to `prepared` would re-arm publishing.
+            write_json(job / 'state.json', {'stage': 'submitting', 'submission_status': 'unknown',
+                                            'last_error': 'submit_result_unknown',
+                                            'updated_at': time.time()})
+            raise DoudianError('submit_result_unknown', '提交结果尚未确认；请人工核对页面，勿重复发布。')
+        write_json(job / 'state.json', dict(final, job_dir=str(job), updated_at=time.time()))
+        try:
+            editor.screenshot(job / 'submitted.png')
+        except DoudianError:
+            pass
+    return dict(report, dry_run=False, job_dir=str(job), stage=final['stage'],
+                submission_status=final['submission_status'],
+                review_status=final.get('review_status'),
+                notice='已提交，审核周期以平台为准；图片未改动。')
 
 
 def run(args):

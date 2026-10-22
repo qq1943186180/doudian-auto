@@ -42,6 +42,14 @@ doudian-auto --json title diagnose --title '<标题>' --facts <已确认事实.j
 
 这个命令**不生成标题**，也不宣称平台合规——本地通过不等于平台会通过。标题仍由人或模型撰写，命令只负责挡住确定性错误并暴露无法确认的部分。选定标题后再 `prepare`，不要事后改 manifest：标题参与 `content_hash`，改标题等于换新任务。
 
+**只改标题、不换图**时用 `title apply`（改版流程必然重传图片，不适用于只改标题的线上商品）：
+
+```powershell
+doudian-auto --json title apply --url '<编辑链接或商品ID>' --shop '<店铺>' --title '<新标题>' --facts <事实.json>
+```
+
+省略 `--apply` 只做校验与诊断，全程不连浏览器。带 `--apply` 会建一个 `title-<商品ID>-<时间>` 任务，依次填标题 → 填写检查 → 发布，并把改动前后标题、诊断结果、状态与截图留档。它同样受「同一商品只允许一个未完成任务」约束，也不会重复发布：结果未知时停在 `submitting` 并报错，让你人工核对。
+
 ## 本地工具
 
 `scripts/doudian_check.py` 不联网、不调用模型、不修改店铺。标题规则以已安装的 `doudian_auto` 包为准，因此**必须用项目虚拟环境的 Python 运行**（例如 `<repo>/.venv/Scripts/python.exe`）；缺包时脚本会退出并提示安装方式，不会退回另一份规则副本。
