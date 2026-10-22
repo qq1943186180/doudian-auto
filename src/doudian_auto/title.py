@@ -36,6 +36,8 @@ _RISKY_CLAIMS = (
     '第一', '唯一', '最好', '最佳', '顶级', '国家级', '最高级', '绝无仅有', '极品',
     '百分百', '100%', '永久', '万能', '全效', '特效', '根治', '零甲醛',
     '环保', '防火', '阻燃', '防水', '抗菌', '除甲醛', '无甲醛', '全网最低',
+    # Vague superlatives seen in real listings; none is verifiable and all invite review.
+    '神器', '爆款', '网红', '超值', '史无前例', '黑科技',
 )
 
 # Vague quantity words. A title that says "a lot of options" without naming them
@@ -160,12 +162,19 @@ def diagnose_title(title, facts=None):
     units, errors = validate_title(text)
     warnings = []
 
-    # Verbatim phrase repetition, e.g. "吸音棉...吸音棉". Discounted when a phrase is
-    # legitimately part of a longer confirmed term such as "鸡蛋棉" inside "鸡蛋棉吸音棉".
+    # Verbatim phrase repetition, e.g. "吸音棉...吸音棉". A bigram that spans two
+    # *different* confirmed spec values is not repetition: "2件套3件套" repeats "件套"
+    # only because both variants are being listed, which is desirable. A bigram that
+    # repeats inside a single spec value still counts.
     seen = {}
     for gram in _bigrams(text):
         seen[gram] = seen.get(gram, 0) + 1
-    repeated = sorted(g for g, n in seen.items() if n > 1)
+    spec_hits = {}
+    for value in facts.spec_values:
+        for gram in set(_bigrams(value)):
+            spec_hits[gram] = spec_hits.get(gram, 0) + 1
+    spans_variants = {gram for gram, n in spec_hits.items() if n > 1}
+    repeated = sorted(g for g, n in seen.items() if n > 1 and g not in spans_variants)
     if repeated:
         warnings.append('疑似重复用词：{0}。请确认不是堆砌。'.format('、'.join(repeated)))
 
@@ -211,19 +220,6 @@ def diagnose_title(title, facts=None):
     unused = [p for p in facts.phrases if p not in text]
     if unused:
         warnings.append('已确认但未使用：{0}。'.format('、'.join(unused[:8])))
-
-    # Claims in the title with no matching confirmed phrase at all.
-    if facts.phrases:
-        uncovered = []
-        for word in _RISKY_CLAIMS:
-            if word not in text:
-                continue
-            if not any(word in p or p in word for p in facts.phrases):
-                uncovered.append(word)
-        if uncovered and facts.unconfirmed:
-            pass  # already reported above with a stronger message
-        elif uncovered:
-            warnings.append('这些词在已确认事实中找不到依据：{0}。'.format('、'.join(uncovered)))
 
     return {
         'title': text,

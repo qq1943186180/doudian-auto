@@ -218,3 +218,23 @@ def test_prepare_rejects_a_title_below_the_platform_floor(tmp_path):
                 '样板店', tmp_path / 'jobs')
     assert exc.value.code == 'invalid_title'
     assert '少于16' in str(exc.value)
+
+
+def test_vague_superlatives_are_flagged():
+    # "神器" is not in the learning-centre wording but sits in the same class as the
+    # named examples; it showed up in a real listing with no evidence behind it.
+    report = diagnose_title('折叠扫把簸箕免粘发家用扫地神器不锈钢两件套三件套')
+    assert any('神器' in w for w in report['warnings'])
+
+
+def test_listing_two_spec_variants_is_not_flagged_as_repetition():
+    # "2件套3件套" repeats the bigram "件套" only because both variants are listed.
+    facts = TitleFacts({'confirmed': {'specs': {'件数': ['2件套', '3件套']}}})
+    report = diagnose_title('磁吸折叠扫把簸箕免粘发家用扫地刮水器不锈钢2件套3件套', facts)
+    assert not any('重复' in w for w in report['warnings'])
+
+
+def test_a_phrase_repeated_inside_one_spec_value_still_counts():
+    facts = TitleFacts({'confirmed': {'specs': {'件数': ['2件套']}}})
+    report = diagnose_title('折叠扫把簸箕2件套2件套家用扫地刮水器不锈钢杆', facts)
+    assert any('重复' in w for w in report['warnings'])
