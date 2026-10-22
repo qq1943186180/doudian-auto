@@ -1,5 +1,6 @@
 import json
 from importlib.resources import files
+import time
 from urllib.parse import urlparse
 
 from .errors import DoudianError, WaitingHuman
@@ -33,7 +34,22 @@ class Editor:
                 if exc.code != 'editor_not_ready':
                     raise
                 return None
-        result = self.bridge.wait(ready, lambda x: bool(x), '商品编辑页尚未加载。', seconds=30)
+            except DoudianError as exc:
+                # The title input mounts before the `[attr-field-id]` blocks do, so a
+                # freshly opened editor legitimately reports `editor_layout_changed` for a
+                # few frames. Treating that as a hard failure aborted every reopen. A
+                # genuinely wrong layout never resolves and still fails at the deadline.
+                if exc.code != 'editor_layout_changed':
+                    raise
+                return None
+        try:
+            result = self.bridge.wait(ready, lambda x: bool(x), '商品编辑页尚未加载。', seconds=30)
+        except DoudianError as exc:
+            if exc.code != 'page_timeout':
+                raise
+            # Re-raise the concrete shape so the caller sees why, not just a timeout.
+            self.dom('snapshot', manifest)
+            raise
         if not result.get('success'):
             self.dom('scroll', manifest, kind='details')
         return result
@@ -70,28 +86,42 @@ class Editor:
         else:
             raise DoudianError('delete_limit', '原图数量超过本地上传模块上限。')
         if kind == 'details':
-            # A stale hidden canvas must stop the run instead of being ignored; matching
+            # A stale source must stop the run instead of being ignored; matching
             # counts alone would let old URLs be recorded as the fresh upload result.
+            # `empty` requires the standard area to be truly zeroed AND the live
+            # preview to hold no slot; the stale decorate canvas never counts.
             def cleared(snapshot):
-                return snapshot.get('detail_status') == 'empty'
+                return (snapshot.get('detail_status') == 'empty'
+                        and snapshot.get('detail_declared') == 0
+                        and snapshot.get('detail_cards') == 0
+                        and snapshot.get('detail_delete_count') == 0)
             try:
                 self.bridge.wait(lambda: self.read(manifest), cleared, '详情图未清空。', seconds=15)
             except DoudianError as exc:
                 if exc.code != 'page_timeout':
                     raise
                 snapshot = self.read(manifest)
-                raise DoudianError('delete_incomplete', '详情图仍有残留：状态={0}，剩余={1}张，未开始上传。'.format(
-                    snapshot.get('detail_status'), len(snapshot.get('details', []))))
+                raise DoudianError('delete_incomplete', '详情图仍有残留：状态={0}，声明={1}，卡片={2}，删除钮={3}，槽位={4}，画布={5}。{6}'.format(
+                    snapshot.get('detail_status'), snapshot.get('detail_declared'), snapshot.get('detail_cards'),
+                    snapshot.get('detail_delete_count'), snapshot.get('detail_slots'), snapshot.get('canvas_count'),
+                    snapshot.get('detail_reason') or ''))
         elif self.read(manifest)[kind]:
             raise DoudianError('delete_incomplete', '图片仍在页面中，未开始上传。')
         selector = self.dom('upload_selector', manifest, kind=kind)['selector']
         before_upload()
         self.bridge.command('upload', {'selector': selector, 'files': [r['path'] for r in manifest[kind]]})
         def uploaded(snapshot):
-            if len(snapshot.get(kind, [])) != len(manifest[kind]) or snapshot.get(count_key) != len(manifest[kind]):
+            expected = len(manifest[kind])
+            if len(snapshot.get(kind, [])) != expected or snapshot.get(count_key) != expected:
                 return False
             # Counts are necessary but not sufficient; the cross-check must agree too.
-            return snapshot.get('detail_status') == 'ready' if kind == 'details' else True
+            if kind == 'details':
+                return (snapshot.get('detail_status') == 'ready'
+                        and snapshot.get('detail_declared') == expected
+                        and snapshot.get('detail_cards') == expected
+                        and snapshot.get('detail_delete_count') == expected
+                        and snapshot.get('detail_slots') == expected)
+            return True
         result = self.bridge.wait(lambda: self.read(manifest), uploaded, '上传尚未完成或图片数量不匹配。', seconds=90)
         return result[kind]
 
@@ -107,9 +137,35 @@ class Editor:
             raise WaitingHuman('platform_validation', '平台填写检查发现问题：' + '；'.join(snapshot['errors']))
         return snapshot
 
+    def publish_state(self, manifest):
+        """Classify the post-click page without raising on transient frames.
+
+        Right after "发布商品" is pressed the page passes through frames where the editor
+        is already gone but the result is not rendered yet. `read()` raises
+        `editor_not_ready` on those frames, and an exception aborts `Bridge.wait` before
+        its predicate ever runs -- which is exactly how a real successful submit was
+        mistaken for a stall. This probe returns a classification instead, and is the only
+        place allowed to tolerate the transition.
+        """
+        result = self.dom('publish_state', manifest)
+        return {'state': result.get('state'), 'success': result.get('success'),
+                'rejected': result.get('rejected'), 'errors': result.get('errors'),
+                'rejection_reasons': result.get('rejection_reasons'),
+                'rejection_count': result.get('rejection_count')}
+
     def publish(self, manifest):
         self.dom('button', manifest, name='发布商品')
-        return self.bridge.wait(lambda: self.read(manifest), lambda s: s.get('success') or bool(s.get('errors')), '提交结果尚未确认；请先核验，勿重复发布。', seconds=60)
+        # The click happens exactly once, outside the poll. Never re-click on timeout.
+        deadline = time.monotonic() + 90
+        last = None
+        while True:
+            last = self.publish_state(manifest)
+            if last['state'] in ('accepted', 'rejected', 'validation_failed'):
+                return last
+            if time.monotonic() >= deadline:
+                # Unknown is persisted by the caller and must be resolved by verify().
+                return {'state': 'unknown', 'success': False, 'rejected': None, 'errors': None}
+            time.sleep(0.5)
 
     def screenshot(self, path):
         return self.bridge.screenshot(path)
