@@ -5,6 +5,24 @@
 
 ## 给人的说明
 
+### T-20261022-008 · 194-54 · Codex 二轮复核：堵误删图入口（止血）
+
+- 状态：done（已提交并 push，`935e34b`）。**下一步：先 D（补生命周期），再收窄后的 B。C 不选。**
+- Codex 二轮评审结论：上轮四个 P1 的关键代码都到位，但**他复现出一个由我新引入的、更严重的 P1**——
+  「修好加载器」这件事本身把 title job 暴露给了通用命令：
+
+  | 发现 | 说明 |
+  |---|---|
+  | 🔴 P1，新引入 | `upload <title_job> --apply` 对 `prepared/editing` 任务会进入换图，实际顺序是 `scroll → delete → upload_selector → KeyError: mains`，**删除已经发生**。GUI 同样能选中 |
+  | 🔴 P1 | 草稿/旧标签页的未保存改动被当成基线；`before` 与自己比较只能证明采集完整，不能证明它来自已提交内容 |
+  | 🔴 P1 | 「未知 stage 阻断」**实际没实现**——我写的是 `stage is None or stage in ...`，未知字符串照样放行，等于新阶段会 fail open |
+  | 🔴 P1 | 详情未就绪时，连已知主图变化也一起跳过 |
+- **已止血（两层，因为单靠第一层仍有别的入口）**：
+  - `Workflow.upload` 在任何浏览器动作前拒绝 `mode=title_only`，**dry-run 也拒绝**（GUI 计划视图走这条路）
+  - `Editor.replace` 在第一次删除前预检资产清单，缺清单直接 `missing_assets`，不删任何图
+- **扫描器一起修**：改为**安全阶段白名单** `_SAFE_STAGES=('prepared','saved')`（未知/缺失/损坏一律 fail closed）；**按目录枚举**而非 `*/state.json`（修掉「manifest 能确认同商品但 state 文件缺失」被完全漏掉）；读取要求 JSON **对象**（数组根节点会让 `.get()` 抛 AttributeError，而且是别的商品的记录误伤无关运行）
+- 测试：**116 项 Python + 24 项 jsdom 全过**（新增 2 项）
+
 ### T-20261022-007 · 194-54 · 按 Codex 评审修 title apply 的 P1 缺陷 ＋ 追溯补档
 
 - 状态：done（代码已提交）；`title apply` 真实写入路径仍为 **review**，待下个授权商品首次验收。
