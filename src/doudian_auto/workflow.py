@@ -11,13 +11,15 @@ _MATERIAL_MARK = 'ecom-shop-material/'
 def resource_key(url):
     """Normalize a material CDN URL to the identity of the underlying asset.
 
-    The same asset is served under different path prefixes (`/obj/`, `/img/`, none)
-    and with different rendition suffixes (`~tplv-...q75.image|.avis`, `~750x0_q90_b0.jpg`)
-    depending on which component rendered it, so literal URL comparison reports false
-    mismatches. Both sides of every comparison must pass through this function; the
-    origin is kept because different CDN hosts are not merged. Non-material strings
-    (and already-normalised keys) are returned unchanged, which keeps older
-    state.json / before.json records comparable.
+    The same asset is served under different path prefixes (`/obj/`, `/img/`, none),
+    with different rendition suffixes (`~tplv-...q75.image|.avis`, `~750x0_q90_b0.jpg`),
+    and from rotating CDN hosts (`p3-aio` / `p6-aio` / `p9-aio`). Measured on the live
+    page, one asset id moved from `p3-aio` to `p6-aio` between two reads while the bytes
+    were unchanged, so keeping the host produced false "commercial field changed" alarms.
+    The asset id is content-addressed (`jpeg_m_<hash>_sx_<size>_www<W>-<H>`), which is
+    what actually identifies the image, so identity is the asset id alone.
+    Non-material strings (and already-normalised keys) are returned unchanged, which
+    keeps older state.json / before.json records comparable.
     """
     if not isinstance(url, str) or not url:
         return url
@@ -29,7 +31,7 @@ def resource_key(url):
     if index < 0:
         return url
     asset = parsed.path[index + len(_MATERIAL_MARK):].split('~', 1)[0]
-    return '{0}://{1}/{2}{3}'.format(parsed.scheme, parsed.netloc, _MATERIAL_MARK, asset)
+    return asset
 
 
 def _normalize_images(value):
@@ -313,7 +315,9 @@ class Workflow:
                     'job_dir': str(self.job),
                     'notice': '核验读到的是草稿而非线上版本；线上是否生效需以平台审核结果为准。'}
         self.save('saved', verified_at=time.time(), last_error=None, content_scope='unknown',
-                  review_status=self.state.get('review_status') or 'unknown')
+                  # A clean page with no rejection mark means the resubmission cleared it;
+                  # carrying a historical `rejected` forward would misreport the live state.
+                  review_status='pending')
         return {'stage': 'saved', 'verified': True, 'job_dir': str(self.job), 'coverage': current.get('coverage'), 'notice': '已重开编辑页核验；消费者端生效仍以平台审核为准。'}
 
     def verify(self):

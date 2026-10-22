@@ -253,13 +253,20 @@ def test_identity_or_title_drift_blocks_submit(job,field,value):
 
 
 def test_resource_key_normalizes_material_url_variants():
-    base = 'https://p3-aio.ecombdimg.com/ecom-shop-material/jpeg_m_abc_sx_487564_www1024-1536'
-    assert resource_key('https://p3-aio.ecombdimg.com/obj/ecom-shop-material/jpeg_m_abc_sx_487564_www1024-1536') == base
-    assert resource_key('https://p3-aio.ecombdimg.com/img/ecom-shop-material/jpeg_m_abc_sx_487564_www1024-1536~750x0_q90_b0.jpg') == base
-    assert resource_key(base + '~tplv-qzsgku4lz6-fxg-image:0:q75.image') == base
-    assert resource_key(base + '~tplv-qzsgku4lz6-fxg-image:0:q75.avis') == base
-    assert resource_key(base + '?resize=600') == base
-    assert resource_key('https://other.example/ecom-shop-material/jpeg_m_abc_sx_487564_www1024-1536') != base
+    # Identity is the content-addressed asset id: prefix, rendition suffix, query and
+    # rotating CDN host are all decoration around the same bytes.
+    base = 'jpeg_m_abc_sx_487564_www1024-1536'
+    assert resource_key('https://p3-aio.ecombdimg.com/ecom-shop-material/' + base) == base
+    assert resource_key('https://p3-aio.ecombdimg.com/obj/ecom-shop-material/' + base) == base
+    assert resource_key('https://p3-aio.ecombdimg.com/img/ecom-shop-material/' + base + '~750x0_q90_b0.jpg') == base
+    assert resource_key('https://p3-aio.ecombdimg.com/ecom-shop-material/' + base + '~tplv-qzsgku4lz6-fxg-image:0:q75.image') == base
+    assert resource_key('https://p3-aio.ecombdimg.com/ecom-shop-material/' + base + '~tplv-qzsgku4lz6-fxg-image:0:q75.avis') == base
+    assert resource_key('https://p3-aio.ecombdimg.com/ecom-shop-material/' + base + '?resize=600') == base
+    # The live page rotated this asset from p3-aio to p6-aio without changing the bytes;
+    # treating that as a different image produced false commercial-change alarms.
+    assert resource_key('https://p6-aio.ecombdimg.com/ecom-shop-material/' + base) == base
+    assert resource_key('https://p9-aio.ecombdimg.com/obj/ecom-shop-material/' + base) == base
+    # A different asset must still be a different identity.
     assert resource_key('https://p3-aio.ecombdimg.com/ecom-shop-material/jpeg_m_xyz_sx_487564_www1024-1536') != base
     assert resource_key('plain-value') == 'plain-value'
     assert resource_key('') == ''
@@ -669,3 +676,17 @@ def test_verify_on_a_clean_live_page_still_claims_saved(job):
     assert result['stage'] == 'saved'
     assert result['verified'] is True
     assert read_json(job/'state.json')['stage'] == 'saved'
+
+
+def test_verify_after_a_clean_resubmission_clears_the_historical_rejection(job):
+    editor = FakeEditor()
+    flow(job, editor).upload(True)
+    flow(job, editor).submit(True)
+    # A prior rejection was recorded, then the product was resubmitted and read back clean.
+    state = read_json(job/'state.json')
+    state['review_status'] = 'rejected'
+    write_json(job/'state.json', state)
+    result = flow(job, editor).verify()
+    assert result['verified'] is True
+    # Carrying the old `rejected` forward would misreport the live state.
+    assert read_json(job/'state.json')['review_status'] == 'pending'
