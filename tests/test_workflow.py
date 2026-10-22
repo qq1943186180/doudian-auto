@@ -690,3 +690,78 @@ def test_verify_after_a_clean_resubmission_clears_the_historical_rejection(job):
     assert result['verified'] is True
     # Carrying the old `rejected` forward would misreport the live state.
     assert read_json(job/'state.json')['review_status'] == 'pending'
+
+
+# --- cross-job protection ---------------------------------------------------
+# The manifest is content-addressed, so a new title produces a new job_id. Per-job
+# guards cannot stop a second publish: the new version starts at `prepared` and would
+# sail past the old job's `submitting` state. These tests pin the cross-job check.
+
+def sibling_job(job, stage, title=None):
+    """Create a second job for the same product, as changing the title would."""
+    from doudian_auto.jobs import DATA_ROOT  # noqa: F401  (kept for symmetry)
+    import json as _json
+    manifest = load_job(job)
+    twin = job.parent / (manifest['product_id'] + '-sibling')
+    twin.mkdir(parents=True, exist_ok=True)
+    altered = dict(manifest, job_id=twin.name,
+                   title=title or (manifest['title'] + '改'))
+    write_json(twin / 'manifest.json', altered)
+    write_json(twin / 'state.json', {'stage': stage,
+                                     'content_hash': altered['content_hash'],
+                                     'updated_at': time.time()})
+    return twin
+
+
+@pytest.mark.parametrize('stage', ['submitting', 'submitted', 'editing', 'uploaded', 'rejected'])
+def test_a_sibling_job_holding_an_unresolved_stage_blocks_upload(job, stage):
+    editor = FakeEditor()
+    sibling_job(job, stage)
+    with pytest.raises(DoudianError) as exc:
+        flow(job, editor).upload(True)
+    assert exc.value.code == 'product_job_conflict'
+    # Nothing was written to the listing.
+    assert editor.replacements == []
+
+
+def test_a_sibling_stuck_in_unknown_submit_is_named_in_the_error(job):
+    sibling = sibling_job(job, 'submitting')
+    state = read_json(sibling / 'state.json')
+    state['submission_status'] = 'unknown'
+    write_json(sibling / 'state.json', state)
+    with pytest.raises(DoudianError) as exc:
+        flow(job, FakeEditor()).upload(True)
+    assert '提交结果未知' in str(exc.value)
+    assert sibling.name in str(exc.value)
+
+
+@pytest.mark.parametrize('stage', ['prepared', 'saved'])
+def test_finished_or_unstarted_siblings_do_not_block(job, stage):
+    sibling_job(job, stage)
+    editor = FakeEditor()
+    flow(job, editor).upload(True)
+    assert editor.replacements == ['mains', 'details']
+
+
+def test_a_different_product_never_blocks(job):
+    import json as _json
+    manifest = load_job(job)
+    other = job.parent / '3793430313384935495-other'
+    other.mkdir(parents=True, exist_ok=True)
+    write_json(other / 'manifest.json', dict(manifest, job_id=other.name,
+                                             product_id='3793430313384935495'))
+    write_json(other / 'state.json', {'stage': 'submitting', 'content_hash': 'x',
+                                      'updated_at': time.time()})
+    editor = FakeEditor()
+    flow(job, editor).upload(True)
+    assert editor.replacements == ['mains', 'details']
+
+
+def test_submit_also_refuses_when_a_sibling_is_unresolved(job):
+    editor = FakeEditor()
+    flow(job, editor).upload(True)
+    sibling_job(job, 'submitting')
+    with pytest.raises(DoudianError) as exc:
+        flow(job, editor).submit(True)
+    assert exc.value.code == 'product_job_conflict'
+    assert editor.publishes == 0  # nothing was published at all

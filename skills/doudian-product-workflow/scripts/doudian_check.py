@@ -5,13 +5,34 @@ import json
 from pathlib import Path
 import re
 import sys
-import unicodedata
 
 def read_json(path):
     return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 
+def load_title_rules():
+    """Use the installed package as the single source of truth for title rules.
+
+    There used to be a second copy of the counting function here. Two implementations
+    of one platform limit drift apart silently -- the local copy allowed 15 units while
+    the documented floor is 16, so titles passed this script and failed on submit. The
+    script therefore requires the installed package instead of keeping its own copy,
+    and says how to fix the environment rather than falling back to a stale version.
+    """
+    try:
+        from doudian_auto import title as title_rules
+    except ImportError:
+        sys.stderr.write(
+            '需要已安装的 doudian_auto 包（标题规则以它为准）。\n'
+            '请用项目虚拟环境运行，例如：\n'
+            '  <repo>/.venv/Scripts/python.exe scripts/doudian_check.py ...\n'
+            '若尚未安装：powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1\n'
+        )
+        raise SystemExit(2)
+    return title_rules
+
 def title_units(title):
-    return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in title)
+    """Kept for callers that only need the count; the rule itself lives in the package."""
+    return load_title_rules().title_units(title)
 
 def asset_check(args):
     from PIL import Image
@@ -64,9 +85,12 @@ def asset_check(args):
                 name = record.get('name') or record.get('file')
                 if name not in actual or record.get('sha256') != actual[name]['sha256']:
                     errors.append(f'{name}: missing file or manifest hash mismatch')
-    units = title_units(args.title) if args.title else None
-    if units is not None and not 15 <= units <= 60:
-        errors.append('Title must contain 15..60 platform character units')
+    units = None
+    if args.title:
+        # Delegate to the shared rule so the bounds cannot drift from the CLI again.
+        rules = load_title_rules()
+        units, title_errors = rules.validate_title(args.title)
+        errors.extend(title_errors)
     return {'ok': not errors, 'mode': 'offline_assets', 'directory': str(root), 'title_units': units, 'main_count': main_count, 'detail_count': detail_count, 'assets': records, 'errors': errors, 'requires_visual_review': True}
 
 def snapshot_compare(args):
@@ -88,6 +112,11 @@ def snapshot_compare(args):
             errors.append(f'{sid}: captured commercial fields changed or incomplete')
     images = [i for s in after.get('sections', []) for i in s.get('images', [])]
     def urls(field):
+        # Legacy-format snapshots carry no slot index, so identical URLs can only be
+        # collapsed here. This is a compatibility check, not the current contract: the
+        # CLI reads detail images per slot and deliberately keeps duplicates, because a
+        # listing may legitimately reuse one asset in two slots. Do not read a pass here
+        # as "the live CLI would accept this ordering".
         return list(dict.fromkeys(i.get('src') for i in images if i.get('field') == field and i.get('w', 0) >= 600 and i.get('src', '').startswith('https://') and 'ecom-shop-material/' in i.get('src', '')))
     mains, details = urls('主图'), urls('商品详情')
     if len(mains) != 5:

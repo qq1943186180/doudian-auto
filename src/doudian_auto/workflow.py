@@ -175,6 +175,55 @@ class Workflow:
     def baseline(self):
         return read_json(self.job / 'before.json')
 
+    # Stages where a sibling job may still own a live edit of the product, or hold a
+    # submit whose outcome was never confirmed. `prepared` never touched the listing and
+    # `saved` is a finished version, so neither blocks a new one.
+    _UNRESOLVED = ('submitting', 'submitted', 'editing', 'uploaded', 'rejected')
+
+    def unresolved_siblings(self):
+        """Other jobs for the same product that are not safe to leave behind.
+
+        The manifest is content-addressed, so changing the title produces a *new*
+        job_id. Per-job guards alone therefore cannot stop a second publish: a new
+        version starts at `prepared` and would sail past the old job's `submitting`
+        state. The global browser lock only prevents concurrent writes, not two
+        versions shipping one after another, so the cross-job check has to be explicit.
+        """
+        blockers = []
+        for state_path in sorted(self.job.parent.glob('*/state.json')):
+            sibling = state_path.parent
+            if sibling.resolve() == self.job:
+                continue
+            try:
+                manifest = read_json(sibling / 'manifest.json')
+                state = read_json(state_path)
+            except (OSError, ValueError):
+                # An unreadable sibling is not evidence of safety, but it also carries no
+                # manifest to compare; leave it to the per-job checks.
+                continue
+            if manifest.get('product_id') != self.manifest['product_id']:
+                continue
+            stage = state.get('stage')
+            if stage in self._UNRESOLVED:
+                blockers.append({'job_dir': str(sibling), 'stage': stage,
+                                 'title': manifest.get('title'),
+                                 'submission_status': state.get('submission_status')})
+        return blockers
+
+    def guard_sibling_jobs(self):
+        blockers = self.unresolved_siblings()
+        if not blockers:
+            return
+        detail = '；'.join(
+            '{0}（{1}{2}）'.format(Path(b['job_dir']).name, b['stage'],
+                                  '，提交结果未知' if b['submission_status'] == 'unknown' else '')
+            for b in blockers
+        )
+        raise DoudianError(
+            'product_job_conflict',
+            '同商品还有未完成的任务：{0}。请先对它们运行verify或处理完，再开始新版本；'
+            '新任务不能绕过旧任务的提交保护。'.format(detail))
+
     def reload(self):
         # A second process may have constructed this object before the first released its lock.
         current_manifest = load_job(self.job)
@@ -191,6 +240,7 @@ class Workflow:
             self.reload()
             if self.state['stage'] in ('submitting', 'submitted', 'saved', 'rejected'):
                 raise DoudianError('verify_required', '任务已进入提交阶段，请运行verify；不重复上传或发布。')
+            self.guard_sibling_jobs()
             current = self.editor.open(self.manifest)
             if current.get('success'):
                 raise DoudianError('verify_required', '当前是提交成功页，请先核验已有任务。')
@@ -229,6 +279,7 @@ class Workflow:
                 raise DoudianError('platform_rejected', '商品已被平台驳回，需先处理驳回原因；不重复发布。')
             if self.state['stage'] != 'uploaded':
                 raise DoudianError('not_uploaded', '仅uploaded状态可发布；提交结果不明时先verify。')
+            self.guard_sibling_jobs()
             current = self.editor.open(self.manifest)
             if current.get('success'):
                 raise DoudianError('verify_required', '当前是提交成功页，请先核验已有任务。')

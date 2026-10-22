@@ -50,6 +50,13 @@ def parser():
     browser = sub.add_parser('browser', help='只读页面检查入口')
     browser.add_argument('action', choices=['snapshot', 'inspect'])
     browser.add_argument('--selector')
+    title = sub.add_parser('title', help='标题本地校验与诊断；不生成文案、不联网')
+    title_sub = title.add_subparsers(dest='title_command', required=True)
+    title_check = title_sub.add_parser('check', help='只跑确定性规则（长度/空白/控制字符）')
+    title_check.add_argument('--title', required=True)
+    title_diagnose = title_sub.add_parser('diagnose', help='在确定性规则外，对照已确认事实给出提示')
+    title_diagnose.add_argument('--title', required=True)
+    title_diagnose.add_argument('--facts', help='已确认事实JSON；省略时只做无事实对照的诊断')
     sub.add_parser('gui', help='打开中文桌面窗口')
     unlock = sub.add_parser('unlock', help='仅清除所属进程已结束的操作锁')
     unlock.add_argument('--job', help='同时清理此任务的job.lock')
@@ -108,6 +115,31 @@ def unlock(job=None):
     return {'removed': removed}
 
 
+def run_title(args):
+    """Offline title checking. Never touches a browser, never writes a job.
+
+    Deterministic errors raise so the exit code is non-zero; warnings alone pass. The
+    payload states plainly that a local pass is not platform approval.
+    """
+    from . import title as title_rules
+
+    facts = None
+    if getattr(args, 'facts', None):
+        payload = read_json(Path(args.facts))
+        facts = title_rules.TitleFacts(payload)
+    if args.title_command == 'check':
+        units, errors = title_rules.validate_title(args.title)
+        if errors:
+            raise DoudianError('invalid_title', '；'.join(errors))
+        return {'ok': True, 'title': args.title, 'units': units,
+                'limits': {'min': title_rules.MIN_UNITS, 'max': title_rules.MAX_UNITS},
+                'next': '仅通过本地确定性规则；平台合规以发布检查为准。'}
+    report = title_rules.diagnose_title(args.title, facts)
+    if report['errors']:
+        raise DoudianError('invalid_title', '；'.join(report['errors']))
+    return report
+
+
 def run(args):
     if args.command == 'gui':
         from .gui import launch
@@ -127,6 +159,10 @@ def run(args):
         return {'job_dir': str(Path(args.job).resolve()), 'product_id': data['product_id'], 'state':read_json(Path(args.job) / 'state.json')}
     if args.command == 'unlock':
         return unlock(args.job)
+    if args.command == 'title':
+        # Handled before the bridge is constructed: title work is offline and must
+        # not require a browser session.
+        return run_title(args)
     bridge = Bridge(args.endpoint)
     if args.command == 'doctor':
         status = bridge.status()

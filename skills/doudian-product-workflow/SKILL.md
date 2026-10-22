@@ -25,11 +25,26 @@ doudian-auto --json upload '<上一步返回的job_dir>' --apply
 
 浏览器页签属于每个任务的独立会话，组名「抖店本地上传」；只有用户要求时才关闭。上传中断可重跑upload，已核对的图片跳过，来源不明的部分清空重传。状态submitting表示提交结果未知，只运行verify与只读检查，禁止改状态后盲目重新发布。锁所属进程已结束才能使用unlock；仍在运行不删除锁。
 
-当前版本已完成本地模拟与离线测试；真实Kimi上传适配器试传尚待用户连接扩展。首次联调先做只读连接/页面检查，不因测试程序重传此前已提交的4款商品。
+**同一商品只允许一个未完成任务。** 任务ID由内容哈希决定，改标题必然生成新任务；若旧任务仍处于 `submitting`/`submitted`/`editing`/`uploaded`/`rejected` 之一，`upload` 与 `submit` 会直接拒绝（`product_job_conflict`）。这是防止用新任务绕过旧任务提交保护的唯一手段——全局锁只挡并发，挡不住先后两次发布。遇到该错误先对旧任务 `verify` 或处理完，不要删除旧任务目录来强行推进。
+
+已完成一次真实链路：2026-10-22 商品 3784643089604411407 跑通 `prepare → upload --apply → submit --apply → verify`（`stage=saved`），期间被平台以「类目与商品实际类目不符」驳回，改类目后重新提交成功。**审核结果仍待平台确认**，且这只能说明该商品该路径已适配，不代表所有商品、所有类目都已适配。首次联调先做只读连接/页面检查，不因测试程序重传此前已提交的4款商品。
+
+## 标题
+
+`doudian-auto title` 是离线命令，不需要浏览器，也不写任务。
+
+```powershell
+doudian-auto --json title check --title '<标题>'
+doudian-auto --json title diagnose --title '<标题>' --facts <已确认事实.json>
+```
+
+平台口径（抖音电商学习中心）：**8–30 个汉字，即 16–60 个字符**。`check` 只跑确定性规则（长度、首尾空白、控制字符）；`diagnose` 额外对照已确认事实给出提示：绝对化或需资质证明的表述、标题内宣传价格（平台明确禁止）、物品概述词（百货/孤品/套装/链接/好物/秒杀专项）、重复用词、模糊规格、无依据的数值、已确认却未使用的属性。
+
+这个命令**不生成标题**，也不宣称平台合规——本地通过不等于平台会通过。标题仍由人或模型撰写，命令只负责挡住确定性错误并暴露无法确认的部分。选定标题后再 `prepare`，不要事后改 manifest：标题参与 `content_hash`，改标题等于换新任务。
 
 ## 本地工具
 
-`scripts/doudian_check.py` 不联网、不调用模型、不修改店铺。使用已安装 Pillow 的 Python。
+`scripts/doudian_check.py` 不联网、不调用模型、不修改店铺。标题规则以已安装的 `doudian_auto` 包为准，因此**必须用项目虚拟环境的 Python 运行**（例如 `<repo>/.venv/Scripts/python.exe`）；缺包时脚本会退出并提示安装方式，不会退回另一份规则副本。
 
 ```powershell
 python scripts/doudian_check.py assets <素材目录> --title '<新标题>' --out <检查结果.json>

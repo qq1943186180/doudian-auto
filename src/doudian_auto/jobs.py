@@ -4,12 +4,12 @@ import os
 from pathlib import Path
 import re
 import time
-import unicodedata
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from PIL import Image
 
 from .errors import DoudianError
+from .title import validate_title
 
 DATA_ROOT = Path.home() / '.doudian-auto'
 HOST = 'fxg.jinritemai.com'
@@ -68,9 +68,10 @@ def prepare(asset_dir, title, edit_url, shop, jobs_root=None):
     product = resolve_product(edit_url)
     if 'edit_url' not in product or not shop.strip():
         raise DoudianError('missing_identity', '需要编辑链接和店铺名称。')
-    units = sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in title)
-    if not 15 <= units <= 60:
-        raise DoudianError('invalid_title', '标题需15至60个平台字符。')
+    # One source of truth for the length rule; see title.py for the official bounds.
+    _, title_errors = validate_title(title)
+    if title_errors:
+        raise DoudianError('invalid_title', '；'.join(title_errors))
     folder = Path(asset_dir).resolve()
     if not folder.is_dir():
         raise DoudianError('missing_assets', '素材目录不存在。')
