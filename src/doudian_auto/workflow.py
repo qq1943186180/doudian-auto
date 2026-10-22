@@ -103,7 +103,10 @@ def _content(section):
 # version must never write to a listing while an older job's outcome is unknown, and a
 # stage this code does not recognise is not evidence that the job finished. Keeping the
 # safe list short is what makes newly added stages fail closed rather than open.
-_SAFE_STAGES = ('prepared', 'saved')
+#
+# `abandoned` is here because it is a terminal stage reached only by a human stating a
+# reason, with the baseline hash written down -- not because the job quietly drained away.
+_SAFE_STAGES = ('prepared', 'saved', 'abandoned')
 
 
 def unresolved_siblings(jobs_root, product_id, exclude=None):
@@ -231,17 +234,32 @@ def compare_images_unchanged(before, after):
     recorded as a gap: two empty lists comparing equal is not evidence, and the detail
     panel never rendering is a known state on some listings.
     """
+    gaps = []
+    mains_before = [resource_key(u) for u in before.get('mains') or []]
+    mains_after = [resource_key(u) for u in after.get('mains') or []]
+    if mains_before and mains_after:
+        if mains_before != mains_after:
+            raise DoudianError('images_changed', '主图地址或顺序与改标题前不一致，已停止提交。')
+    elif mains_before or mains_after:
+        # One side observed main images and the other did not; that gap is itself a change,
+        # and it is exactly what a partially rendered page would look like.
+        raise DoudianError('images_changed', '主图在两次读取之间从有到无（或反过来），已停止提交。')
+    else:
+        gaps.append('主图两次读取均为空列表，未观测到主图，不声称图片未变。')
+
     before_status = before.get('detail_status')
     after_status = after.get('detail_status')
     if before_status == 'ready' and after_status == 'ready':
-        for kind in ('mains', 'details'):
-            if ([resource_key(u) for u in before.get(kind) or []]
-                    != [resource_key(u) for u in after.get(kind) or []]):
-                raise DoudianError('images_changed', '图片地址或顺序与改标题前不一致，已停止提交。')
-        return 'verified_unchanged', None
-    return ('not_verified',
-            '图片未核验：详情图数据源一侧未就绪（改前={0}，改后={1}）。'
-            '两个空数组相等不是证据，因此本次不声称图片未变。'.format(before_status, after_status))
+        details_before = [resource_key(u) for u in before.get('details') or []]
+        details_after = [resource_key(u) for u in after.get('details') or []]
+        if details_before != details_after:
+            raise DoudianError('images_changed', '详情图地址或顺序与改标题前不一致，已停止提交。')
+    else:
+        # The detail source never rendering is a known state on some listings, so this
+        # is recorded as a limit on what was checked, never as proof of equality.
+        gaps.append('详情图数据源一侧未就绪（改前={0}，改后={1}），本次不核验详情图。'.format(
+            before_status, after_status))
+    return ('verified_unchanged' if not gaps else 'not_verified', ' '.join(gaps) or None)
 
 
 def match_content(manifest, state, snapshot):

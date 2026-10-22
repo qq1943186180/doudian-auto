@@ -243,6 +243,20 @@ def test_a_phrase_repeated_inside_one_spec_value_still_counts():
     assert any('重复' in w for w in report['warnings'])
 
 
+def test_a_value_repeated_twice_still_counts_when_a_shorter_value_is_a_substring():
+    # Regression: with both 2件套 and 12件套 confirmed, substring matching treated
+    # 2件套 as present inside 12件套 and excused duplicating 12件套.
+    facts = TitleFacts({'confirmed': {'specs': {'件数': ['2件套', '12件套']}}})
+    report = diagnose_title('折叠扫把簸箕12件套12件套家用扫地刮水器不锈钢杆', facts)
+    assert any('重复' in w for w in report['warnings'])
+
+
+def test_two_different_values_are_still_excused():
+    facts = TitleFacts({'confirmed': {'specs': {'件数': ['2件套', '3件套']}}})
+    report = diagnose_title('折叠扫把簸箕2件套3件套家用扫地刮水器不锈钢杆', facts)
+    assert not any('重复' in w for w in report['warnings'])
+
+
 # --- title apply ------------------------------------------------------------
 # The revision workflow always replaces images, so a listing needing only a title
 # change had no supported path. `title apply` fills that gap; these tests pin the
@@ -453,7 +467,9 @@ def _publish_result_cases():
     return [
         ({'state': 'accepted'}, 'submitted', 'accepted'),
         ({'state': 'rejected', 'rejection_reasons': ['类目不符']}, 'rejected', 'accepted'),
-        ({'state': 'validation_failed', 'errors': ['必填项缺失']}, 'prepared', 'not_submitted'),
+        # `uploaded` here only means "content ready, retry this same job"; a title-only
+        # task stages no assets, so it is not a claim that anything was uploaded.
+        ({'state': 'validation_failed', 'errors': ['必填项缺失']}, 'uploaded', 'not_submitted'),
         ({'state': 'unknown'}, 'submitting', 'unknown'),
     ]
 
@@ -557,6 +573,63 @@ def test_replacing_images_without_an_asset_list_deletes_nothing():
                         lambda: None)
     assert exc.value.code == 'missing_assets'
     assert bridge.evaluate_calls == []
+
+
+def test_a_stopped_title_job_can_be_resumed_from_the_same_job(apply_run, capsys):
+    from doudian_auto.workflow import Workflow
+    from doudian_auto.jobs import read_json as load
+    # Simulate an interruption right after fill_title: the job blocks its product and
+    # `verify` refuses it, so the only way out is to continue the same job.
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='editing',
+                                        last_error='simulated_interrupt'))
+    with pytest.raises(DoudianError):
+        Workflow(job, apply_run['editor'], lock_root=apply_run['jobs'].parent).verify()
+    from doudian_auto.cli import main
+    assert main(['--json', 'title', 'resume', str(job), '--apply']) == 0
+    assert load(job / 'state.json')['stage'] == 'submitted'
+    # Resume reuses the job: no second directory, and the old baseline survives.
+    assert len(_job_dirs(apply_run['jobs'])) == 1
+    assert load(job / 'before.json')['product_id'] == PID
+
+
+def test_resume_refuses_a_job_already_in_submitting(apply_run, capsys):
+    from doudian_auto.jobs import read_json as load
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='submitting',
+                                        submission_status='unknown'))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'resume', str(job), '--apply']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'not_resumable'
+
+
+def test_abandon_records_the_reason_and_releases_the_product(apply_run, capsys):
+    from doudian_auto.jobs import read_json as load
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='editing'))
+    from doudian_auto.cli import main
+    assert main(['--json', 'title', 'abandon', str(job), '--reason',
+                 '人工核对页面：标题已生效，草稿已清除']) == 0
+    record = load(job / 'abandon.json')
+    assert record['reason'].startswith('人工核对页面')
+    assert record['declared_by']
+    assert record['before_sha256']
+    assert load(job / 'state.json')['stage'] == 'abandoned'
+    # A released product may start fresh work again.
+    assert apply_run['run']() == 0
+
+
+def test_abandon_requires_a_stated_reason(apply_run, capsys):
+    assert apply_run['run']() == 0
+    job = str(_single_job(apply_run['jobs']))
+    from doudian_auto.cli import main
+    assert main(['--json', 'title', 'abandon', job]) != 0
+
+
 
 
 def test_a_title_job_can_be_loaded_and_verified(apply_run, capsys):

@@ -59,7 +59,21 @@ doudian-auto --json title apply --url '<编辑链接或商品ID>' --shop '<店�
 - 页面标题已等于目标标题时返回 `noop`，不做无谓提交
 - `verify` 对这类任务可用：重开核验标题与保留字段，并如实记录图片核验范围（详情图源未就绪时记 `not_verified`，不把两个空数组当成「图片未变」）
 
-**真实写入路径尚未在真实商品上验收**（见 HANDOFF T-20261022-006）：首次用于授权商品时按「先 dry-run，再 `--apply`，提交后立刻 `verify`」的顺序走。
+- **基线来自独立新页**（`open(fresh=True)`）。默认 `open()` 会复用该商品已有的标签页，里面可能有敲了但没提交的输入，而且**没有草稿黄条**。把这种页面当成「改前」会让后续所有比对失去意义，发布时还会把那些改动一起带上去。
+- **页面存在草稿（`draft_loaded`）或驳回（`rejected`）时先停止**，由人工确认归属并处理，不在这种状态下写入。
+
+**中断后怎么收尾**：task 停在 `editing` 会持续占用该商品（这是有意的，页面可能带着已敲入的标题），而 `verify` 不受理 `editing`。两条出口：
+
+```powershell
+doudian-auto --json title resume '<job_dir>' --apply   # 续跑同一任务：复用原 manifest 与原 before.json
+doudian-auto --json title abandon '<job_dir>' --reason '<原因>'   # 人工核对页面后放弃占用
+```
+
+- `resume` 不新建任务、不重新采基线覆盖旧证据；标题按不可变 manifest 重新填写，因此不依赖上一个标签页里未保存的输入是否还在。
+- 已进入 `submitting` 或之后阶段的任务**不能** resume，只能 `verify`——发布点击已经出去了，不能靠续跑再点一次。
+- `abandon` 会落盘 `abandon.json`（原因、操作者、manifest 内容哈希、before.json 哈希）并进入终态 `abandoned`；**只是记录决策，不碰线上商品**，遗留草稿和脏页仍由人工处理。
+
+**真实写入路径尚未在真实商品上验收**（见 HANDOFF T-20261022-008）：首次用于授权商品时按「先 dry-run，再 `--apply`，提交后立刻 `verify`」的顺序走。
 
 ## 本地工具
 

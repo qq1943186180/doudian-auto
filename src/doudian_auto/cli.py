@@ -64,6 +64,19 @@ def parser():
     title_apply.add_argument('--title', required=True)
     title_apply.add_argument('--facts', help='已确认事实JSON，用于诊断')
     title_apply.add_argument('--apply', action='store_true', help='真正写入并发布；省略时只校验')
+    # Resume exists because a title job that stops mid-write leaves the listing blocked:
+    # starting a new job instead would not be blocked either, it would just be a second
+    # change layered on an unfinished one. Recovery therefore has to reuse the same job.
+    title_resume = title_sub.add_parser('resume', help='续跑中断的只改标题任务，复用原任务与原基线')
+    title_resume.add_argument('job')
+    title_resume.add_argument('--apply', action='store_true', help='真正写入并发布；省略时只输出计划')
+    # Abandon is the deliberate, recorded exit when a human has checked the page and the
+    # hold must be released. Never automatic, never without a stated reason.
+    title_abandon = title_sub.add_parser('abandon', help='人工确认页面后放弃该任务对商品的占用')
+    title_abandon.add_argument('job')
+    title_abandon.add_argument('--reason', required=True, help='放弃原因，会落盘留存')
+    title_abandon.add_argument('--operator', default=os.environ.get('USERNAME') or 'unknown',
+                               help='操作者，默认当前本机用户名')
     sub.add_parser('gui', help='打开中文桌面窗口')
     unlock = sub.add_parser('unlock', help='仅清除所属进程已结束的操作锁')
     unlock.add_argument('--job', help='同时清理此任务的job.lock')
@@ -143,10 +156,114 @@ def run_title(args):
                 'next': '仅通过本地确定性规则；平台合规以发布检查为准。'}
     if args.title_command == 'apply':
         return run_title_apply(args)
+    if args.title_command == 'resume':
+        return run_title_resume(args)
+    if args.title_command == 'abandon':
+        return run_title_abandon(args)
     report = title_rules.diagnose_title(args.title, facts)
     if report['errors']:
         raise DoudianError('invalid_title', '；'.join(report['errors']))
     return report
+
+
+# A title-only job that stopped before publishing blocks its product on purpose. Two ways
+# out, both deliberate: continue the same job, or record that a human checked the page and
+# the hold can be released.
+_RESUMABLE_STAGES = ('prepared', 'editing', 'uploaded')
+
+
+def _state_writer(job, state):
+    def save(stage=None, **fields):
+        state.update(fields)
+        if stage:
+            state['stage'] = stage
+        state['updated_at'] = time.time()
+        write_json(job / 'state.json', state)
+
+    return save
+
+
+def _baseline(editor, manifest):
+    """Read the listing in its own fresh tab, and refuse an unresolved page.
+
+    `fresh=True` issues `navigate(newTab=True)` -- a new tab, not a reload or a close of
+    the old one. The default `open()` reuses any existing tab for this product, and such a
+    tab can hold inputs that were typed but never submitted, with no draft banner to show
+    it. Capturing that as "before" would make every later comparison meaningless, and a
+    publish would then ship those edits along with the title.
+    """
+    snapshot = editor.open(manifest, fresh=True)
+    if snapshot.get('success'):
+        raise DoudianError('verify_required', '当前是提交成功页，请先核验已有任务。')
+    if snapshot.get('rejected'):
+        raise DoudianError('platform_rejected', '商品存在未处理的驳回，先处理驳回再改标题：' + (
+            '；'.join(snapshot.get('rejection_reasons') or []) or '详见页面驳回原因'))
+    if snapshot.get('draft_loaded'):
+        raise DoudianError('draft_pending',
+                           '该商品有未发布的草稿，草稿里的改动（价格、图片等）会随本次发布一起提交。'
+                           '请先人工确认草稿归属并处理，再运行 title apply。')
+    return snapshot
+
+
+def _write_and_publish_title(job, manifest, state, save, editor, before, report):
+    """Fill the title, re-run every gate, then click publish exactly once.
+
+    Shared by `apply` and `resume` so the two paths cannot drift apart: a resumed run
+    must pass the same identity, protected-field, image and final-title checks as a
+    fresh one. Every failure below leaves the job in a blocking stage, because the page
+    already carries the typed title.
+    """
+    from .workflow import compare_images_unchanged, compare_protected, match_content
+
+    save('editing')
+    editor.fill_title(manifest)
+    try:
+        checked = editor.check(manifest)
+    except DoudianError as exc:
+        # Keep the platform's own code: a transport failure is not a validation failure.
+        save('editing', submission_status='not_submitted', last_error=exc.code)
+        raise
+    write_json(job / 'checked.json', checked)
+    try:
+        scope, note = compare_images_unchanged(before, checked)
+        save('editing', image_scope=scope, image_scope_note=note)
+        compare_protected(before, checked)
+        # The title is compared against the task, not merely accepted as typed: it is
+        # the one field this run is allowed to change, so it is the one field that must
+        # be provably right on the page before publishing.
+        match_content(manifest, state, checked)
+    except DoudianError as exc:
+        save('editing', submission_status='not_submitted', last_error=exc.code)
+        raise
+    write_json(job / 'title_record.json', dict(report, before_title=before.get('title'),
+                                               checked_title=checked.get('title'),
+                               recorded_at=time.time()))
+    # Persist before sending: a timeout past this point must reach verify, not re-publish.
+    save('submitting', submission_status='unknown', submitted_at=time.time())
+    result = editor.publish(manifest)
+    result_state = result.get('state')
+    if result_state == 'accepted':
+        save('submitted', submission_status='accepted', review_status='pending')
+    elif result_state == 'rejected':
+        save('rejected', submission_status='accepted', review_status='rejected',
+             rejection_reasons=result.get('rejection_reasons') or [],
+             rejection_observed_at=time.time())
+        raise DoudianError('platform_rejected', '商品已被平台驳回：{0}。任务：{1}'.format(
+            '；'.join(result.get('rejection_reasons') or []) or '详见页面驳回原因', job))
+    elif result_state == 'validation_failed':
+        save('uploaded', submission_status='not_submitted', last_error='platform_validation',
+             validation_errors=result.get('errors') or [])
+        raise DoudianError('platform_validation',
+                           '平台未提交成功，请在页面检查必填项；修好后用 title resume 续跑同一任务。任务：{0}'.format(job))
+    else:
+        save('submitting', submission_status='unknown', last_error='submit_result_unknown')
+        raise DoudianError('submit_result_unknown',
+                           '提交结果尚未确认，请运行verify核对，不要重复发布。任务：{0}'.format(job))
+    try:
+        editor.screenshot(job / 'submitted.png')
+    except DoudianError:
+        pass
+    return state
 
 
 def run_title_apply(args):
@@ -161,7 +278,7 @@ def run_title_apply(args):
     """
     from . import title as title_rules
     from .jobs import make_title_job
-    from .workflow import compare_images_unchanged, compare_protected, guard_siblings, match_content
+    from .workflow import compare_protected, guard_siblings
 
     facts_payload = None
     if getattr(args, 'facts', None):
@@ -196,91 +313,146 @@ def run_title_apply(args):
         job, manifest = make_title_job(product_id, shop, edit_url, args.title, jobs_root)
         with Lock(job / 'job.lock'):
             state = read_json(job / 'state.json')
-
-            def save(stage=None, **fields):
-                state.update(fields)
-                if stage:
-                    state['stage'] = stage
-                state['updated_at'] = time.time()
-                write_json(job / 'state.json', state)
-
+            save = _state_writer(job, state)
             if facts_payload is not None:
                 write_json(job / 'facts.json', facts_payload)
-            # open() navigates and confirms the listing; read() alone would trust
-            # whatever page the session happens to be on.
-            before = editor.open(manifest)
-            if before.get('success'):
-                raise DoudianError('verify_required', '当前是提交成功页，请先核验已有任务。')
-            # Comparing the baseline with itself is the cheap way to insist that every
-            # protected block was actually observed before it is trusted as evidence.
+            # Independently reopened tab: the default open() reuses whatever tab exists for
+            # this product, and that tab can carry inputs typed but never submitted with no
+            # draft banner to show it.
+            before = _baseline(editor, manifest)
+            # Comparing the baseline with itself only proves the capture was complete. It
+            # says nothing about where the values came from -- the fresh tab does that.
             compare_protected(before, before)
             write_json(job / 'before.json', before)
             write_json(job / 'title_record.json', dict(report, before_title=before.get('title'),
                                                        recorded_at=time.time()))
             if before.get('title') == manifest['title']:
+                # Meaningful only on a clean page. Under a draft, returning success here
+                # would claim a change that never reached the listing.
                 save('prepared', submission_status='not_submitted', noop=True,
                      noop_reason='title_already_current')
                 return dict(report, dry_run=False, job_dir=str(job), stage='noop',
                             submission_status='not_submitted',
-                            notice='页面当前标题已是目标标题，未填写、未发布。')
-            # From here on the page is being modified, so the job must block new work on
-            # this product even if the next step fails.
-            save('editing')
-            editor.fill_title(manifest)
-            try:
-                checked = editor.check(manifest)
-            except DoudianError:
-                save('editing', submission_status='not_submitted',
-                     last_error='platform_validation')
-                raise
-            write_json(job / 'checked.json', checked)
-            try:
-                scope, note = compare_images_unchanged(before, checked)
-                save('editing', image_scope=scope, image_scope_note=note)
-                compare_protected(before, checked)
-                # The title is compared against the task, not merely accepted as typed: it
-                # is the one field this run is allowed to change, so it is the one field
-                # that must be provably right on the page before publishing.
-                match_content(manifest, state, checked)
-            except DoudianError as exc:
-                # The page now carries the typed title, so the task stays blocking and the
-                # reason is recorded instead of the run silently becoming publishable again.
-                save('editing', submission_status='not_submitted', last_error=exc.code)
-                raise
-            write_json(job / 'title_record.json', dict(report, before_title=before.get('title'),
-                                                       checked_title=checked.get('title'),
-                                                       recorded_at=time.time()))
-            # Persist before sending: a timeout past this point must reach verify, not re-publish.
-            save('submitting', submission_status='unknown', submitted_at=time.time())
-            result = editor.publish(manifest)
-            result_state = result.get('state')
-            if result_state == 'accepted':
-                save('submitted', submission_status='accepted', review_status='pending')
-            elif result_state == 'rejected':
-                save('rejected', submission_status='accepted', review_status='rejected',
-                     rejection_reasons=result.get('rejection_reasons') or [],
-                     rejection_observed_at=time.time())
-                raise DoudianError('platform_rejected', '商品已被平台驳回：{0}。任务：{1}'.format(
-                    '；'.join(result.get('rejection_reasons') or []) or '详见页面驳回原因', job))
-            elif result_state == 'validation_failed':
-                save('prepared', submission_status='not_submitted', last_error='platform_validation',
-                     validation_errors=result.get('errors') or [])
-                raise DoudianError('platform_validation', '平台未提交成功，请在页面检查必填项。任务：{0}'.format(job))
-            else:
-                # Unknown stays unknown; falling back to `prepared` would re-arm publishing.
-                save('submitting', submission_status='unknown', last_error='submit_result_unknown')
-                raise DoudianError('submit_result_unknown',
-                                   '提交结果尚未确认，请运行verify核对，不要重复发布。任务：{0}'.format(job))
-            try:
-                editor.screenshot(job / 'submitted.png')
-            except DoudianError:
-                pass
-    return dict(report, dry_run=False, job_dir=str(job), stage=state['stage'],
-                submission_status=state['submission_status'],
-                review_status=state.get('review_status'),
-                image_scope=state.get('image_scope'),
-                image_scope_note=state.get('image_scope_note'),
-                notice='已提交，审核周期以平台为准；图片未改动。')
+                            notice='独立重开的编辑页读回已是目标标题，本次未填写、未提交；'
+                                   '这不代表消费者端已生效。')
+            final = _write_and_publish_title(job, manifest, state, save, editor, before, report)
+    scope = final.get('image_scope')
+    notice = ('已提交，审核周期以平台为准；图片未改动。' if scope == 'verified_unchanged'
+              else '已提交，审核周期以平台为准；本次未核验图片，不能声称图片未变。')
+    return dict(report, dry_run=False, job_dir=str(job), stage=final['stage'],
+                submission_status=final['submission_status'],
+                review_status=final.get('review_status'),
+                image_scope=scope,
+                image_scope_note=final.get('image_scope_note'),
+                notice=notice)
+
+
+def run_title_resume(args):
+    """Continue a title-only job that stopped before it was published.
+
+    A job interrupted mid-write blocks its product on purpose, because the page may still
+    carry the typed title. Starting a fresh job would not be blocked either -- it would just
+    be a second change layered on an unfinished one, which is the precise bypass the guard
+    exists to prevent. So recovery reuses the same job: same manifest, same baseline. The
+    title is typed again from the immutable manifest, which means resume does not depend on
+    whether the previous tab's unsubmitted input happened to survive.
+
+    Jobs already in `submitting` or later are refused: once the publish click is out, only
+    `verify` may decide what happened.
+    """
+    from .jobs import sha_file
+    from .workflow import compare_protected, guard_siblings
+
+    job = Path(args.job).resolve()
+    if not (job / 'manifest.json').is_file():
+        raise DoudianError('job_missing', '任务目录不存在或没有 manifest.json：{0}'.format(job))
+    manifest = load_job(job)
+    if manifest.get('mode') != 'title_only':
+        raise DoudianError('unsupported_mode', '该任务不是只改标题任务，不能续跑。')
+    if not (job / 'before.json').is_file():
+        raise DoudianError('baseline_missing', '缺少原商品快照，不能续跑：请重新运行 title apply 建立新任务。')
+    before = read_json(job / 'before.json')
+    if before.get('product_id') != manifest['product_id']:
+        raise DoudianError('baseline_mismatch', '原商品快照属于另一个商品，已停止。')
+    record_path = job / 'title_record.json'
+    report = read_json(record_path) if record_path.is_file() else {}
+
+    stage = read_json(job / 'state.json').get('stage')
+    if not args.apply:
+        return {'dry_run': True, 'job_dir': str(job), 'stage': stage,
+                'action': '续跑该只改标题任务：重新核对身份与保留字段后发布一次'}
+    if stage not in _RESUMABLE_STAGES:
+        raise DoudianError(
+            'not_resumable',
+            '阶段 {0} 不能续跑：已进入提交阶段的任务请先运行 verify，不要重新发布。'.format(stage))
+
+    bridge = Bridge(args.endpoint)
+    bridge.require_ready()
+    editor = Editor(bridge)
+    editor.bridge.session = 'doudian-auto-title-' + manifest['product_id']
+    with Lock(DATA_ROOT / 'browser.lock'), Lock(job / 'job.lock'):
+        state = read_json(job / 'state.json')
+        save = _state_writer(job, state)
+        # Re-read under the lock: another process may have moved the job on while we waited.
+        stage = state.get('stage')
+        if stage not in _RESUMABLE_STAGES:
+            raise DoudianError(
+                'not_resumable',
+                '等待期间任务阶段变为 {0}，不能续跑：请先运行 verify。'.format(stage))
+        guard_siblings(DATA_ROOT / 'jobs', manifest['product_id'], exclude=job)
+        # The stored baseline must still describe the listing as it stands now.
+        compare_protected(before, _baseline(editor, manifest))
+        final = _write_and_publish_title(job, manifest, state, save, editor, before, report)
+    scope = final.get('image_scope')
+    notice = ('续跑完成：已提交，审核周期以平台为准；图片未改动。' if scope == 'verified_unchanged'
+              else '续跑完成：已提交，审核周期以平台为准；本次未核验图片，不能声称图片未变。')
+    return dict(report, dry_run=False, job_dir=str(job), stage=final['stage'],
+                submission_status=final['submission_status'],
+                review_status=final.get('review_status'),
+                image_scope=scope,
+                image_scope_note=final.get('image_scope_note'),
+                notice=notice)
+
+
+def run_title_abandon(args):
+    """Release a job's hold on its product, with the reason recorded.
+
+    Only reachable while the job is still blocking. It writes the decision to
+    `abandon.json` and parks the job in the terminal `abandoned` stage. It does not touch
+    the listing: any draft or dirty tab it left behind still has to be handled by the human
+    who confirmed the page.
+    """
+    from .jobs import sha_file
+
+    job = Path(args.job).resolve()
+    if not (job / 'manifest.json').is_file():
+        raise DoudianError('job_missing', '任务目录不存在或没有 manifest.json：{0}'.format(job))
+    manifest = load_job(job)
+    if manifest.get('mode') != 'title_only':
+        raise DoudianError('unsupported_mode', '该任务不是只改标题任务，不能放弃。')
+    state = read_json(job / 'state.json')
+    if state.get('stage') in ('submitted', 'saved', 'abandoned'):
+        raise DoudianError(
+            'not_abandonable',
+            '阶段 {0} 已终结，无需放弃；结果未知的任务请运行 verify。'.format(state.get('stage')))
+    baseline = job / 'before.json'
+    record = {
+        'record_kind': 'abandon',
+        'abandoned_at': time.time(),
+        'reason': args.reason,
+        'declared_by': args.operator,
+        'stage_before': state.get('stage'),
+        'submission_status_before': state.get('submission_status'),
+        'manifest_content_hash': manifest.get('content_hash'),
+        'before_sha256': sha_file(baseline) if baseline.is_file() else None,
+        'note': '仅落盘放弃记录，未修改线上商品；遗留草稿与脏页由人工处理。',
+    }
+    write_json(job / 'abandon.json', record)
+    state.update({'stage': 'abandoned', 'abandoned_at': record['abandoned_at'],
+                  'last_error': 'abandoned_by_operator', 'updated_at': time.time()})
+    write_json(job / 'state.json', state)
+    return {'job_dir': str(job), 'stage': 'abandoned', 'record': str(job / 'abandon.json'),
+            'notice': '已记录放弃原因与基线哈希；线上商品未改动，遗留草稿请人工确认后处理。'}
 
 
 def run(args):

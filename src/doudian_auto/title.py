@@ -124,6 +124,29 @@ def _bigrams(text):
     return [stripped[i:i + 2] for i in range(len(stripped) - 1)]
 
 
+def _spec_spans(text, spec_values):
+    """Character ranges of `text` claimed by confirmed spec values.
+
+    Plain substring matching is not enough here. With both 2件套 and 12件套 confirmed, the
+    string "...12件套..." contains 2件套 only as a slice of 12件套; counting it separately would
+    excuse an outright duplication of 12件套. Assigning longest-first and disallowing overlap
+    makes every character belong to at most one value, which is what the check needs.
+    """
+    spans = []
+    for value in sorted({v for v in spec_values if v}, key=len, reverse=True):
+        start = 0
+        while True:
+            index = text.find(value, start)
+            if index < 0:
+                break
+            end = index + len(value)
+            if not any(index < other_end and other_start < end
+                       for other_start, other_end in spans):
+                spans.append((index, end))
+            start = max(end, start + 1)
+    return spans
+
+
 def validate_title(title):
     """Return (units, errors) for the deterministic rules only.
 
@@ -174,10 +197,14 @@ def diagnose_title(title, facts=None):
     seen = {}
     for gram in _bigrams(text):
         seen[gram] = seen.get(gram, 0) + 1
-    spec_values = list(dict.fromkeys(facts.spec_values))
+    spans = _spec_spans(text, facts.spec_values)
 
     def explained(gram):
-        return sum(1 for value in spec_values if value in text and gram in _bigrams(value))
+        # One exemption per *distinct* confirmed value, however many times the value is
+        # written. A value written twice must leave one occurrence unexplained, or this
+        # check would wave through the very duplication it exists to report.
+        claimed = {text[start:end] for start, end in spans}
+        return sum(1 for value in claimed if gram in _bigrams(value))
 
     repeated = sorted(g for g, n in seen.items() if n > 1 and n > explained(g))
     if repeated:
