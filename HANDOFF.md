@@ -5,6 +5,23 @@
 
 ## 给人的说明
 
+### T-20261022-010 · 194-54 · Codex 三轮复核：恢复出口的并发与幂等（止血）
+
+- 状态：done（已提交并 push，`638f4c4`）；**`title apply --apply` 真实写入路径仍为 review**。
+- Codex 三轮结论：「🔴 **还不能判定已修好**——本轮确认 2 个新 P1、1 个新 P2，均在恢复出口；未发现 P0。D1/D2/D3/D5 的关键实现认可，但要先补下面三项，再进入收窄后的 B。」他用内存探针（直接调命令函数＋内存任务文件）复现了全部三条：
+
+| 级别 | 发现（他复现的交错） | 修法 |
+|---|---|---|
+| 🔴 P1 | **abandon 无锁**：abandon 锁外读到 `editing` 通过检查 → 并发 resume 发布一次、结果未知、落 `submitting/unknown` → abandon 用旧 state 覆盖成 `abandoned` → `abandoned` 属安全阶段，**占用被释放而提交还在飞**。cb5b4a6 的拒绝条件因此仍可被绕过 | abandon 改用与 resume 相同的 `browser.lock → job.lock` 顺序，**两把锁都拿到后重读 state** 再检查再写 |
+| 🔴 P1 | **resume 在新页已是目标标题时仍发布**：原基线为旧标题、新页已是目标 → 仍发布一次；原任务是 `prepared + noop=True` → 仍发布，最终留下 `stage=submitted + noop=True`。不需要假设「平台悄悄发布」，第三方完成同一目标或直接恢复 noop 任务就足以触发 | 写入前停止：只读出口 `title_already_current`，**不填写、不发布、不伪造 accepted**，任务保持原阶段；noop 任务恢复后**保持 noop**。另：阶段与提交状态组合不一致（如 `editing`+`accepted`）也拒绝续跑 |
+| 🟡 P2 | **abandon 黑名单**：除四个禁止值外全部接受，`future_unknown`/缺失 stage → `abandoned` → 扫描器放行 | 改白名单 `prepared/editing/uploaded/rejected`，每阶段配一致提交状态；未知/缺失一律 fail closed。`--reason` 拒绝纯空白 |
+
+- 他对 D1 的补充认定：三个标志（success/rejected/draft_loaded）仍是文案检测，**没有证据前不建议继续堆猜测性规则**；官方接口区分线上与草稿数据，「没有草稿横幅」≠ 接口级来源确认。`detail_status=pending` 只是图片观测缺口，不据此认定商业字段脏。
+- 他对 `rejected` 的纠正：**rejected 曾经提交成功受理**（`submission_status=accepted`），允许放弃的依据是「结果已知且人工结束任务」，不是「从未成功提交」——白名单注释已按此写。
+- 图片分项判据获确认（主图非空↔空不一致直接拦，不受详情 pending 影响；空列表不能证明图片被删除，只能证明不足以安全继续）。
+- 测试：**129 项 Python + 24 项 jsdom 全过**（新增 5 项）。假 editor 改为**服务端状态与页面分离**：fresh 打开只加载已提交状态，未提交输入不会穿越到下一次运行——这正是「新页读基线」的前提。
+- 下一步：先让 Codex 第四轮确认这三项修复，再进收窄后的 B（等下一次确实需要改**不同**标题的授权任务，`dry-run → apply → verify` 一次）。
+
 ### T-20261022-009 · 194-54 · D1–D5：title apply 补成完整任务生命周期
 
 - 状态：done（已提交并 push，`f922393`）；**`title apply --apply` 真实写入路径仍为 review**，待下次授权任务首次验收。

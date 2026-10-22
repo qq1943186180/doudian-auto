@@ -2,6 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
+| T-20261022-010 | [194-54](https://linear.app/1943186180/issue/194-54) | done | Codex 三轮复核（内存探针复现）：修 abandon 无锁竞态（改 browser.lock→job.lock 内重读）、resume 目标已满足仍发布（改只读出口 title_already_current，noop 保持 noop）、abandon 黑名单 fail open（改白名单＋提交状态组合校验＋空白原因拒绝）；假 editor 改服务端/页面分离（commit 638f4c4） |
 | T-20261022-009 | [194-54](https://linear.app/1943186180/issue/194-54) | done | D1–D5：title apply 补成完整生命周期——独立新页基线、草稿/驳回先停、noop 收窄、图片分项、validation_failed 阻塞侧；新增 `title resume`（复用原 manifest/before，submitting 起禁 resume）与 `title abandon`（可审计退出，不碰线上）；规格豁免改为每不同规格值一次（commit f922393） |
 | T-20261022-008 | [194-54](https://linear.app/1943186180/issue/194-54) | done | Codex 二轮复核：堵上新引入的 P1（title job 可进通用 upload 并先删图），两层拒绝；扫描器改安全阶段白名单＋按目录枚举＋要求 JSON 对象（commit 935e34b） |
 | T-20261022-007 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 按 Codex 评审修 `title apply` 四个 P1（锁内重查兄弟任务、title job 加载/核验闭环、protected 与最终标题闸门、写页面期间落 editing）＋ 三个 P2；补临时脚本操作的追溯记录；修规格豁免漏报 |
