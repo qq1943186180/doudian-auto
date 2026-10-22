@@ -73,6 +73,12 @@ class Editor:
                 snapshot.get('detail_cards'), len(snapshot.get('details', [])), snapshot.get('detail_reason') or ''))
 
     def replace(self, manifest, kind, before_upload):
+        assets = manifest.get(kind)
+        if not isinstance(assets, list) or not assets:
+            # Deletion runs before any asset is read, so a missing or empty list would strip
+            # the listing's images and only then fail on the absent record. Nothing here is
+            # recoverable once deleted, so refuse before touching the page at all.
+            raise DoudianError('missing_assets', '{0} 素材清单缺失或为空，未删除任何图片。'.format(kind))
         self.dom('scroll', manifest, kind=kind)
         count_key = 'main_delete_count' if kind == 'mains' else 'detail_delete_count'
         # Count based, bounded deletion tolerates a prior interrupted partial replacement.

@@ -305,12 +305,18 @@ def _protected():
 
 
 class FakeBridge:
-    def __init__(self, endpoint):
+    def __init__(self, endpoint=None):
         self.session = ''
         self.ready = 0
+        self.evaluate_calls = []
 
     def require_ready(self):
         self.ready += 1
+
+    def evaluate(self, code):
+        # Only the pre-flight matters here: it must not reach the page at all.
+        self.evaluate_calls.append(code)
+        raise AssertionError('page touched before the asset check')
 
 
 class FakeTitleEditor:
@@ -523,6 +529,34 @@ def test_a_second_title_change_gets_its_own_directory(apply_run, capsys):
     assert read_json(first / 'state.json')['stage'] == 'saved'
     assert apply_run['run']() == 0
     assert len(_job_dirs(apply_run['jobs'])) == 2
+
+
+def test_a_title_job_refuses_the_image_replacement_path(apply_run, capsys):
+    # Making title jobs loadable also exposed them to the generic upload command, whose
+    # very first browser action is a delete. The refusal has to come before that, and has
+    # to hold for the dry run too so the GUI cannot walk into it either.
+    assert apply_run['run']() == 0
+    job = str(_single_job(apply_run['jobs']))
+    capsys.readouterr()  # drop the apply output; each command prints one JSON line
+    from doudian_auto.cli import main
+    assert main(['--json', 'upload', job, '--apply']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'unsupported_mode'
+    assert main(['--json', 'upload', job]) == 1
+    assert 'upload' in json.loads(capsys.readouterr().out)['error']['message']
+    assert main(['--json', 'submit', job, '--apply']) == 1
+
+
+def test_replacing_images_without_an_asset_list_deletes_nothing():
+    # Second layer: even if a title job reaches the replacement path by some other route,
+    # the asset list is checked before the first delete.
+    from doudian_auto.editor import Editor
+    bridge = FakeBridge()
+    editor = Editor(bridge)
+    with pytest.raises(DoudianError) as exc:
+        editor.replace({'product_id': PID, 'shop': '销霁百货', 'mode': 'title_only'}, 'mains',
+                        lambda: None)
+    assert exc.value.code == 'missing_assets'
+    assert bridge.evaluate_calls == []
 
 
 def test_a_title_job_can_be_loaded_and_verified(apply_run, capsys):

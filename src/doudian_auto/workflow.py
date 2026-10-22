@@ -99,7 +99,11 @@ def _content(section):
     return {key: value for key, value in section.items() if key not in _METADATA_KEYS}
 
 
-_UNRESOLVED_STAGES = ('submitting', 'submitted', 'editing', 'uploaded', 'rejected')
+# Stages that are known to be safe to leave behind. Everything else blocks: a new
+# version must never write to a listing while an older job's outcome is unknown, and a
+# stage this code does not recognise is not evidence that the job finished. Keeping the
+# safe list short is what makes newly added stages fail closed rather than open.
+_SAFE_STAGES = ('prepared', 'saved')
 
 
 def unresolved_siblings(jobs_root, product_id, exclude=None):
@@ -112,46 +116,53 @@ def unresolved_siblings(jobs_root, product_id, exclude=None):
     `submitting` state. The global browser lock only prevents concurrent writes, not two
     versions shipping one after another.
 
-    Failure is biased towards blocking: a sibling known to belong to this product whose
-    state cannot be read is reported, because an unreadable state is not evidence that
-    the job finished. Only records without a readable manifest are skipped -- there is
-    no product to compare them against, and retrospective records are history rather
-    than live tasks.
+    Enumerated by manifest rather than by `state.json`, because a job whose manifest
+    identifies this product but whose state file is missing would otherwise not be seen
+    at all. A missing, unreadable or unrecognised state blocks: none of them proves that
+    the previous job reached a terminal outcome, and the cost of blocking is one extra
+    human check while the cost of not blocking is a second publish.
+
+    Records that carry no readable manifest are the only ones skipped -- there is no
+    product to compare them against. That is also how the retrospective record stays
+    invisible: it deliberately has no manifest.json.
     """
     blockers = []
     root = Path(jobs_root)
     if not root.is_dir():
         return blockers
     skip = Path(exclude).resolve() if exclude else None
-    for state_path in sorted(root.glob('*/state.json')):
-        sibling = state_path.parent
-        if skip and sibling.resolve() == skip:
+    for entry in sorted(p for p in root.iterdir() if p.is_dir()):
+        if skip and entry.resolve() == skip:
             continue
-        try:
-            manifest = read_json(sibling / 'manifest.json')
-        except (OSError, ValueError):
-            # No manifest means no product_id to compare; leave it to the per-job checks.
-            continue
-        if manifest.get('product_id') != product_id:
+        manifest = _read_object(entry / 'manifest.json')
+        if manifest is None or manifest.get('product_id') != product_id:
             continue
         if manifest.get('record_kind') == 'retrospective':
             # A written-up record of a past run, not a task holding the listing.
             continue
-        try:
-            state = read_json(state_path)
-        except (OSError, ValueError):
-            blockers.append({'job_dir': str(sibling), 'stage': 'unreadable',
+        state = _read_object(entry / 'state.json')
+        stage = state.get('stage') if state else None
+        if stage not in _SAFE_STAGES:
+            blockers.append({'job_dir': str(entry),
+                             'stage': 'unreadable' if state is None else stage,
                              'title': manifest.get('title'),
-                             'submission_status': None})
-            continue
-        stage = state.get('stage')
-        # An unknown stage is treated as blocking: only a stage explicitly known to be
-        # safe may let a new version write to the listing.
-        if stage is None or stage in _UNRESOLVED_STAGES:
-            blockers.append({'job_dir': str(sibling), 'stage': stage,
-                             'title': manifest.get('title'),
-                             'submission_status': state.get('submission_status')})
+                             'submission_status': (state or {}).get('submission_status')})
     return blockers
+
+
+def _read_object(path):
+    """Read JSON that must be an object, or None.
+
+    A parsed JSON array is not a manifest or a state file, and calling `.get()` on one
+    raises AttributeError -- from a sibling belonging to a *different* product, which
+    would break an unrelated run. Unreadable records are treated as unknown, never as
+    safe.
+    """
+    try:
+        data = read_json(path)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def guard_siblings(jobs_root, product_id, exclude=None):
@@ -288,6 +299,11 @@ class Workflow:
             raise DoudianError('state_mismatch', '任务状态与素材版本不一致。')
 
     def upload(self, apply=False):
+        if self.manifest.get('mode') == 'title_only':
+            # A title-only job stages no assets. Letting it reach the replacement path would
+            # delete the listing's images first and fail only afterwards on the missing
+            # asset list. Refuse before any work, dry-run included.
+            raise DoudianError('unsupported_mode', '该任务只改标题、不含素材，不能用 upload 换图。')
         if not apply:
             return {'dry_run': True, 'product_id': self.manifest['product_id'], 'title': self.manifest['title'], 'mains': 5, 'details': len(self.manifest['details']), 'writes': ['标题', '5张方主图', '标准详情'], 'job_dir': str(self.job)}
         with Lock(self.lock_root / 'browser.lock'), Lock(self.job / 'job.lock'):
@@ -325,6 +341,11 @@ class Workflow:
             return {'stage': 'uploaded', 'job_dir': str(self.job), 'next': '确认预览后运行submit；尚未发布'}
 
     def submit(self, apply=False):
+        if self.manifest.get('mode') == 'title_only':
+            # A title-only job publishes inside `title apply`. Routing it through the
+            # generic submit would re-arm the publish click for a task that never staged
+            # images, and would bypass the title gates.
+            raise DoudianError('unsupported_mode', '该任务只改标题，发布请用 title apply；结果未知时用 verify。')
         if not apply:
             return {'dry_run': True, 'stage': self.state['stage'], 'action': '发布已上传任务，并重开核验'}
         with Lock(self.lock_root / 'browser.lock'), Lock(self.job / 'job.lock'):
