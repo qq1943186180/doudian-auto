@@ -5,6 +5,18 @@
 
 ## 给人的说明
 
+### T-20261022-011 · 194-54 · Codex 四轮复核：rejected/unknown 的带证据结案出口
+
+- 状态：done（已提交并 push，`0085751`）；**`title apply --apply` 真实写入路径仍为 review**。
+- Codex 四轮结论：「**三项旧问题均已修复，可以关闭。未发现新 P0/P1，但复现了 1 个新 P2 恢复卡点；完整生命周期还不能判定全部修好，建议补这一处再进入 B。**」
+- **新 P2（他复现的卡点）**：`submitting/unknown` → verify 读回驳回 → `rejected/unknown`（verify 只改阶段不改提交状态）→ abandon 拒绝、resume 拒绝、再 verify 还是同一状态 → **商品被永久阻塞**。触发条件「提交超时后平台驳回」，**不需要手改 state**。定性：恢复能力退化，不是重复发布漏洞。
+- **修法（保留 unknown，不伪造 accepted）**：`rejected` 阶段接受 `unknown`，但**必须带核验证据**——`readback.json` 存在且读回为驳回；记录落 `closed_despite_unknown_submission` + readback 哈希 + 驳回原因；`submission_status` 保持 `unknown` 不改写。无证据的同一状态仍拒绝（`verify_required`）。
+- **他确认关闭的三项**：① abandon 竞态（锁序 browser→job，锁内重读；他验证了两个方向交错：resume 持锁时 abandon 被拒、resume 落 unknown 后 abandon 被拒、abandon 完成后 resume 被拒）；② resume 重复发布（只读出口）；③ abandon fail-open（白名单）。**未发现新 P0/P1。**
+- **他抓出的测试失真（已修）**：① 假 editor 的 `publish()` 在 `validation_failed` 时也更新服务端状态——平台未受理却让 fresh 读到目标标题；② `open(fresh=True)` 只改返回快照没重建页面，后续 `read()` 仍读旧输入；③「锁内重读」测试偏弱（状态在调用前就写好，读挪回锁外也能过）→ 改为在第二把锁的 `__enter__` 里推进状态。
+- **他的措辞纠正**：`prepared`（含 noop 任务）**不占用商品**，本就在安全名单；持续占用的是 `editing`/`uploaded`——SKILL.md 已按此写，不再把各阶段统一描述成「继续占用」。
+- **他建议的下一步**：补这个出口并修正假 editor 后，进入原约定的收窄 B——下一次确实需要**不同**标题的授权任务，`dry-run → apply → verify`。无需增加新终态或扩大功能范围。
+- 测试：**135 项 Python + 24 项 jsdom 全过**（新增 4 项：rejected/unknown 带证据结案、无证据拒绝、resume 遇草稿停止、锁内状态推进）。
+
 ### T-20261022-010 · 194-54 · Codex 三轮复核：恢复出口的并发与幂等（止血）
 
 - 状态：done（已提交并 push，`638f4c4`）；**`title apply --apply` 真实写入路径仍为 review**。
