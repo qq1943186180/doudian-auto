@@ -2,5 +2,6 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
-| T-20261022-001 | [194-54](https://linear.app/1943186180/issue/194-54) | in_progress | WorkBuddy接手第二轮：浏览器已连接，详情图读取缺陷修复并真实验证（commit f77620d）；上传/发布链路仍0次验证 |
+| T-20261022-003 | [194-54](https://linear.app/1943186180/issue/194-54) | blocked | 全链路首测：upload 走通（stage=uploaded）、submit 被平台以「类目不符」驳回；修 section 下标错位 + 发布结果分类 + 草稿假阳性（commit e44bf5c）；待用户决定改类目或换商品 |
+| T-20261022-001 | [194-54](https://linear.app/1943186180/issue/194-54) | done | WorkBuddy接手第二轮：详情图读取改为实时预览面板，真实验证通过（commit f77620d，已并入 e44bf5c） |
 | T-20261021-004 | [194-54](https://linear.app/1943186180/issue/194-54) | todo | 用户指定WorkBuddy接手；实现及离线验证已完成，真实连接/试传验收待办 |

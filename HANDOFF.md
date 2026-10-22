@@ -5,6 +5,33 @@
 
 ## 给人的说明
 
+### T-20261022-003 · 194-54 · 全链路首测：upload 走通、submit 被平台驳回
+
+- 状态：blocked（业务侧阻塞，非代码）；代码已提交并推送 `e44bf5c`（HEAD=origin/main）。
+- **全链路实测结果**（真实商品 3784643089604411407，销霁百货）：
+
+  | 阶段 | 结果 |
+  |---|---|
+  | prepare | 5 主图 + 2 详情图（CDN 原为 AVIF，已转 JPEG） |
+  | `upload --apply` | **首次成功**，`stage=uploaded`；主图 5、详情图 2，`ready`，declared/cards/slots 全一致 |
+  | `submit --apply` | 点击成功，平台返回「商品提交成功，审核 1-2 工作日」 |
+  | 平台审核 | **驳回**：类目与商品实际类目不符 |
+  | `verify` | 正确返回 `platform_rejected`，落盘完整驳回原因 |
+
+- **驳回是业务问题，不是代码问题**：本次只换图，标题/类目/价格均未改（`protected` 校验通过）。平台对商品**原有类目**「汽车用品 > 汽车内饰用品 > 隔音隔热棉」判定不符——商品是「波浪吸音棉鸡蛋棉/录音棚墙面用」。需要人工改类目（如家居/吸音材料方向）后重新提审。
+- 当前商品状态：已存草稿 + 驳回待处理；线上版本可能仍是旧图（`content_scope=draft`，无法证明线上生效）。
+- **修掉三个真实缺陷**：
+  1. **`compare_protected` 按下标比较**（致命，卡死链路）：平台对 `权益`/`尺码表`/`尺码信息` 用 `style_hidden__cBzTt` 延迟渲染，可见集合随展开状态变化（before 8 段 vs 当前 5 段），索引 2 起全部错位。改为**按 section 名对齐** + 每段 `observation` 三态（`ready`/`empty_block`/`unobserved`），不可观测即阻断，绝不跳过。
+  2. **上传"报成功但无变化"**：`upload_selector` 标记的 input 节点被 React 重渲染丢弃，文件设到了孤儿节点。改为标记后立即上传，事件序列 `input:1 → change:1` 完整落地。
+  3. **删除"点了没反应"**：页面弹出 `beforeunload` 对话框阻塞了所有 WebBridge 命令（`evaluate` 报 `extension_error` 的真因）。`dialog dismiss` 后删除 1 秒内生效。**排查时若 `evaluate` 持续报 `extension_error`，先查 beforeunload。**
+- **修掉两处 P1 风险**（Codex 评审认定）：
+  1. **草稿假阳性**：`_verify()` 原会把「重开编辑页自动载入草稿 → 新图匹配 → protected 相同」判成 `saved`。被驳回未上线的草稿恰好长这样。现在草稿只记 `draft_verified`，不宣称 `saved`。
+  2. **未知结果重新开放发布**：`submit` 原把任何非成功都退回 `uploaded`。现在只有明确 `validation_failed` 才回退；`unknown` 停在 `submitting`。新增 `stage=rejected`，`upload` 与 `submit` 同时拦截，发布点击次数保持 1。
+- 机制层根因：`publish()` 原用 `Bridge.wait`，而 probe 抛 `WaitingHuman` 会在谓词执行前终止轮询——真实成功被记成停滞。改为独立 `publish_state` 探针（`pending/accepted/rejected/validation_failed`），点击在轮询外且只点一次。
+- 另一处：`open()` 只对 `editor_not_ready` 重试，但标题输入框先于 `[attr-field-id]` 区块挂载，新开编辑页会短暂报 `editor_layout_changed`，导致每次重开必失败。已兼容该过渡帧。
+- 测试：51 项 Python + 24 项 jsdom 全过。
+- 下一步（需用户决策）：① 改类目（业务操作，需明确授权）；② 或换一个类目正确的商品做「真正发布成功」的端到端验证。
+
 ### T-20261022-001 · 194-54 · 详情图读取缺陷修复（WorkBuddy 接手第二轮）
 
 - 状态：in_progress；代码已提交并推送 `f77620d`（HEAD=origin/main）。仍未上传、未发布、未改任何线上商品。
