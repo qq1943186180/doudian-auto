@@ -74,8 +74,10 @@ doudian-auto --json title abandon '<job_dir>' --reason '<原因>'   # 人工核�
 - **resume 发现新页已是目标标题时走只读出口**（`title_already_current`）：不填写、不发布、不声称 accepted。这可能是上次中断的输入被保留，也可能是第三方已完成同一目标；人工核对线上结果后，用 `abandon` 记录结论。原本的 noop 任务被 resume 后**保持 noop**。
 - `abandon` 会落盘 `abandon.json`（原因、操作者、manifest 内容哈希、before.json 哈希）并进入终态 `abandoned`；**只是记录决策，不碰线上商品**，遗留草稿和脏页仍由人工处理。`--reason` 拒绝空白原因。
 - **`submitting`（发布结果未知）既不能 resume 也不能 abandon**：发布点击已经出去，只有 `verify` 能定性；此时放弃会释放占用，而扫描器会放行第二次发布。
+- **`rejected` + `unknown`（提交超时后 verify 读回驳回）可以 abandon，但必须带核验证据**：要求 `readback.json` 存在且读回为驳回，记录里保留 `closed_despite_unknown_submission` 与 readback 哈希，**不把 unknown 改写成 accepted**。没有 readback 证据的 unknown 一律拒绝（`verify_required`）。
 - `abandon` 只接受阶段白名单 `prepared/editing/uploaded/rejected` 且提交状态组合一致；未知或缺失阶段一律拒绝（fail closed）。检查在 `browser.lock → job.lock` 两把锁都拿到后重读状态进行，防止等待期间被并发 resume 推进到 `submitting` 后用旧状态覆盖。
-- `resume` 会重开新页与建基线时的快照比对（保留字段＋标题）：线上标题既不是基线标题也不是本次目标标题时拒绝续跑（`baseline_stale`），那是第三方改过的信号，由人工确认归属。
+- `resume` 会重开新页与建基线时的快照比对（保留字段＋标题）：线上标题既不是基线标题也不是本次目标标题时拒绝续跑（`baseline_stale`），那是第三方改过的信号，由人工确认归属；新页带草稿或驳回同样先停止（与 apply 同一套脏页判据）。
+- 阶段语义：`prepared`（含 noop 任务）**不占用商品**，本就在扫描器安全名单里；持续占用商品的是 `editing` 与 `uploaded`。
 
 **真实写入路径尚未在真实商品上验收**（见 HANDOFF T-20261022-008）：首次用于授权商品时按「先 dry-run，再 `--apply`，提交后立刻 `verify`」的顺序走。
 

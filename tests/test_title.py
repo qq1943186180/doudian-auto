@@ -337,12 +337,17 @@ class FakeTitleEditor:
     """A page that behaves: fill changes the title, check returns a snapshot, publish once.
 
     `server` holds the state a fresh tab would load -- what was actually submitted.
-    Typing into the page does not change it; only publish does. That is the whole point
-    of reading the baseline in a fresh tab: unsubmitted input must not survive into the
-    next run's view of the listing.
+    Typing into the page does not change it; only an accepted publish does. That is the
+    whole point of reading the baseline in a fresh tab: unsubmitted input must not
+    survive into the next run's view of the listing.
+
+    `landed` models the one case nobody can observe from the return value alone: a
+    submit whose result is unknown. When it is set, the submission did reach the
+    listing even though the caller was told `unknown`.
     """
 
-    def __init__(self, bridge, log, page=None, result=None, fail=None, server=None):
+    def __init__(self, bridge, log, page=None, result=None, fail=None, server=None,
+                 landed=False):
         self.bridge = bridge
         self.log = log
         self.page = page or {'product_id': PID, 'shop_confirmed': True, 'title': '原有标题',
@@ -351,15 +356,16 @@ class FakeTitleEditor:
         self.result = result or {'state': 'accepted', 'success': True}
         self.fail = fail
         self.publishes = 0
+        self.landed = landed
         self.server = server if server is not None else {'title': self.page['title']}
 
     def open(self, manifest, fresh=False):
         self.log['opens'] = self.log.get('opens', 0) + 1
-        snapshot = self.snapshot()
         if fresh:
-            # navigate(newTab=True) loads the submitted state, not the current inputs.
-            snapshot['title'] = self.server['title']
-        return snapshot
+            # navigate(newTab=True) loads the submitted state into the page: the tab is
+            # new, so what it shows afterwards is the server state, not the old inputs.
+            self.page['title'] = self.server['title']
+        return self.snapshot()
 
     def read(self, manifest):
         return self.snapshot()
@@ -380,7 +386,11 @@ class FakeTitleEditor:
         self.log['publishes'] = self.publishes
         if self.fail == 'submit_transport':
             raise DoudianError('bridge_transport', 'unknown submit')
-        self.server['title'] = self.page['title']
+        # Only an accepted submission changes what the listing shows. A platform
+        # refusal (validation_failed) leaves the server state alone -- updating it here
+        # would let a refused submit look like it landed.
+        if self.result.get('state') == 'accepted' or self.landed:
+            self.server['title'] = self.page['title']
         return self.result
 
     def screenshot(self, path):
@@ -405,7 +415,8 @@ def apply_run(tmp_path, monkeypatch):
             # page set the listing state, so the server starts from that page's title.
             holder['server'] = {'title': (page or {'title': '原有标题'})['title']}
         editor = FakeTitleEditor(bridge, log, page, holder.get('result'),
-                                 holder.get('fail'), holder['server'])
+                                 holder.get('fail'), holder['server'],
+                                 landed=bool(holder.get('landed')))
         holder['editor'] = editor
         return editor
 
@@ -794,8 +805,9 @@ def test_abandon_refuses_a_whitespace_reason(apply_run, capsys):
 def test_abandon_checks_the_stage_after_taking_both_locks(apply_run, capsys, monkeypatch):
     # Codex's race: abandon read `editing`, a concurrent resume published and moved the
     # job to `submitting`, and the stale read was written back as `abandoned` --
-    # releasing the product while a submission was in flight. The check must happen
-    # after both locks are held, and the lock order must match resume's.
+    # releasing the product while a submission was in flight. The state must be read
+    # after both locks are held, so the advance is performed inside the second lock's
+    # __enter__: moving the read back outside the lock would fail this test.
     import doudian_auto.cli as cli
     from doudian_auto.jobs import read_json as load
     apply_run['fail'] = 'commercial'
@@ -809,15 +821,17 @@ def test_abandon_checks_the_stage_after_taking_both_locks(apply_run, capsys, mon
 
         def __enter__(self):
             order.append(self.path.name)
+            if self.path.name == 'job.lock':
+                # A concurrent resume finishes while abandon waits for this lock.
+                write_json(job / 'state.json',
+                           dict(load(job / 'state.json'), stage='submitting',
+                                submission_status='unknown'))
             return self
 
         def __exit__(self, *exc):
             return False
 
     monkeypatch.setattr(cli, 'Lock', RecordingLock)
-    # What a concurrent resume leaves behind while abandon waits for the lock.
-    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='submitting',
-                                        submission_status='unknown'))
     from types import SimpleNamespace
     from doudian_auto.errors import DoudianError
     with pytest.raises(DoudianError) as exc:
@@ -827,6 +841,79 @@ def test_abandon_checks_the_stage_after_taking_both_locks(apply_run, capsys, mon
     assert order[:2] == ['browser.lock', 'job.lock']
     assert load(job / 'state.json')['stage'] == 'submitting'  # untouched
     assert not (job / 'abandon.json').exists()
+
+
+def test_abandon_closes_a_rejected_unknown_job_only_with_verify_evidence(apply_run, capsys):
+    # Codex's round-4 P2: submit times out (submitting/unknown), verify then reads a
+    # rejection and parks the job at rejected/unknown -- which the allowlist refused,
+    # blocking the product forever. It is closable, but only against verify's evidence,
+    # and the unknown is preserved rather than rewritten into a tidier `accepted`.
+    from doudian_auto.jobs import read_json as load
+    from doudian_auto.workflow import Workflow
+    apply_run['fail'] = 'submit_transport'
+    assert apply_run['run']() == 1
+    job = _single_job(apply_run['jobs'])
+    state = load(job / 'state.json')
+    assert state['stage'] == 'submitting' and state['submission_status'] == 'unknown'
+
+    # verify reads the rejection: the stage becomes `rejected` while the submit result
+    # stays unknown -- exactly the state that used to have no exit. Through the CLI so
+    # the editor is built against the rejected page.
+    apply_run['fail'] = None
+    apply_run['page'] = _page(rejected=True, rejection_reasons=['类目不符'])
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'verify', str(job)]) == 1
+    state = load(job / 'state.json')
+    assert state['stage'] == 'rejected' and state['submission_status'] == 'unknown'
+
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'abandon', str(job), '--reason',
+                 'verify 已读回驳回：类目不符，人工确认线上未生效']) == 0
+    record = load(job / 'abandon.json')
+    assert record['closed_despite_unknown_submission'] is True
+    assert record['readback_sha256']
+    assert record['readback_rejection_reasons'] == ['类目不符']
+    assert record['submission_status_before'] == 'unknown'  # not rewritten
+    assert load(job / 'state.json')['stage'] == 'abandoned'
+    # The product is released: fresh work may start again (on a clean page).
+    apply_run['page'] = _page()
+    capsys.readouterr()
+    assert apply_run['run']() == 0
+
+
+def test_abandon_refuses_an_unknown_submission_without_readback_evidence(apply_run, capsys):
+    # Same state, no evidence: the submit result is unconfirmed and nobody has read the
+    # page back, so closing it would be a guess dressed up as a decision.
+    from doudian_auto.jobs import read_json as load
+    apply_run['fail'] = 'submit_transport'
+    assert apply_run['run']() == 1
+    job = _single_job(apply_run['jobs'])
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='rejected'))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'abandon', str(job), '--reason', '想放弃']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'verify_required'
+    assert load(job / 'state.json')['stage'] == 'rejected'
+    assert not (job / 'abandon.json').exists()
+
+
+def test_resume_stops_when_the_page_carries_a_draft(apply_run, capsys):
+    # The draft check belongs to the shared baseline reader, so a resumed run gets it
+    # too: publishing from a page with an unsubmitted draft would ship those edits.
+    from doudian_auto.jobs import read_json as load
+    apply_run['fail'] = 'commercial'
+    assert apply_run['run']() == 1
+    job = _single_job(apply_run['jobs'])
+    apply_run['fail'] = None
+    apply_run['page'] = _page(draft_loaded=True)
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'resume', str(job), '--apply']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'draft_pending'
+    assert 'publishes' not in apply_run['log']
+    assert load(job / 'state.json')['stage'] == 'editing'
 
 
 def test_abandon_requires_a_stated_reason(apply_run, capsys):

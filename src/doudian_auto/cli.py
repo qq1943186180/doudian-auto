@@ -184,7 +184,13 @@ _ABANDONABLE_STAGES = {
     # A rejection is a known outcome: the platform accepted the submission and refused
     # it. The basis for releasing is that the result is known and a human closed the
     # task, not that nothing was ever submitted.
-    'rejected': ('accepted',),
+    #
+    # `unknown` reaches this stage through verify after a timed-out submit: the page
+    # says the submission was rejected, but whether it landed before that is
+    # unrecorded. Refusing to close it would block the product forever with no way out,
+    # so it is closable -- but only against verify's evidence, and the unknown is
+    # preserved in the record instead of being rewritten into a tidier `accepted`.
+    'rejected': ('accepted', 'unknown'),
 }
 
 
@@ -510,22 +516,46 @@ def run_title_abandon(args):
     with Lock(DATA_ROOT / 'browser.lock'), Lock(job / 'job.lock'):
         state = read_json(job / 'state.json')
         stage = state.get('stage')
-        if state.get('submission_status') not in _ABANDONABLE_STAGES.get(stage, ()):
+        submission_status = state.get('submission_status')
+        if submission_status not in _ABANDONABLE_STAGES.get(stage, ()):
             raise DoudianError(
                 'not_abandonable',
                 '阶段 {0}（提交状态 {1}）不能放弃：发布结果未知或已终结的任务请运行 verify，'
-                '只读核对后由人工结束。'.format(stage, state.get('submission_status')))
+                '只读核对后由人工结束。'.format(stage, submission_status))
+        # Closing a job whose submit result was never confirmed is the one case where the
+        # hold is released without a known outcome, so it needs evidence: verify must
+        # have read the page back, and that read must be the rejection being closed.
+        readback = None
+        if submission_status == 'unknown':
+            readback_path = job / 'readback.json'
+            if not readback_path.is_file():
+                raise DoudianError(
+                    'verify_required',
+                    '提交结果为 unknown，不能仅凭人工判断放弃：请先运行 verify 读回页面，'
+                    '再带核验结果放弃。任务：{0}'.format(job))
+            readback = read_json(readback_path)
+            if not readback.get('rejected'):
+                raise DoudianError(
+                    'verify_required',
+                    'verify 读回的不是驳回状态，不能结案一个提交结果未知的任务：请先人工'
+                    '确认页面实际状态。任务：{0}'.format(job))
         record = {
             'record_kind': 'abandon',
             'abandoned_at': time.time(),
             'reason': reason,
             'declared_by': args.operator,
             'stage_before': stage,
-            'submission_status_before': state.get('submission_status'),
+            'submission_status_before': submission_status,
             'manifest_content_hash': manifest.get('content_hash'),
             'before_sha256': sha_file(baseline) if baseline.is_file() else None,
             'note': '仅落盘放弃记录，未修改线上商品；遗留草稿与脏页由人工处理。',
         }
+        if readback is not None:
+            # The unknown is kept, not rewritten: the record says which evidence the
+            # human acted on and that the submit result was never confirmed.
+            record['closed_despite_unknown_submission'] = True
+            record['readback_sha256'] = sha_file(job / 'readback.json')
+            record['readback_rejection_reasons'] = readback.get('rejection_reasons') or []
         write_json(job / 'abandon.json', record)
         state.update({'stage': 'abandoned', 'abandoned_at': record['abandoned_at'],
                       'last_error': 'abandoned_by_operator', 'updated_at': time.time()})
