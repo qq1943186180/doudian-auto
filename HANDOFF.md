@@ -5,6 +5,16 @@
 
 ## 给人的说明
 
+### T-20261022-012 · 194-54 · Codex 五轮终审：代码阶段完成，B 解锁
+
+- 状态：**代码修复阶段 done**（`991d13d` 已 push）；**B（真实写入验收）待下一次授权任务**。
+- Codex 五轮结论：「**没有新问题。第四轮 P2 可以关闭；本轮审查范围内，title-only 生命周期可判定代码修复完成，B 解锁。** 真实写入验收仍待 B 完成。」无 P0/P1/P2。
+- 他用真实命令函数＋内存探针攻击了我提的重复发布路径，**不成立**：A 已落地但返回 unknown → abandon/resume 双拒、B 被扫描器阻断；A 经 verify 确认目标匹配 → saved，同标题新任务走 noop；A 读回被驳后 abandon → 占用释放，但 B 若仍读到驳回页会被 `_baseline` 拒绝；abandon 后旧 A 也不能 resume。
+- 他对结案出口的两点认定（不再加约束）：① 代码强制非空的是操作者 `--reason`，平台提取的 `rejection_reasons` **允许为空**——强制提取会因页面原因采集失败重新制造恢复卡点；② 不需要时间戳门槛——正常命令链中 readback 来自提交后的 verify，该任务不会重新进入发布路径。
+- 他唯一的非阻断提醒：`landed=True` 没有任何测试设置过，且 `submit_transport` 在更新服务端前抛错，「传输异常但其实已落地」零覆盖 → 已补（`991d13d`：假 editor 先落地再抛传输错误＋端到端测试：submitting/unknown → resume 拒绝 → verify 读回已落地标题 → saved，发布计数仍为 1）。
+- **B 的触发条件（他确认的原文）**：下一次确实需要改成**不同标题**的授权任务，执行一次 `dry-run → apply → verify`。完成前，真实 title-only 路径继续保持 **review**。若该任务本来就要同时改图，照常一次改版，不拆单。
+- 测试：**136 项 Python + 24 项 jsdom 全过**。
+
 ### T-20261022-011 · 194-54 · Codex 四轮复核：rejected/unknown 的带证据结案出口
 
 - 状态：done（已提交并 push，`0085751`）；**`title apply --apply` 真实写入路径仍为 review**。
