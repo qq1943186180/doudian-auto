@@ -456,6 +456,33 @@ def test_apply_leaves_images_unverified_when_the_detail_source_never_renders(app
     assert '不声称图片未变' in data['image_scope_note']
 
 
+def _page(**overrides):
+    page = {'product_id': PID, 'shop_confirmed': True, 'title': '原有标题',
+            'mains': ['https://cdn/a.jpg'], 'details': ['https://cdn/d.jpg'],
+            'detail_status': 'ready', 'protected': _protected()}
+    page.update(overrides)
+    return page
+
+
+@pytest.mark.parametrize('flags,code', [
+    ({'draft_loaded': True}, 'draft_pending'),
+    ({'rejected': True, 'rejection_reasons': ['类目不符']}, 'platform_rejected'),
+    ({'success': True}, 'verify_required'),
+])
+def test_apply_refuses_a_page_carrying_unsubmitted_state(apply_run, capsys, flags, code):
+    # The baseline must come from a page that represents the submitted listing. A draft
+    # or a rejection would ship someone else's edits along with the title, and a
+    # success page is a previous task's outcome that has not been read yet.
+    apply_run['page'] = _page(**flags)
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'apply', '--url', PID, '--shop', '销霁百货',
+                 '--title', NEW_TITLE, '--apply']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == code
+    assert 'publishes' not in apply_run['log']
+    assert 'opens' in apply_run['log']  # it did open the page; it just refused to write
+
+
 def test_apply_stops_when_the_platform_check_rejects_the_title(apply_run, capsys):
     apply_run['fail'] = 'validation'
     assert apply_run['run']() == 3  # waiting_human: a human must look at the page
