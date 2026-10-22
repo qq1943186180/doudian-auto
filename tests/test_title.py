@@ -384,13 +384,15 @@ class FakeTitleEditor:
     def publish(self, manifest):
         self.publishes += 1
         self.log['publishes'] = self.publishes
-        if self.fail == 'submit_transport':
-            raise DoudianError('bridge_transport', 'unknown submit')
-        # Only an accepted submission changes what the listing shows. A platform
-        # refusal (validation_failed) leaves the server state alone -- updating it here
-        # would let a refused submit look like it landed.
+        # Only an accepted submission -- or a modelled unknown one that landed --
+        # changes what the listing shows. A platform refusal (validation_failed)
+        # leaves the server state alone; updating it here would let a refused submit
+        # look like it landed. This runs before the transport error because the landing
+        # is a fact about the platform, independent of what the caller got to learn.
         if self.result.get('state') == 'accepted' or self.landed:
             self.server['title'] = self.page['title']
+        if self.fail == 'submit_transport':
+            raise DoudianError('bridge_transport', 'unknown submit')
         return self.result
 
     def screenshot(self, path):
@@ -897,6 +899,35 @@ def test_abandon_refuses_an_unknown_submission_without_readback_evidence(apply_r
     assert json.loads(capsys.readouterr().out)['error']['code'] == 'verify_required'
     assert load(job / 'state.json')['stage'] == 'rejected'
     assert not (job / 'abandon.json').exists()
+
+
+def test_an_unknown_submit_that_landed_resolves_through_verify(apply_run, capsys):
+    # The one case nobody can observe from the return value: the transport died, the
+    # caller was told nothing, and the submission actually reached the listing. The job
+    # parks at submitting/unknown (resume and abandon both refuse it), and the way out
+    # is verify reading the landed title -- not a second publish.
+    from doudian_auto.jobs import read_json as load
+    apply_run['fail'] = 'submit_transport'
+    apply_run['landed'] = True
+    assert apply_run['run']() == 1
+    job = _single_job(apply_run['jobs'])
+    state = load(job / 'state.json')
+    assert state['stage'] == 'submitting' and state['submission_status'] == 'unknown'
+    assert apply_run['server']['title'] == NEW_TITLE  # it landed despite the silence
+
+    apply_run['fail'] = None
+    from doudian_auto.cli import main
+    # Resume is refused while the outcome is unknown: only verify may decide.
+    capsys.readouterr()
+    assert main(['--json', 'title', 'resume', str(job), '--apply']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'not_resumable'
+    # Verify reads the landed title and closes the job as saved.
+    capsys.readouterr()
+    assert main(['--json', 'verify', str(job)]) == 0
+    data = json.loads(capsys.readouterr().out)['data']
+    assert data['verified'] is True
+    assert load(job / 'state.json')['stage'] == 'saved'
+    assert apply_run['log']['publishes'] == 1  # still exactly one publish
 
 
 def test_resume_stops_when_the_page_carries_a_draft(apply_run, capsys):
