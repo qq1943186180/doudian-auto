@@ -11,7 +11,7 @@ description: 改版中国抖店现有商品的标题、主图和详情，结合�
 
 先用 `Get-Command doudian-auto` 确认已安装，再执行 `doudian-auto --json doctor`。源码默认位于 `~/code/clis/doudian-auto`，重装用 `scripts/install-local.ps1`。不调用付费模型API。
 
-浏览器使用本机 Kimi WebBridge 与 Edge 的当前登录态，不导出Cookie。配置优先级：`--endpoint` > `DOUDIAN_BRIDGE_URL` > `http://127.0.0.1:10086`。连接异常时按 Kimi skill 排查；服务可安全start，不自动stop/restart/upgrade。用户说稍后连接时先完成离线工作。
+浏览器使用本机 Kimi WebBridge 与 Edge 的当前登录态，不导出Cookie。配置优先级：`--endpoint` > `DOUDIAN_BRIDGE_URL` > `http://127.0.0.1:10086`。`doctor` 报 `browser_ready: false` 或连接异常时，读 `kimi-webbridge-boot` 技能按 daemon → 浏览器(目标 profile) → 扩展三层恢复：用户级路径 `~/.workbuddy/skills/kimi-webbridge-boot/SKILL.md`（Codex 运行时若在 `~/.codex/skills/` 下找不到同名目录，直接读该绝对路径）。纪律：daemon 可安全 `start`；`stop`/`restart`/`upgrade` 需用户授权。用户说稍后连接时先完成离线工作。
 
 先用 `products --limit 20` 查看当前页链接/商品行，`resolve <编辑链接或ID>` 解析ID，`read --url '<真实编辑链接>' --shop '<店铺名>' --out before.json` 读取原商品。商品链接必须来自实际页面，不能猜类目参数。
 
