@@ -1,10 +1,20 @@
 # 抖店本地上传与妙手商品编辑
 
-更新：2026-10-24（Asia/Shanghai）；Agent：codex-miaoshou-product-3848316916011762046。
+更新：2026-10-25（Asia/Shanghai）；Agent：codex-miaoshou-v2-3848316916011762046。
 主工作目录：C:/Users/19431/code/clis/doudian-auto；私有仓库 qq1943186180/doudian-auto。
 本次隔离分支：codex/miaoshou-product-skill；主目录 cli.py 的既有未提交改动未纳入本任务。
 
 ## 给人的说明
+
+### T-20261025-001 · 194-67 · 妙手保存新版9图与不同标题
+
+- 状态：done；用户要求将已生成的20261025-v2五主图、四详情及优化标题更换到原指定商品。
+- 新标题58/60；妙手UI单次保存result=success，changeFields为base/mainImg/descImg；新页妙手、抖店均逐槽读回匹配。
+- 全量24个SKU及价格库存、类目品牌、运费售后、限购发货、3:4/白底图均保留；原下架不变、未载入草稿、未见驳回；最终审核/消费者端未单独验收。
+- 编辑中重启，原状态editing/not_attempted且无保存意图；恢复daemon及扩展后新页基线语义一致，同任务续办，不重复保存。
+- 9张本地文件与临时上传SHA256一致，正式PNG与本地像素一致；最终顺序核验。中途错槽已在未保存时凭上传记录纠正，唯一标记约束已补入参考。
+- 证据：本聊天work/miaoshou-jobs/3848316916011762046-v2-20261025；素材及完整核验数据不入Git。关联194-66/194-65。
+- 新标题实写及编辑中重启恢复已验收；仍没有妙手CLI或程序互斥锁，多款连续、保存断连恢复仍未验收。
 
 ### T-20261024-002 · 194-66 · 妙手修改用户指定商品
 
@@ -56,8 +66,8 @@
 
 ## 给下一个AI
 
-- 先读AGENTS.md、git status --porcelain、本文、T-ID映射与194-66；skill创建见194-65，旧抖店任务见194-54及归档。不能捎带主目录cli.py改动。
-- 图片单款保存已有真实验收；标题新值、多款连续和保存断连仍未验收。SKU表后台页可能只渲染20/24行，临时focus emulation后滚动等待可读齐，结束关闭；不要用Escape关闭残留图片弹窗。
+- 先读AGENTS.md、git status --porcelain、本文、T-ID映射与194-67；上一版见194-66，skill创建见194-65，旧抖店任务见194-54及归档。不能捎带主目录cli.py改动。
+- 图文单款保存及编辑中重启恢复已有真实验收，多款连续和保存断连仍未验收。SKU表后台页可用临时focus emulation后滚动等待读齐，结束关闭；不要用Escape盲关弹窗。每步失败先查证，不继续执行依赖它的下一步。
 - 原抖店程序与妙手任务格式不同；不能把妙手目录交给doudian-auto upload/submit/verify，也不能拿旧sections快照比较器直接比妙手响应。
 - 所有页面写入串行；不关闭他人编辑页。连接失败读kimi-webbridge-boot；可start，不擅自stop/restart/upgrade。验证码与登录交给用户。
 - skill结构校验使用系统skill-creator/scripts/quick_validate.py；新skill无可执行脚本，不需要为此重跑未改动的全部上传器测试。
