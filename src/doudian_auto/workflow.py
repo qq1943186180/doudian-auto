@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import time
 from urllib.parse import urlparse
 
@@ -99,6 +100,38 @@ def _content(section):
     return {key: value for key, value in section.items() if key not in _METADATA_KEYS}
 
 
+# Sections whose field list is rendered by a virtual list: which rows exist in the DOM
+# depends on the scroll position, so equal content can appear as different row counts.
+# Keys are the short names used by `_section_index` (the DOM id prefix is stripped).
+_VIRTUAL_SECTIONS = ('价格库存',)
+
+
+def _input_signature(item):
+    return json.dumps(item, sort_keys=True, ensure_ascii=False)
+
+
+def _render_subset(left, right):
+    """True when the two reads differ only in how many virtual rows were rendered.
+
+    Every non-input key must match exactly, and one side's inputs must be a
+    sub-multiset of the other's. A value change, an added row with a new value, or a
+    removed row all break the multiset relation and fail the check.
+    """
+    left_keys = {key for key in left if key != 'inputs'}
+    right_keys = {key for key in right if key != 'inputs'}
+    if left_keys != right_keys:
+        return False
+    for key in left_keys:
+        if left[key] != right[key]:
+            return False
+    from collections import Counter
+    a = Counter(_input_signature(item) for item in (left.get('inputs') or []))
+    b = Counter(_input_signature(item) for item in (right.get('inputs') or []))
+    if not a or not b:
+        return False
+    return not (a - b) or not (b - a)
+
+
 # Stages that are known to be safe to leave behind. Everything else blocks: a new
 # version must never write to a listing while an older job's outcome is unknown, and a
 # stage this code does not recognise is not evidence that the job finished. Keeping the
@@ -183,12 +216,20 @@ def guard_siblings(jobs_root, product_id, exclude=None):
         '新任务不能绕过旧任务的提交保护。'.format(detail))
 
 
-def compare_protected(before, after):
+def compare_protected(before, after, allow_virtual_subset=False):
     """Fail unless every field outside the writable scope is provably unchanged.
 
     Only three outcomes are allowed: a block is observed on both sides and equal, or the
     run stops. An unobserved block is never treated as unchanged -- `visibility:hidden`
     and an empty field list are not evidence that a block carries no data.
+
+    `allow_virtual_subset` exists for one block: 价格库存 renders its SKU grid as a
+    virtual list, so the number of rows in the DOM depends on where the grid happens to
+    be scrolled. A reopened page can therefore show 190 inputs where the baseline holds
+    88 without a single value having changed. When this flag is set, a block whose inputs
+    form a sub-multiset of the other side's is treated as the same content read over a
+    different render window, and the smaller coverage is recorded rather than hidden.
+    Every other block, and every non-subset difference in this one, still stops the run.
     """
     baseline = _section_index(before)
     current = _section_index(after)
@@ -218,11 +259,27 @@ def compare_protected(before, after):
     absent = sorted(set(baseline) ^ set(current))
     if absent:
         raise DoudianError('protected_snapshot_incomplete', '分区在一次读取中存在、另一次缺失（{0}），已停止提交。'.format('、'.join(absent)))
+    gaps = []
     for name in sorted(current):
         if exempt(name):
             continue
-        if _normalize_images(_content(baseline[name])) != _normalize_images(_content(current[name])):
-            raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
+        left = _normalize_images(_content(baseline[name]))
+        right = _normalize_images(_content(current[name]))
+        if left == right:
+            continue
+        if (allow_virtual_subset and name in _VIRTUAL_SECTIONS
+                and _render_subset(left, right)):
+            # Same values, different number of rendered rows. Coverage is recorded so a
+            # later reader can see this block was compared over the smaller window.
+            gaps.append({
+                'section': name,
+                'inputs_baseline': len(left.get('inputs') or []),
+                'inputs_current': len(right.get('inputs') or []),
+                'reason': 'rendered_row_count_differs_values_match',
+            })
+            continue
+        raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
+    return gaps
 
 
 def compare_images_unchanged(before, after):
@@ -301,6 +358,47 @@ class Workflow:
     def baseline(self):
         return read_json(self.job / 'before.json')
 
+    @staticmethod
+    def _fingerprint(snapshot):
+        """Identity of a read, for deciding whether the page has settled.
+
+        Only the fields a baseline is allowed to describe: the sections outside the
+        writable scope plus the images and title. Two reads with the same fingerprint
+        describe the same listing state, not merely the same number of rows.
+        """
+        return json.dumps({
+            'title': snapshot.get('title'),
+            'mains': _normalize_images(snapshot.get('mains') or []),
+            'details': _normalize_images(snapshot.get('details') or []),
+            'detail_status': snapshot.get('detail_status'),
+            'protected': [_normalize_images(_content(p)) for p in (snapshot.get('protected') or [])],
+        }, sort_keys=True, ensure_ascii=False)
+
+    def _stable_snapshot(self, attempts=10, interval=0.8):
+        """Read until two consecutive snapshots agree.
+
+        The edit page renders lazily: the detail panel and the SKU grid fill in after the
+        first paint. A snapshot taken the moment `open()` returns therefore describes only
+        what happened to be rendered -- on this listing that meant 14 of 16 detail images
+        and 39 of 190 price/stock inputs. Comparing such a baseline against a later, fully
+        rendered read reports "protected fields changed" when nothing changed at all.
+
+        Waiting for the detail panel alone is not enough: the SKU grid settles on its own
+        schedule. Two identical reads are the signal that both have finished.
+        """
+        previous = None
+        for attempt in range(attempts):
+            current = self.editor.wait_details(self.manifest)
+            if previous is not None and self._fingerprint(previous) == self._fingerprint(current):
+                return current
+            previous = current
+            time.sleep(interval)
+        raise DoudianError(
+            'baseline_unstable',
+            '页面在 {0} 次读取内持续变化（{1} 秒/次），无法确定原商品状态，未写入任何图片。'
+            '请确认页面没有在加载中或被改动，然后重试。'.format(attempts, interval))
+
+
     def unresolved_siblings(self):
         return unresolved_siblings(self.job.parent, self.manifest['product_id'], self.job)
 
@@ -335,8 +433,14 @@ class Workflow:
             if not (self.job / 'before.json').exists():
                 if self.state['stage'] != 'prepared':
                     raise DoudianError('baseline_missing', '缺少原商品快照，不能继续覆盖。')
+                # Settle the page first: a baseline from a half-rendered editor records
+                # fewer details and fewer SKU inputs than the listing actually has, and
+                # every later comparison then fails as if a protected field had changed.
+                current = self._stable_snapshot()
                 write_json(self.job / 'before.json', current)
-            compare_protected(self.baseline(), current)
+            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
+            if gaps:
+                self.save(protected_render_gaps=gaps)
             self.save('editing')
             for kind in ('mains', 'details'):
                 # A trusted-ready snapshot first: the resume-skip below must not
@@ -351,8 +455,12 @@ class Workflow:
                 urls = self.editor.replace(self.manifest, kind, lambda: self.save('editing', pending_upload=kind))
                 self.save('editing', **{kind + '_urls': urls, 'pending_upload': None})
             self.editor.fill_title(self.manifest)
-            current = self.editor.wait_details(self.manifest)
-            compare_protected(self.baseline(), current)
+            # Same settle rule as the baseline, or a partially rendered read here would
+            # be compared against a settled one and report a change that never happened.
+            current = self._stable_snapshot()
+            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
+            if gaps:
+                self.save(protected_render_gaps=gaps)
             match_content(self.manifest, self.state, current)
             write_json(self.job / 'uploaded.json', current)
             self.save('uploaded', last_error=None)
@@ -379,10 +487,14 @@ class Workflow:
             # The pre-publish comparison needs a trusted-ready snapshot, not the
             # first frame after reopening (the live panel may still be rendering).
             current = self.editor.wait_details(self.manifest)
-            compare_protected(self.baseline(), current)
+            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
+            if gaps:
+                self.save(protected_render_gaps=gaps)
             match_content(self.manifest, self.state, current)
             checked = self.editor.check(self.manifest)
-            compare_protected(self.baseline(), checked)
+            gaps = compare_protected(self.baseline(), checked, allow_virtual_subset=True)
+            if gaps:
+                self.save(protected_render_gaps=gaps)
             match_content(self.manifest, self.state, checked)
             # Persist before sending. Timeout/crash after this point must NEVER auto-republish.
             self.save('submitting', submitted_at=time.time(), submission_status='unknown')
@@ -429,7 +541,9 @@ class Workflow:
         """Record the readback verdict once identity and protected fields have passed."""
         try:
             match_content(self.manifest, self.state, current)
-            compare_protected(self.baseline(), current)
+            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
+            if gaps:
+                self.save(protected_render_gaps=gaps)
         except DoudianError as exc:
             self.save('submitted', last_error=exc.code, verification_failed_at=time.time(),
                       content_scope=scope)

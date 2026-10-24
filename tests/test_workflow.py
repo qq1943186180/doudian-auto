@@ -419,6 +419,71 @@ def test_protected_legacy_baseline_without_observation_state_is_accepted():
     assert_code('protected_snapshot_incomplete', live, swapped)
 
 
+# --- virtual list rows ------------------------------------------------------
+# 价格库存 renders its SKU grid as a virtual list, so a reopened page can show more rows
+# than the baseline without a value having changed. These tests pin how far that
+# allowance reaches: same values over a different window passes (with the coverage
+# recorded), while any value change and any other section stay fatal.
+
+def _sku(value, n):
+    return [{'type': 'text', 'value': value} for _ in range(n)]
+
+
+def test_a_virtual_list_read_over_a_smaller_window_passes_and_records_coverage():
+    from doudian_auto.workflow import compare_protected
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', inputs=_sku('清水蓝 折叠2件套', 3)),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存',
+                                   inputs=_sku('清水蓝 折叠2件套', 3) + _sku('玫瑰粉 折叠2件套', 2)),
+                           section('服务与履约')]}
+    gaps = compare_protected(before, after, allow_virtual_subset=True)
+    assert len(gaps) == 1
+    assert gaps[0]['section'].endswith('价格库存')
+    assert gaps[0]['inputs_baseline'] == 3 and gaps[0]['inputs_current'] == 5
+    # Without the flag the same pair is still refused: the allowance is opt-in.
+    assert_code('commercial_changed', before, after)
+
+
+def test_a_virtual_list_value_change_is_fatal_even_with_the_allowance():
+    from doudian_auto.workflow import compare_protected
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', inputs=[{'type': 'text', 'value': '19.9'}]),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存', inputs=[{'type': 'text', 'value': '29.9'}]),
+                           section('服务与履约')]}
+    with pytest.raises(DoudianError) as exc:
+        compare_protected(before, after, allow_virtual_subset=True)
+    assert exc.value.code == 'commercial_changed'
+
+
+def test_the_virtual_list_allowance_does_not_extend_to_other_sections():
+    from doudian_auto.workflow import compare_protected
+    # The same shape of difference in 服务与履约 is a real edit, not a render artefact.
+    before = {'protected': [section('基础信息'), section('价格库存'),
+                            section('服务与履约', inputs=_sku('7天无理由退货', 2))]}
+    after = {'protected': [section('基础信息'), section('价格库存'),
+                           section('服务与履约', inputs=_sku('7天无理由退货', 2) + _sku('运费险', 2))]}
+    with pytest.raises(DoudianError) as exc:
+        compare_protected(before, after, allow_virtual_subset=True)
+    assert exc.value.code == 'commercial_changed'
+
+
+def test_the_virtual_list_allowance_requires_every_other_key_to_match():
+    from doudian_auto.workflow import compare_protected
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', inputs=_sku('清水蓝', 2), selections=['颜色']),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存', inputs=_sku('清水蓝', 2), selections=['颜色', '规格']),
+                           section('服务与履约')]}
+    with pytest.raises(DoudianError) as exc:
+        compare_protected(before, after, allow_virtual_subset=True)
+    assert exc.value.code == 'commercial_changed'
+
+
 def test_protected_section_present_on_one_side_only_blocks():
     before = {'protected': [section('基础信息'), section('价格库存'), section('服务与履约'),
                             section('其他信息', selections=[''])]}
