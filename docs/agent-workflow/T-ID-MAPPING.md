@@ -2,6 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
+| T-20261022-013 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 商品 3848316916011762046 全量改版：标题 59/60 units（零错误）、5 主图 + 4 详情全部 ImageGen 独立生成（中文由模型直出，不用 Pillow 排版）、已发布 saved/accepted/pending；顺带修两个误报 bug——基线只取 open 首帧（改连续两次一致才落盘）、价格库存虚拟列表行数差异被当作保留字段变化（opt-in 子多重集容忍＋记录覆盖范围）（commit 2ab9fa7） |
 | T-20261022-012 | [194-54](https://linear.app/1943186180/issue/194-54) | done | Codex 五轮终审：「没有新问题，title-only 生命周期代码修复完成，B 解锁」；他探针验证重复发布攻击不成立；补 landed=True 零覆盖（传输异常但已落地的端到端：submitting/unknown→resume 拒→verify 读回→saved）。B＝下次确需改不同标题的授权任务 dry-run→apply→verify 一次（commit 991d13d） |
 | T-20261022-011 | [194-54](https://linear.app/1943186180/issue/194-54) | done | Codex 四轮复核：三项旧洞关闭、无新 P0/P1；修新 P2——`rejected/unknown`（提交超时后 verify 读回驳回）原来无出口导致商品永久阻塞，现为带 readback 证据的结案（保留 unknown 不伪造 accepted）；顺带修假 editor 两处失真（validation_failed 误更新服务端、fresh 未重建页面）与锁测试偏弱（commit 0085751） |
 | T-20261022-010 | [194-54](https://linear.app/1943186180/issue/194-54) | done | Codex 三轮复核（内存探针复现）：修 abandon 无锁竞态（改 browser.lock→job.lock 内重读）、resume 目标已满足仍发布（改只读出口 title_already_current，noop 保持 noop）、abandon 黑名单 fail open（改白名单＋提交状态组合校验＋空白原因拒绝）；假 editor 改服务端/页面分离（commit 638f4c4） |
