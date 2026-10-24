@@ -1,0 +1,4 @@
+interface:
+  display_name: "妙手商品编辑"
+  short_description: "通过抖店妙手修改商品标题主图详情保留商业字段并到抖店读回核验"
+  default_prompt: "使用 $miaoshou-product-workflow 通过妙手修改指定抖店商品的标题、主图和详情，并核对抖店保存结果。"
