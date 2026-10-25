@@ -145,6 +145,24 @@
   const deletes = kind => kind === 'mains'
     ? all('.styles-module_hoverBottomWrapper__YPnf1', main).filter(e=>visible(e.parentElement)).map(e => e.children[1]).filter(Boolean)
     : all('i.styles_iconDelete__y_88a', detail).filter(e => visible(e.parentElement));
+  if (op === 'section_counts') {
+    // Cheap readiness probe. The edit page mounts form controls progressively, so a
+    // snapshot taken soon after load records a fraction of the fields -- measured on one
+    // listing: 88 of 98 price/stock inputs, 3 of 7 service inputs, 0 of 11 in 其他信息.
+    // Comparing that partial baseline against a later complete read looks exactly like a
+    // commercial change. Counting controls per section is the only signal that tells the
+    // two apart, and it is cheap enough to poll.
+    const counts = {};
+    for (const sec of all('[id^="goodsEditScrollContainer-"]')) {
+      const name = sec.id.replace('goodsEditScrollContainer-', '');
+      counts[name] = {
+        inputs: all('input,textarea,select,[role="switch"]', sec).filter(e => !target(e)).length,
+        text: (sec.textContent || '').replace(/\s+/g, '').length,
+        visible: visible(sec)
+      };
+    }
+    return {...identity, counts, ready_state: document.readyState};
+  }
   if (op === 'snapshot') {
     // Sections are enumerated from the DOM regardless of visibility. The platform hides
     // whole blocks lazily (`style_hidden__*` => visibility:hidden + height 0) and that

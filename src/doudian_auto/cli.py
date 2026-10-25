@@ -50,6 +50,15 @@ def parser():
             action.add_argument('--dry-run', action='store_true', help='只输出计划')
     browser = sub.add_parser('browser', help='只读页面检查入口')
     browser.add_argument('action', choices=['snapshot', 'inspect'])
+    # Release a job's hold on the listing after a human has confirmed the page. Without
+    # this a revision that published but cannot verify leaves the product blocked for
+    # every later version, with no supported way out.
+    abandon = sub.add_parser('abandon', help='人工确认页面后放弃该任务对商品的占用')
+    abandon.add_argument('job')
+    abandon.add_argument('--reason', required=True, help='放弃原因，会落盘留存')
+    abandon.add_argument('--operator', default=os.environ.get('USERNAME') or 'unknown')
+    abandon.add_argument('--confirm-unverified', action='store_true',
+                         help='任务已被平台受理但未核验内容时，仍确认结案（会解除版本互斥）')
     browser.add_argument('--selector')
     title = sub.add_parser('title', help='标题本地校验与诊断；不生成文案、不联网')
     title_sub = title.add_subparsers(dest='title_command', required=True)
@@ -77,6 +86,8 @@ def parser():
     title_abandon.add_argument('--reason', required=True, help='放弃原因，会落盘留存')
     title_abandon.add_argument('--operator', default=os.environ.get('USERNAME') or 'unknown',
                                help='操作者，默认当前本机用户名')
+    title_abandon.add_argument('--confirm-unverified', action='store_true',
+                               help='任务已被平台受理但未核验内容时，仍确认结案（会解除版本互斥）')
     sub.add_parser('gui', help='打开中文桌面窗口')
     unlock = sub.add_parser('unlock', help='仅清除所属进程已结束的操作锁')
     unlock.add_argument('--job', help='同时清理此任务的job.lock')
@@ -179,8 +190,11 @@ _ABANDONABLE_STAGES = {
     'prepared': (None, 'not_submitted'),
     'editing': (None, 'not_submitted'),
     # In the title-only flow `uploaded` only ever comes from a platform refusal
-    # (validation_failed); nothing was uploaded and nothing was accepted.
-    'uploaded': ('not_submitted',),
+    # (validation_failed); nothing was uploaded and nothing was accepted. A revision job
+    # reaches `uploaded` after a real upload and may carry no submission_status at all,
+    # so `None` is accepted here -- requiring the title-only marker would refuse a normal
+    # revision for a field it never sets.
+    'uploaded': (None, 'not_submitted'),
     # A rejection is a known outcome: the platform accepted the submission and refused
     # it. The basis for releasing is that the result is known and a human closed the
     # task, not that nothing was ever submitted.
@@ -191,6 +205,14 @@ _ABANDONABLE_STAGES = {
     # so it is closable -- but only against verify's evidence, and the unknown is
     # preserved in the record instead of being rewritten into a tidier `accepted`.
     'rejected': ('accepted', 'unknown'),
+    # `submitted` means the platform accepted the publish but the readback could not
+    # confirm the content -- on this listing because the effective version was still the
+    # previous one while the new version sat in review, so every readback compared a
+    # staged version against a different live one and failed. The outcome (published) is
+    # known even though the content could not be verified, and leaving it unclosable
+    # blocks every future version of the listing. Closable, but the record must say the
+    # content was never verified.
+    'submitted': ('accepted', 'unknown'),
 }
 
 
@@ -508,8 +530,9 @@ def run_title_abandon(args):
     if not (job / 'manifest.json').is_file():
         raise DoudianError('job_missing', '任务目录不存在或没有 manifest.json：{0}'.format(job))
     manifest = load_job(job)
-    if manifest.get('mode') != 'title_only':
-        raise DoudianError('unsupported_mode', '该任务不是只改标题任务，不能放弃。')
+    # `prepare` writes no mode key for revisions; `title_only` jobs set it explicitly.
+    if manifest.get('mode') not in (None, 'revision', 'title_only'):
+        raise DoudianError('unsupported_mode', '该任务类型不能放弃。')
     baseline = job / 'before.json'
     # Same lock order as resume, and the state is read again after both are held: the
     # check that matters is the one made against the state as it stands now.
@@ -525,6 +548,18 @@ def run_title_abandon(args):
         # Closing a job whose submit result was never confirmed is the one case where the
         # hold is released without a known outcome, so it needs evidence: verify must
         # have read the page back, and that read must be the rejection being closed.
+        #
+        # `submitted/accepted` is the second such case, and a weaker one: the platform
+        # accepted the publish, so something is live or queued, but the content was never
+        # read back. Releasing it is a deliberate act -- it removes the version mutex that
+        # keeps a second job from publishing over an unresolved review -- so it needs an
+        # explicit flag from the human doing it, not just a reason string.
+        if stage == 'submitted' and not getattr(args, 'confirm_unverified', False):
+            raise DoudianError(
+                'confirmation_required',
+                '该任务已被平台受理但没有通过内容核验。放弃它会解除「同一商品不得并发发布」'
+                '的限制，可能让待审版本与后续版本同时存在。确认要在核验前结案，请加 '
+                '--confirm-unverified 并写明原因。任务：{0}'.format(job))
         readback = None
         if submission_status == 'unknown':
             readback_path = job / 'readback.json'
@@ -556,6 +591,14 @@ def run_title_abandon(args):
             record['closed_despite_unknown_submission'] = True
             record['readback_sha256'] = sha_file(job / 'readback.json')
             record['readback_rejection_reasons'] = readback.get('rejection_reasons') or []
+        if stage == 'submitted':
+            # Say plainly what this closure does and does not establish. The publish was
+            # accepted; the content never was verified, and any queued version on the
+            # platform side is still unresolved from this job's point of view.
+            record['content_verified'] = False
+            record['closed_despite_unverified_content'] = True
+            record['note'] = ('提交已被平台受理，但内容未核验即结案；平台侧待审版本是否终结'
+                              '不由本记录证明，需人工跟进。线上商品未被本命令修改。')
         write_json(job / 'abandon.json', record)
         state.update({'stage': 'abandoned', 'abandoned_at': record['abandoned_at'],
                       'last_error': 'abandoned_by_operator', 'updated_at': time.time()})
@@ -598,6 +641,8 @@ def run(args):
         if args.command == 'verify':
             return workflow.verify()
         return getattr(workflow, args.command)(apply=args.apply and not args.dry_run)
+    if args.command == 'abandon':
+        return run_title_abandon(args)
     with Lock(DATA_ROOT / 'browser.lock'):
         bridge.require_ready()
         if args.command == 'products':

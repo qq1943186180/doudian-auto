@@ -966,3 +966,55 @@ def test_a_title_job_can_be_loaded_and_verified(apply_run, capsys):
     result = Workflow(job, apply_run['editor'], lock_root=apply_run['jobs'].parent).verify()
     assert result['verified'] is True
     assert read_json(job / 'state.json')['stage'] == 'saved'
+
+
+def test_abandoning_an_accepted_but_unverified_submission_requires_a_flag(apply_run, capsys):
+    # The platform took the publish, so something is live or queued, but the content was
+    # never read back. Releasing the hold removes the version mutex that keeps a second
+    # job from publishing over an unresolved review, so a reason string alone is not
+    # enough evidence for that decision.
+    from doudian_auto.jobs import read_json as load
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='submitted',
+                                        submission_status='accepted'))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'abandon', str(job), '--reason', '人工核验后结案']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'confirmation_required'
+    # Nothing was released by the refused attempt.
+    assert load(job / 'state.json')['stage'] == 'submitted'
+    assert not (job / 'abandon.json').exists()
+    # With the explicit flag the job closes, and the record states what was not proven.
+    assert main(['--json', 'title', 'abandon', str(job), '--reason', '人工核验后结案',
+                 '--confirm-unverified']) == 0
+    record = load(job / 'abandon.json')
+    assert record['content_verified'] is False
+    assert record['closed_despite_unverified_content'] is True
+    assert load(job / 'state.json')['stage'] == 'abandoned'
+
+
+def test_abandoning_an_accepted_but_unverified_submission_requires_a_flag(apply_run, capsys):
+    # The platform took the publish, so something is live or queued, but the content was
+    # never read back. Releasing the hold removes the version mutex that keeps a second
+    # job from publishing over an unresolved review, so a reason string alone is not
+    # enough evidence for that decision.
+    from doudian_auto.jobs import read_json as load
+    assert apply_run['run']() == 0
+    job = _single_job(apply_run['jobs'])
+    write_json(job / 'state.json', dict(load(job / 'state.json'), stage='submitted',
+                                        submission_status='accepted'))
+    from doudian_auto.cli import main
+    capsys.readouterr()
+    assert main(['--json', 'title', 'abandon', str(job), '--reason', '人工核验后结案']) == 1
+    assert json.loads(capsys.readouterr().out)['error']['code'] == 'confirmation_required'
+    # Nothing was released by the refused attempt.
+    assert load(job / 'state.json')['stage'] == 'submitted'
+    assert not (job / 'abandon.json').exists()
+    # With the explicit flag the job closes, and the record states what was not proven.
+    assert main(['--json', 'title', 'abandon', str(job), '--reason', '人工核验后结案',
+                 '--confirm-unverified']) == 0
+    record = load(job / 'abandon.json')
+    assert record['content_verified'] is False
+    assert record['closed_despite_unverified_content'] is True
+    assert load(job / 'state.json')['stage'] == 'abandoned'

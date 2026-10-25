@@ -100,38 +100,6 @@ def _content(section):
     return {key: value for key, value in section.items() if key not in _METADATA_KEYS}
 
 
-# Sections whose field list is rendered by a virtual list: which rows exist in the DOM
-# depends on the scroll position, so equal content can appear as different row counts.
-# Keys are the short names used by `_section_index` (the DOM id prefix is stripped).
-_VIRTUAL_SECTIONS = ('价格库存',)
-
-
-def _input_signature(item):
-    return json.dumps(item, sort_keys=True, ensure_ascii=False)
-
-
-def _render_subset(left, right):
-    """True when the two reads differ only in how many virtual rows were rendered.
-
-    Every non-input key must match exactly, and one side's inputs must be a
-    sub-multiset of the other's. A value change, an added row with a new value, or a
-    removed row all break the multiset relation and fail the check.
-    """
-    left_keys = {key for key in left if key != 'inputs'}
-    right_keys = {key for key in right if key != 'inputs'}
-    if left_keys != right_keys:
-        return False
-    for key in left_keys:
-        if left[key] != right[key]:
-            return False
-    from collections import Counter
-    a = Counter(_input_signature(item) for item in (left.get('inputs') or []))
-    b = Counter(_input_signature(item) for item in (right.get('inputs') or []))
-    if not a or not b:
-        return False
-    return not (a - b) or not (b - a)
-
-
 # Stages that are known to be safe to leave behind. Everything else blocks: a new
 # version must never write to a listing while an older job's outcome is unknown, and a
 # stage this code does not recognise is not evidence that the job finished. Keeping the
@@ -216,20 +184,21 @@ def guard_siblings(jobs_root, product_id, exclude=None):
         '新任务不能绕过旧任务的提交保护。'.format(detail))
 
 
-def compare_protected(before, after, allow_virtual_subset=False):
+def compare_protected(before, after):
     """Fail unless every field outside the writable scope is provably unchanged.
 
     Only three outcomes are allowed: a block is observed on both sides and equal, or the
     run stops. An unobserved block is never treated as unchanged -- `visibility:hidden`
     and an empty field list are not evidence that a block carries no data.
 
-    `allow_virtual_subset` exists for one block: 价格库存 renders its SKU grid as a
-    virtual list, so the number of rows in the DOM depends on where the grid happens to
-    be scrolled. A reopened page can therefore show 190 inputs where the baseline holds
-    88 without a single value having changed. When this flag is set, a block whose inputs
-    form a sub-multiset of the other side's is treated as the same content read over a
-    different render window, and the smaller coverage is recorded rather than hidden.
-    Every other block, and every non-subset difference in this one, still stops the run.
+    A block whose rendered field list differs in length is a change, full stop. An earlier
+    version of this function let 价格库存 pass when one side's inputs were a sub-multiset
+    of the other's, on the theory that a virtual list renders a different number of rows
+    at different scroll positions. That theory was wrong about this page (measured: 88
+    inputs on both sides, identical) and the allowance was also a hole in its own right:
+    swapping two prices between rows leaves the multiset unchanged, so `10,20` becoming
+    `20,10` passed. Coverage gaps have to be fixed in the collector, not tolerated in the
+    comparison.
     """
     baseline = _section_index(before)
     current = _section_index(after)
@@ -259,27 +228,13 @@ def compare_protected(before, after, allow_virtual_subset=False):
     absent = sorted(set(baseline) ^ set(current))
     if absent:
         raise DoudianError('protected_snapshot_incomplete', '分区在一次读取中存在、另一次缺失（{0}），已停止提交。'.format('、'.join(absent)))
-    gaps = []
     for name in sorted(current):
         if exempt(name):
             continue
         left = _normalize_images(_content(baseline[name]))
         right = _normalize_images(_content(current[name]))
-        if left == right:
-            continue
-        if (allow_virtual_subset and name in _VIRTUAL_SECTIONS
-                and _render_subset(left, right)):
-            # Same values, different number of rendered rows. Coverage is recorded so a
-            # later reader can see this block was compared over the smaller window.
-            gaps.append({
-                'section': name,
-                'inputs_baseline': len(left.get('inputs') or []),
-                'inputs_current': len(right.get('inputs') or []),
-                'reason': 'rendered_row_count_differs_values_match',
-            })
-            continue
-        raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
-    return gaps
+        if left != right:
+            raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
 
 
 def compare_images_unchanged(before, after):
@@ -374,18 +329,79 @@ class Workflow:
             'protected': [_normalize_images(_content(p)) for p in (snapshot.get('protected') or [])],
         }, sort_keys=True, ensure_ascii=False)
 
-    def _stable_snapshot(self, attempts=10, interval=0.8):
-        """Read until two consecutive snapshots agree.
+    def _wait_sections_mounted(self, attempts=40, interval=0.5, steady=3):
+        """Poll per-section control counts until every block stops growing.
 
-        The edit page renders lazily: the detail panel and the SKU grid fill in after the
-        first paint. A snapshot taken the moment `open()` returns therefore describes only
-        what happened to be rendered -- on this listing that meant 14 of 16 detail images
-        and 39 of 190 price/stock inputs. Comparing such a baseline against a later, fully
-        rendered read reports "protected fields changed" when nothing changed at all.
+        The edit page mounts form controls progressively, and each block does it on its own
+        schedule. Measured on one listing, the same page reported 88 price/stock inputs,
+        3 service inputs and 0 in 其他信息 while still mounting, then 98 / 7 / 11 once
+        settled -- and it was still fully loaded, no virtual list involved (scrolling
+        changed nothing). Waiting on overall snapshot equality is too weak: two reads in a
+        row can both land in the same half-mounted state.
 
-        Waiting for the detail panel alone is not enough: the SKU grid settles on its own
-        schedule. Two identical reads are the signal that both have finished.
+        So the wait is per block and requires a sustained plateau, then a sanity check that
+        the required blocks actually carry controls. A block that never fills is reported
+        as incomplete rather than compared, because "0 fields" and "not rendered yet" look
+        identical in a snapshot.
         """
+        previous = None
+        streak = 0
+        counts = {}
+        misses = 0
+        for _ in range(attempts):
+            try:
+                counts = self.editor.section_counts(self.manifest)
+            except DoudianError as exc:
+                # The bridge drops individual requests while the extension stays
+                # connected (transport error), more often right after navigation. A single
+                # miss must not abort a baseline read, but a run of them means the page is
+                # genuinely unreachable and the caller must know.
+                if exc.code not in ('bridge_transport', 'bridge_error', 'page_timeout'):
+                    raise
+                misses += 1
+                if misses >= 6:
+                    raise
+                time.sleep(interval)
+                continue
+            misses = 0
+            if counts == previous:
+                streak += 1
+                if streak >= steady:
+                    break
+            else:
+                streak = 0
+            previous = counts
+            time.sleep(interval)
+        else:
+            raise DoudianError(
+                'protected_incomplete',
+                '商品页字段在 {0} 秒内没有停止变化（{1}），无法确定基线，未写入任何图片。'
+                .format(int(attempts * interval), counts))
+
+        # A required block with no controls and almost no text is indistinguishable from a
+        # block that failed to mount, so it stops the run instead of being compared as
+        # "empty". `empty_block` in the snapshot still allows genuinely empty sections --
+        # this only guards the blocks that must always carry data on a live listing.
+        starved = sorted(
+            name for name in _REQUIRED_SECTIONS
+            if (counts.get(name) or {}).get('inputs', 0) == 0
+            and (counts.get(name) or {}).get('text', 0) <= 8)
+        if starved:
+            raise DoudianError(
+                'protected_incomplete',
+                '以下分区没有渲染出任何字段（{0}），采集不完整，未写入任何图片。'
+                '请确认编辑页已完整加载后重试。'.format('、'.join(starved)))
+        return counts
+
+    def _stable_snapshot(self, attempts=10, interval=0.8):
+        """Read until two consecutive snapshots agree, after the blocks have settled.
+
+        `_wait_sections_mounted` handles the block-level mount race; the loop here covers
+        the remainder (detail panel decode, late field values). Both are needed: a baseline
+        that records a half-mounted block makes every later comparison report a commercial
+        change that never happened, which is exactly how this listing was misread.
+        """
+        self._wait_sections_mounted()
         previous = None
         for attempt in range(attempts):
             current = self.editor.wait_details(self.manifest)
@@ -424,8 +440,13 @@ class Workflow:
             return {'dry_run': True, 'product_id': self.manifest['product_id'], 'title': self.manifest['title'], 'mains': 5, 'details': len(self.manifest['details']), 'writes': ['标题', '5张方主图', '标准详情'], 'job_dir': str(self.job)}
         with Lock(self.lock_root / 'browser.lock'), Lock(self.job / 'job.lock'):
             self.reload()
-            if self.state['stage'] in ('submitting', 'submitted', 'saved', 'rejected'):
-                raise DoudianError('verify_required', '任务已进入提交阶段，请运行verify；不重复上传或发布。')
+            if self.state['stage'] in ('submitting', 'submitted', 'saved', 'rejected', 'abandoned'):
+                # `abandoned` is terminal by definition: a human closed this job and the
+                # hold was released on that basis. Letting it upload again would revive a
+                # job whose outcome was never verified -- and, worse, would let a second
+                # publish happen for the same listing under a job the guard no longer
+                # counts as live.
+                raise DoudianError('verify_required', '任务已终结（{0}），不能再次上传；新版本请重新 prepare。'.format(self.state['stage']))
             self.guard_sibling_jobs()
             current = self.editor.open(self.manifest)
             if current.get('success'):
@@ -438,9 +459,7 @@ class Workflow:
                 # every later comparison then fails as if a protected field had changed.
                 current = self._stable_snapshot()
                 write_json(self.job / 'before.json', current)
-            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
-            if gaps:
-                self.save(protected_render_gaps=gaps)
+            compare_protected(self.baseline(), current)
             self.save('editing')
             for kind in ('mains', 'details'):
                 # A trusted-ready snapshot first: the resume-skip below must not
@@ -458,9 +477,7 @@ class Workflow:
             # Same settle rule as the baseline, or a partially rendered read here would
             # be compared against a settled one and report a change that never happened.
             current = self._stable_snapshot()
-            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
-            if gaps:
-                self.save(protected_render_gaps=gaps)
+            compare_protected(self.baseline(), current)
             match_content(self.manifest, self.state, current)
             write_json(self.job / 'uploaded.json', current)
             self.save('uploaded', last_error=None)
@@ -487,14 +504,10 @@ class Workflow:
             # The pre-publish comparison needs a trusted-ready snapshot, not the
             # first frame after reopening (the live panel may still be rendering).
             current = self.editor.wait_details(self.manifest)
-            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
-            if gaps:
-                self.save(protected_render_gaps=gaps)
+            compare_protected(self.baseline(), current)
             match_content(self.manifest, self.state, current)
             checked = self.editor.check(self.manifest)
-            gaps = compare_protected(self.baseline(), checked, allow_virtual_subset=True)
-            if gaps:
-                self.save(protected_render_gaps=gaps)
+            compare_protected(self.baseline(), checked)
             match_content(self.manifest, self.state, checked)
             # Persist before sending. Timeout/crash after this point must NEVER auto-republish.
             self.save('submitting', submitted_at=time.time(), submission_status='unknown')
@@ -541,9 +554,7 @@ class Workflow:
         """Record the readback verdict once identity and protected fields have passed."""
         try:
             match_content(self.manifest, self.state, current)
-            gaps = compare_protected(self.baseline(), current, allow_virtual_subset=True)
-            if gaps:
-                self.save(protected_render_gaps=gaps)
+            compare_protected(self.baseline(), current)
         except DoudianError as exc:
             self.save('submitted', last_error=exc.code, verification_failed_at=time.time(),
                       content_scope=scope)

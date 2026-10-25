@@ -6,6 +6,22 @@ from urllib.parse import urlparse
 from .errors import DoudianError, WaitingHuman
 from .jobs import HOST
 
+# Kept apart from dom.js on purpose: this probe is polled while the page mounts, so it
+# must stay small and cheap. Counting controls per block is enough to tell "still
+# mounting" from "settled" -- the distinction the baseline depends on.
+#
+# Wire format is a flat "name|inputs|text|visible" string per block, joined by ';'.
+# Two constraints came from probing the live bridge, and both are load-bearing:
+# the selector is written without quotes around the attribute value, and the whole script
+# stays on one line. Either form with quotes or newlines fails intermittently with a
+# transport error while this form succeeds, and the probe runs in a polling loop -- a
+# flaky call would turn into a flaky baseline.
+_COUNT_SCRIPT = ("[...document.querySelectorAll('[id^=goodsEditScrollContainer-]')]"
+                 ".map(function (s) { return [s.id.replace('goodsEditScrollContainer-', ''), "
+                 "s.querySelectorAll('input,textarea,select').length, "
+                 "(s.textContent || '').replace(/\\s+/g, '').length, "
+                 "s.offsetParent !== null ? 1 : 0].join('|'); }).join(';')")
+
 
 class Editor:
     def __init__(self, bridge):
@@ -56,6 +72,27 @@ class Editor:
 
     def read(self, manifest):
         return self.dom('snapshot', manifest)
+
+    def section_counts(self, manifest):
+        """Per-section control counts: the readiness signal for the protected blocks.
+
+        Cheaper than a full snapshot and sufficient to tell "still mounting" from
+        "settled" -- measured on one listing the same page reported 88 price/stock inputs
+        while still mounting and 98 once settled, next to 3 vs 7 service inputs.
+        """
+        payload = self.bridge.evaluate(_COUNT_SCRIPT)
+        if not isinstance(payload, str) or not payload.strip():
+            raise DoudianError('protected_incomplete', '页面未返回分区统计（{0}）。'.format(payload))
+        counts = {}
+        for row in payload.split(';'):
+            parts = row.split('|')
+            if len(parts) != 4:
+                raise DoudianError('protected_incomplete', '分区统计格式异常：{0}'.format(row[:80]))
+            counts[parts[0]] = {'inputs': int(parts[1]), 'text': int(parts[2]),
+                                'visible': parts[3] == '1'}
+        if not counts:
+            raise DoudianError('protected_sections_missing', '商品页未找到任何保护分区。')
+        return counts
 
     def wait_details(self, manifest, seconds=30):
         # Polling, deadline and final classification live here so read, replace, the
