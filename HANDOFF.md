@@ -5,6 +5,25 @@
 
 ## 给人的说明
 
+### T-20261022-014 · 194-54 · 按 Codex 结论重做保护字段采集：撤子集容忍 + 分区级等待
+
+- 状态：**代码完成，单测全绿；真机端到端验证未完成**。代码 `cb5abd2` 已 push。
+- **Codex 推翻了我的根因判断，他是对的**。实测：`tbody tr` = 0（表格是 div 模拟）、滚动前后 inputs 恒为 88 → **价格库存不是虚拟列表**。真正的差异是各分区挂载进度不同步：
+
+  | 分区 | 半挂载时 | 稳定后 |
+  |---|---|---|
+  | 价格库存 | 88 | **98** |
+  | 服务与履约 | 3 | **7** |
+  | 其他信息 | 0 | **11** |
+
+- **三处改动**：
+  1. **撤掉子集容忍**（P1 漏报）—— Codex 探针证实交换两行价格多重集不变即放行；`compare_protected` 恢复严格比较
+  2. **`_wait_sections_mounted`** —— 轮询每分区控件数至连续 3 次持平；必需分区仍既无控件也无文本则报 `protected_incomplete`，不拿半挂载快照去比对
+  3. **abandon P1** —— `upload` 拒绝 `abandoned` 阶段；`submitted/accepted` 结案需 `--confirm-unverified` 且记录 `content_verified: false`；`uploaded` 白名单接受 `None`
+- **bridge 的坑（长期有效）**：计数探针必须**单行、选择器不带引号**，多行版与带引号版在 Kimi bridge 上会偶发/稳定返回 transport 错误；同一逻辑用一次性调用却能成功。探针轮询里对单次失败做了重试。
+- 测试：**141 Python + 24 jsdom 全过**。
+- **未完成**：`_wait_sections_mounted` 真机端到端验证（bridge 阻塞）；商品 3848316916011762046 仍**已下架**、线上是 saoba-fix 版、gpt 版 9 张图挂在编辑页未提交。
+
 ### T-20261022-013 · 194-54 · 商品 3848316916011762046 全量改版 ＋ 修基线采集/虚拟列表两个误报
 
 - 状态：**done，已发布**（`stage=saved`、`submission_status=accepted`、`review_status=pending`，消费者端待平台审核）。代码 `2ab9fa7` 已 push。
