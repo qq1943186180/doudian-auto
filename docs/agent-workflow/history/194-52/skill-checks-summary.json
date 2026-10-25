@@ -1,0 +1,81 @@
+{
+  "all_passed": true,
+  "checks": [
+    {
+      "name": "assets-3793430313384935495",
+      "passed": true,
+      "returncode": 0,
+      "errors": [],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "assets-3784643089604411407",
+      "passed": true,
+      "returncode": 0,
+      "errors": [],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "assets-3793434417251352651",
+      "passed": true,
+      "returncode": 0,
+      "errors": [],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "assets-3790019980637110699",
+      "passed": true,
+      "returncode": 0,
+      "errors": [],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "compare-3793430313384935495",
+      "passed": true,
+      "returncode": 0,
+      "errors": [],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "compare-3793434417251352651",
+      "passed": true,
+      "returncode": 0,
+      "errors": [],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "compare-3784643089604411407",
+      "passed": true,
+      "returncode": 0,
+      "errors": [],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "reject-price-change",
+      "passed": true,
+      "returncode": 1,
+      "errors": [
+        "goodsEditScrollContainer-价格库存: captured commercial fields changed or incomplete"
+      ],
+      "main_count": 5,
+      "detail_count": 2
+    },
+    {
+      "name": "reject-wrong-title",
+      "passed": true,
+      "returncode": 1,
+      "errors": [
+        "Saved title missing or differs from expected title"
+      ],
+      "main_count": 5,
+      "detail_count": 2
+    }
+  ]
+}

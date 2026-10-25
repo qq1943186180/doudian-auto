@@ -6,7 +6,7 @@ claims platform compliance. "Local check passed" is not "the platform will accep
 it" -- the ambiguous, semantic and word-list judgements all live behind the
 platform's own review, and this module says so in its output.
 
-The counting rule below is a local approximation. It matches the 15-60 unit limit
+The counting rule below is a local approximation. It matches the 16-60 unit limit
 the editor enforces for the characters this shop uses, but it is not the platform's
 own algorithm: emoji sequences and combining marks are not separately accounted for.
 """

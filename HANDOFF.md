@@ -1,9 +1,19 @@
 # 抖店本地上传
 
-更新：2026-10-22（Asia/Shanghai）；Agent：codex-douyin-products-20261021 / workbuddy-doudian-verify。
+更新：2026-10-26（Asia/Shanghai）；Agent：workbuddy（194-52 交付后审查）。
 源码：C:/Users/19431/code/clis/doudian-auto；main；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261026-001 · 194-52 · 交付后审查：补两处断档（WorkBuddy，Codex 复检通过）
+
+- 状态：done。对 194-52（Codex 2026-10-21 交付的 skill + 离线校验）做交付后审查，交付本身合格，但发现两处断档已修复。
+- **审查复现**：194-52 声称的 9 项校验全部独立复跑通过（4 素材 assets + 3 compare + 改价/错标题 2 负例）；仓库 141 Python + 24 jsdom 全过；git 干净、origin 已推、桌面快捷方式在、zip 备份完整。
+- **断档 1（高危，已修）**：`~/.workbuddy/skills/doudian-product-workflow` 副本自 194-52 当天安装后从未同步，与当天 zip 备份 diff 为 0 行——**带着已修复的标题下限 bug**：副本 `doudian_check.py` 自带计数规则下限 15 units，而 canonical 已修为 16（平台 8–30 汉字 = 16–60 字符）并改为委托已安装 `doudian_auto` 包（T-20261022-005）。本机任何 WorkBuddy 会话跑旧副本都会放行 15-unit 标题、提交被平台打回。已用 canonical 覆盖同步三处副本（workbuddy/codex/仓库字节一致，SHA-256 相同），实测 14 units 拒、15 units 拒、16 units 过。
+- **断档 2（已修）**：本仓库 `T-ID-MAPPING.md` 与 HANDOFF 此前无 194-52 记录（该单交接只存在于 Codex 会话 outputs 目录，不在任何 git 仓内，误删即失）。已补两行映射（T-20261026-001 + 原始的 T-20261021-003），并把 `skill-backup-20261021.zip`、`HANDOFF-codex-session-20261021.md`、`skill-checks-summary.json` 归档至 `docs/agent-workflow/history/194-52/`（与原始文件字节一致）。
+- **Codex 复检结论**：「核心修复到位，9 项独立校验全部符合预期。未发现高、中严重度问题」；仅余 2 处低级文档问题——本 HANDOFF 缺记录（即本条）与 `title.py` 模块注释残留 `15-60`（已改 `16-60`）。
+- **长期纪律**：skill 是三处安装（仓库 canonical + `~/.codex` + `~/.workbuddy`），**仓库改 canonical 后必须同步两个安装目录**，否则 WorkBuddy 侧会静默用旧规则。校验脚本的标题规则唯一事实源是已安装的 `doudian_auto` 包，不允许任何副本再自带计数实现。
+- Codex 调用方式已封装为 user 级 skill `codex-cli-review`（`~/.workbuddy/skills/`）：exe 路径含版本哈希会变，skill 内教 glob 发现；模板 `codex exec -s read-only --ephemeral -o <报告> "<prompt>"`。
 
 ### T-20261022-014 · 194-54 · 按 Codex 结论重做保护字段采集：撤子集容忍 + 分区级等待
 
