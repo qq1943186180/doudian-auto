@@ -1,10 +1,21 @@
 # 抖店本地上传与妙手商品编辑
 
-更新：2026-10-26（Asia/Shanghai）；Agent：codex-miaoshou-batch5-20261026。
+更新：2026-10-26（Asia/Shanghai）；Agent：codex-miaoshou-all-20261026。
 主工作目录：C:/Users/19431/code/clis/doudian-auto；私有仓库 qq1943186180/doudian-auto。
 本次隔离分支：codex/miaoshou-product-skill；主目录 cli.py 的既有未提交改动未纳入本任务。
 
 ## 给人的说明
+
+### T-20261026-002 · 194-76 · 全仓优化与所有主图换新
+
+- 状态：in_progress；48款普通仓库品、5款审核异常品待处理，另补前5款主图3–5；其他3款在架品不动。用户指定3个gpt-5.6-luna/max子agent做素材，主agent独占浏览器写入。
+- 前5款补图已验收：海绵/杯架/拖鞋架/抹布/抽屉盒全部5主图完成，新页妙手与抖店逐槽匹配、正式远端图字节/像素对应、本轮SKU分别18/2/1/9/2及商业字段保留，官方上架单选状态确认。
+- 抹布/抽屉盒保存响应未捕获，保持unknown原记录且未重复提交；最终新页与正式图片内容证明目标已落地，独立记录resolved_by_verified_readback。其余3款save响应success；全仓尚未完成。
+- 杯刷/密封罐/沥水篮等新素材生成中；根QA已退回杯架连接结构误画及沥水篮“旋拧”误画“按压”/多孔排水，旧稿保留，不上传不合格稿。
+- 当前证据：本聊天work/miaoshou-all-20261026/<ID>的plan/state、verification、official-status和resource-aliases；产物outputs/全仓主图优化-20261026。均不入Git。
+- Kimi捕获与CUA同页调试冲突，已停Kimi捕获后用CUA的实际DOM界面操作/实际网络响应读回；未重放写接口。CUA辅助模块work/all_cua_ops.mjs；切换调试页后保存前重新Network.enable。
+- 商品状态0=上架、1=下架；本批draftStatus=3且UI审核通过/官方非草稿为有效在架，不能把任何非零draftStatus一概判草稿。draftStatus=2期间先读旧版，等候只读复核。
+- 续办先读本聊天最新state和冻结queue；任何submitting/unknown只读核查。用户要求用完关闭任务页，保留无关用户页和未保存内容。
 
 ### T-20261026-001 · 194-75 · 仓库5款改版上架及官方核查
 
