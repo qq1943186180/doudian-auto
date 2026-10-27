@@ -89,6 +89,34 @@ def parser():
     title_abandon.add_argument('--confirm-unverified', action='store_true',
                                help='任务已被平台受理但未核验内容时，仍确认结案（会解除版本互斥）')
     sub.add_parser('gui', help='打开中文桌面窗口')
+    batch = sub.add_parser('batch', help='批量全套优化任务队列')
+    batch_sub = batch.add_subparsers(dest='batch_command', required=True)
+    batch_create = batch_sub.add_parser('create', help='从JSON商品清单创建持久化批次')
+    batch_create.add_argument('--input', required=True, help='含products数组的JSON文件')
+    batch_create.add_argument('--shop', help='清单缺少店铺名时统一指定')
+    batch_status = batch_sub.add_parser('status', help='查看批次进度与卡点')
+    batch_status.add_argument('batch_id', nargs='?')
+    batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
+    batch_quarantine.add_argument('--product-id', required=True)
+    batch_quarantine.add_argument('--reason', required=True)
+    batch_sub.add_parser('resume', help='释放已过期的素材准备租约并列出待续商品')
+    batch_sub.add_parser('run', help='检查浏览器执行队列；尚未验证的页面写入保持禁用')
+    agent = sub.add_parser('agent', help='agent商品事实与素材交接')
+    agent_sub = agent.add_subparsers(dest='agent_command', required=True)
+    agent_next = agent_sub.add_parser('next', help='原子领取一件素材准备任务')
+    agent_next.add_argument('--owner', required=True)
+    agent_next.add_argument('--batch-id')
+    agent_next.add_argument('--lease-seconds', type=int, default=900)
+    agent_renew = agent_sub.add_parser('heartbeat', help='为仍在准备中的素材任务续租')
+    agent_renew.add_argument('--task-id', required=True, type=int)
+    agent_renew.add_argument('--owner', required=True)
+    agent_renew.add_argument('--token', required=True)
+    agent_renew.add_argument('--lease-seconds', type=int, default=900)
+    agent_done = agent_sub.add_parser('complete', help='校验标题和图片哈希后交付素材')
+    agent_done.add_argument('--task-id', required=True, type=int)
+    agent_done.add_argument('--owner', required=True)
+    agent_done.add_argument('--token', required=True)
+    agent_done.add_argument('--artifacts', required=True)
     unlock = sub.add_parser('unlock', help='仅清除所属进程已结束的操作锁')
     unlock.add_argument('--job', help='同时清理此任务的job.lock')
     return root
@@ -630,6 +658,29 @@ def run(args):
         # Handled before the bridge is constructed: title work is offline and must
         # not require a browser session.
         return run_title(args)
+    if args.command in ('batch', 'agent'):
+        from . import batch as batch_queue
+        if args.command == 'batch':
+            if args.batch_command == 'create':
+                return batch_queue.create_batch(args.input, shop=args.shop)
+            if args.batch_command == 'status':
+                return batch_queue.batch_status(args.batch_id)
+            if args.batch_command == 'quarantine':
+                return batch_queue.quarantine_product(args.product_id, args.reason)
+            if args.batch_command == 'resume':
+                return batch_queue.recover_expired_claims()
+            # The browser writer is deliberately fail-closed until its page controls
+            # have passed real-session verification for the current listing version.
+            return batch_queue.execution_readiness(args.endpoint)
+        if args.agent_command == 'next':
+            if not 60 <= args.lease_seconds <= 7200:
+                raise DoudianError('invalid_lease', '租约必须为60至7200秒。')
+            return batch_queue.claim_next(args.owner, batch_id=args.batch_id,
+                                          lease_seconds=args.lease_seconds)
+        if args.agent_command == 'heartbeat':
+            return batch_queue.renew_agent_task(args.task_id, args.owner, args.token,
+                                                lease_seconds=args.lease_seconds)
+        return batch_queue.complete_agent_task(args.task_id, args.owner, args.token, args.artifacts)
     bridge = Bridge(args.endpoint)
     if args.command == 'doctor':
         status = bridge.status()
