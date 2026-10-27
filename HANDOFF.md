@@ -1,7 +1,15 @@
 # 抖店本地上传
 
-更新：2026-10-26（Asia/Shanghai）；Agent：workbuddy（194-52 交付后审查）。
+更新：2026-10-28（Asia/Shanghai）；Agent：codex-miaoshou-batch。
 源码：C:/Users/19431/code/clis/doudian-auto；main；私有 origin https://github.com/qq1943186180/doudian-auto。
+
+### T-20261026-002 · 194-76 · 妙手全仓优化程序首阶段
+
+- 状态：in_progress。commit `b49de5c` 已完成并测试；妙手页面执行器尚未实现，不能把当前队列说成完整自动运行。
+- 新增 SQLite 批次队列、最多3个 agent 的原子租约、标题和图片校验、清单哈希复验、耗时事件、GUI批次导入/状态/异常展示；CLI 有 `batch` 与 `agent` 子命令。skill 已同步仓库、Codex、WorkBuddy；桌面快捷方式「妙手批量优化」。
+- 已从 `miaoshou-all-20261026/queue.json` 导入61件：55件待素材准备，6件因已有编辑/上传/保存或 agent 任务而隔离（红包袋、男童裤、宠物除味剂、第二款男士内裤、发夹、行李箱轮子套）。首件内裤旧 `verified` 仍需迁移其5+4证据后再标记。
+- 当前 `batch run` 只作健康检查并返回 `writer_ready=false`。妙手写入需先经允许的 Kimi 页面探索；本轮只读标签页请求被执行策略拒绝，未改线上商品。
+- 验证：148项 Python 测试通过，GUI smoke test、compileall 通过。下一步完成真实妙手页面读取/写入适配及3件端到端验收，再更新 Linear、HANDOFF 并推送。
 
 ## 给人的说明
 
