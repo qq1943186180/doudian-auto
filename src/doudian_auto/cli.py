@@ -99,13 +99,37 @@ def parser():
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
-    batch_sub.add_parser('resume', help='释放已过期的素材准备租约并列出待续商品')
-    batch_sub.add_parser('run', help='检查浏览器执行队列；尚未验证的页面写入保持禁用')
+    batch_resume = batch_sub.add_parser('resume', help='检查可续办任务；加--apply后继续未提交或只读核查任务')
+    batch_resume.add_argument('--batch-id')
+    batch_resume.add_argument('--limit', type=int, default=1)
+    batch_resume.add_argument('--owner', default='codex-miaoshou-writer')
+    batch_resume.add_argument('--session', default='miaoshou-auto-batch-20261028',
+                              help='本批次专用浏览器任务组，便于隔离旧编辑页')
+    batch_resume.add_argument('--apply', action='store_true', help='执行续办；未知保存结果只做双端只读核查')
+    batch_run = batch_sub.add_parser('run', help='按持久化队列串行运行妙手写入并双端核验')
+    batch_run.add_argument('--batch-id')
+    batch_run.add_argument('--product-id', action='append', dest='product_ids',
+                           help='只运行指定商品；可重复提供')
+    batch_run.add_argument('--limit', type=int, default=1)
+    batch_run.add_argument('--owner', default='codex-miaoshou-writer')
+    batch_run.add_argument('--session', default='miaoshou-auto-batch-20261028',
+                           help='本批次专用浏览器任务组，便于隔离旧编辑页')
+    batch_run.add_argument('--apply', action='store_true', help='执行页面编辑、一次保存及双端读回')
+    batch_run.add_argument('--acceptance', action='store_true',
+                           help='首次3件真实验收；仅可配合3个明确的商品ID')
+    batch_repair = batch_sub.add_parser('repair-title', help='受理后标题仍旧时，仅在双端证据及货架模式通过后补救一次')
+    batch_repair.add_argument('--product-id', action='append', dest='product_ids', required=True,
+                              help='只检查指定商品；可重复提供，最多10件')
+    batch_repair.add_argument('--owner', default='codex-miaoshou-title-repair')
+    batch_repair.add_argument('--session', default='miaoshou-title-repair-20261028',
+                              help='本次标题补救专用浏览器任务组')
+    batch_repair.add_argument('--apply', action='store_true', help='执行一次严格受限的标题补救')
     agent = sub.add_parser('agent', help='agent商品事实与素材交接')
     agent_sub = agent.add_subparsers(dest='agent_command', required=True)
     agent_next = agent_sub.add_parser('next', help='原子领取一件素材准备任务')
     agent_next.add_argument('--owner', required=True)
     agent_next.add_argument('--batch-id')
+    agent_next.add_argument('--product-id', help='原子领取指定商品素材任务')
     agent_next.add_argument('--lease-seconds', type=int, default=900)
     agent_renew = agent_sub.add_parser('heartbeat', help='为仍在准备中的素材任务续租')
     agent_renew.add_argument('--task-id', required=True, type=int)
@@ -667,15 +691,83 @@ def run(args):
                 return batch_queue.batch_status(args.batch_id)
             if args.batch_command == 'quarantine':
                 return batch_queue.quarantine_product(args.product_id, args.reason)
+            if args.batch_command == 'repair-title':
+                if not 1 <= len(set(args.product_ids)) <= 10:
+                    raise DoudianError('title_repair_scope', '标题补救必须指定1至10个不同商品ID。')
+                if not args.apply:
+                    status = batch_queue.batch_status()
+                    requested = set(args.product_ids)
+                    candidates = [p for p in status['products'] if p['product_id'] in requested and
+                                  p['state'] == 'blocked' and
+                                  p.get('submission_state') == 'accepted' and
+                                  p.get('last_error') == 'readback_mismatch']
+                    return {'dry_run': True, 'candidate_count': len(candidates),
+                            'candidates': candidates,
+                            'next': '加 --apply 后会先双端只读核验；原货架模式不一致时不会填写或保存。'}
+                return batch_queue.repair_accepted_title_mismatches(
+                    args.endpoint, product_ids=args.product_ids, owner=args.owner, session=args.session)
             if args.batch_command == 'resume':
-                return batch_queue.recover_expired_claims()
-            # The browser writer is deliberately fail-closed until its page controls
-            # have passed real-session verification for the current listing version.
-            return batch_queue.execution_readiness(args.endpoint)
+                recovered = batch_queue.recover_expired_claims()
+                status = recovered['status']
+                scoped_products = [p for p in status['products']
+                                   if not args.batch_id or p.get('batch_id') == args.batch_id]
+                resumable = [p for p in scoped_products if p['state'] in ('editing', 'uploaded') or
+                             (p['state'] == 'blocked' and p.get('submission_state') == 'not_attempted' and
+                              p.get('last_error') in batch_queue.PREWRITE_RECOVERABLE_ERRORS)]
+                readback = [p for p in scoped_products if p['state'] == 'submitted' or
+                            (p['state'] == 'blocked' and p['submission_state'] in ('unknown', 'accepted'))]
+                result = {'recovered_agent_leases': recovered.get('recovered_agent_leases', 0),
+                          'status': status, 'resumable_count': len(resumable),
+                          'readback_only_count': len(readback)}
+                if not args.apply:
+                    return {**result, 'dry_run': True,
+                            'next': '加 --apply 续办中断任务；保存结果未知的商品只读核查，不会再次保存。'}
+                if not 1 <= args.limit <= 20:
+                    raise DoudianError('invalid_limit', '续办限制为1至20件。')
+                readiness = batch_queue.execution_readiness(args.endpoint)
+                if not readiness.get('writer_ready'):
+                    if not readback:
+                        raise DoudianError('writer_not_accepted', readiness.get('reason') or '写入器尚未完成验收。')
+                    product_ids = [p['product_id'] for p in readback[:args.limit]]
+                    run = batch_queue.run_batch(args.endpoint, batch_id=args.batch_id,
+                                                product_ids=product_ids, limit=len(product_ids),
+                                                owner=args.owner, resume_only=True, readback_only=True,
+                                                session=args.session)
+                    return {**result, 'readback_only': True, 'run': run,
+                            'status': batch_queue.batch_status(args.batch_id), 'writer_ready': False}
+                run = batch_queue.run_batch(args.endpoint, batch_id=args.batch_id, limit=args.limit,
+                                            owner=args.owner, resume_only=True, session=args.session)
+                return {**result, 'run': run, 'status': batch_queue.batch_status(args.batch_id)}
+            readiness = batch_queue.execution_readiness(args.endpoint)
+            if not args.apply:
+                status = batch_queue.batch_status(args.batch_id)
+                ready = [p for p in status['products'] if p['state'] == 'ready' and
+                         (not args.product_ids or p['product_id'] in args.product_ids)]
+                resumable = [p for p in status['products'] if p['state'] in ('editing', 'uploaded', 'submitted')]
+                readback = [p for p in status['products'] if p['state'] == 'blocked' and
+                            p.get('submission_state') in ('unknown', 'accepted')]
+                return {**readiness, 'dry_run': True, 'ready_count': len(ready),
+                        'resumable_count': len(resumable), 'readback_only_count': len(readback),
+                        'next': '加 --apply 执行；首次真实验收需要明确指定3个商品ID并加 --acceptance。'}
+            if args.acceptance:
+                ids = list(dict.fromkeys(args.product_ids or []))
+                if len(ids) != 3:
+                    raise DoudianError('acceptance_scope', '首次验收必须明确指定3个不同商品ID。')
+            elif not readiness.get('writer_ready'):
+                raise DoudianError('writer_not_accepted', readiness.get('reason') or '妙手写入器尚未通过验收。')
+            result = batch_queue.run_batch(args.endpoint, batch_id=args.batch_id,
+                                           product_ids=args.product_ids,
+                                           limit=max(args.limit, 3) if args.acceptance else args.limit,
+                                           owner=args.owner, session=args.session)
+            verified = batch_queue.verified_acceptance_results(args.product_ids)
+            if args.acceptance and len(verified) >= 3:
+                result['writer_acceptance'] = batch_queue.mark_writer_acceptance(verified)
+            return {**result, 'writer_ready': bool(args.acceptance and len(verified) >= 3) or
+                    readiness.get('writer_ready', False), 'browser_ready': readiness.get('browser_ready', False)}
         if args.agent_command == 'next':
             if not 60 <= args.lease_seconds <= 7200:
                 raise DoudianError('invalid_lease', '租约必须为60至7200秒。')
-            return batch_queue.claim_next(args.owner, batch_id=args.batch_id,
+            return batch_queue.claim_next(args.owner, batch_id=args.batch_id, product_id=args.product_id,
                                           lease_seconds=args.lease_seconds)
         if args.agent_command == 'heartbeat':
             return batch_queue.renew_agent_task(args.task_id, args.owner, args.token,

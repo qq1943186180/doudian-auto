@@ -10,7 +10,8 @@ import pytest
 from doudian_auto.cli import main, process_alive, unlock
 from doudian_auto.errors import DoudianError
 from doudian_auto.jobs import Lock, load_job, prepare, read_json, write_json
-from doudian_auto.workflow import Workflow, resource_key
+from doudian_auto.workflow import (Workflow, is_permanent_material_key,
+                                   is_permanent_material_url, resource_key)
 
 PID = '3790019980637110699'
 URL = 'https://fxg.jinritemai.com/ffa/g/create?product_id=' + PID
@@ -286,6 +287,16 @@ def test_resource_key_normalizes_material_url_variants():
     assert resource_key('https://p3-aio.ecombdimg.com/ecom-shop-material/jpeg_m_xyz_sx_487564_www1024-1536') != base
     assert resource_key('plain-value') == 'plain-value'
     assert resource_key('') == ''
+
+
+def test_permanent_material_guard_rejects_temporary_urls_and_mismatched_keys():
+    key = 'png_m_0123456789abcdef0123456789abcdef_sx_12345_www600-600'
+    url = f'https://p3-aio.ecombdimg.com/obj/ecom-shop-material/{key}'
+    assert is_permanent_material_key(key)
+    assert is_permanent_material_url(url, expected_key=key)
+    assert not is_permanent_material_url(url + '?token=x')
+    assert not is_permanent_material_url('https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/a.png?dy')
+    assert not is_permanent_material_url(url, expected_key='png_m_other')
 
 
 def test_resume_skips_slot_when_rendition_differs_but_asset_matches(job):

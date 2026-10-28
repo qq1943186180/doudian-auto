@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import re
 import time
 from urllib.parse import urlparse
 
@@ -7,6 +8,9 @@ from .errors import DoudianError
 from .jobs import DATA_ROOT, Lock, load_job, read_json, write_json
 
 _MATERIAL_MARK = 'ecom-shop-material/'
+_MATERIAL_KEY = re.compile(r'(?:png|jpe?g)_m_[0-9a-f]{32}_sx_[0-9]+_www[0-9]+-[0-9]+\Z', re.I)
+_MATERIAL_HOST = re.compile(r'p[0-9]+-aio\.ecombdimg\.com\Z', re.I)
+_TEMP_UPLOAD_HOST = 'dy-honor-dd-pub.chengji-inc.com'
 
 
 def resource_key(url):
@@ -33,6 +37,43 @@ def resource_key(url):
         return url
     asset = parsed.path[index + len(_MATERIAL_MARK):].split('~', 1)[0]
     return asset
+
+
+def is_permanent_material_key(value):
+    """Return True only for the content-addressed Miao/Douyin material IDs we observed."""
+    return isinstance(value, str) and bool(_MATERIAL_KEY.fullmatch(value))
+
+
+def is_permanent_material_url(url, *, expected_key=None):
+    """Validate a reusable permanent material CDN URL, rejecting tmp_upload links."""
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ''
+        key = resource_key(url)
+    except ValueError:
+        return False
+    return (parsed.scheme == 'https' and parsed.port is None and
+            not parsed.username and not parsed.password and
+            not parsed.query and not parsed.fragment and
+            bool(_MATERIAL_HOST.fullmatch(host)) and
+            _MATERIAL_MARK in parsed.path and is_permanent_material_key(key) and
+            (expected_key is None or key == expected_key))
+
+
+def is_temporary_upload_url(url):
+    """Recognize the page-observed Miao temporary upload URL form."""
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return (parsed.scheme == 'https' and parsed.hostname == _TEMP_UPLOAD_HOST and
+            parsed.port is None and not parsed.username and not parsed.password and
+            not parsed.fragment and '/tmp_upload/' in parsed.path and
+            len(parsed.query) <= 1024)
 
 
 def _normalize_images(value):

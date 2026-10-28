@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, simpledialog, ttk
 
@@ -9,7 +10,8 @@ from .bridge import Bridge
 from .editor import Editor
 from .errors import DoudianError
 from .jobs import DATA_ROOT, load_job, prepare, read_json
-from .batch import batch_status, create_batch, recover_expired_claims
+from .batch import (batch_status, create_batch, execution_readiness, recover_expired_claims,
+                    run_batch)
 from .workflow import Workflow
 
 
@@ -61,6 +63,8 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
     batch_buttons = ttk.Frame(batch_panel)
     batch_buttons.pack(fill='x')
     batch_busy = False
+    batch_run_active = False
+    last_progress_at = 0.0
     messages = queue.Queue()
     buttons = []
     busy = False
@@ -99,7 +103,7 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
         threading.Thread(target=work,daemon=True).start()
 
     def batch_action(action):
-        nonlocal batch_busy
+        nonlocal batch_busy, batch_run_active
         if batch_busy:
             return
         input_path = None
@@ -112,15 +116,39 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
             if default_shop is None:
                 return
         batch_busy = True
+        batch_run_active = action in ('run', 'resume')
         for button in batch_action_buttons:
             button.configure(state='disabled')
 
         def work_batch():
             try:
                 if action == 'resume':
-                    result = recover_expired_claims()
+                    recovered = recover_expired_claims()
+                    readiness = execution_readiness(endpoint)
+                    status = batch_status()
+                    readback = [item for item in status.get('products', [])
+                                if item['state'] == 'submitted' or
+                                (item['state'] == 'blocked' and
+                                 item.get('submission_state') in ('unknown', 'accepted'))]
+                    if not readiness.get('writer_ready') and not readback:
+                        raise DoudianError('writer_not_accepted', readiness.get('reason') or '写入器尚未完成验收。')
+                    selected = readback[:1] if not readiness.get('writer_ready') else None
+                    result = {'recovered_agent_leases': recovered.get('recovered_agent_leases', 0),
+                              'run': run_batch(endpoint, product_ids=[item['product_id'] for item in selected]
+                                               if selected else None,
+                                               limit=1, resume_only=True,
+                                               readback_only=not readiness.get('writer_ready')),
+                              'status': batch_status(),
+                              'writer_ready': bool(readiness.get('writer_ready'))}
                 elif action == 'create':
                     result = create_batch(input_path, shop=default_shop.strip() or None)
+                elif action == 'run':
+                    readiness = execution_readiness(endpoint)
+                    if not readiness.get('writer_ready'):
+                        raise DoudianError('writer_not_accepted', readiness.get('reason') or '写入器尚未完成三件验收。')
+                    result = run_batch(endpoint, limit=1)
+                    result['status'] = batch_status()
+                    result['writer_ready'] = True
                 else:
                     result = batch_status()
                 messages.put((True, 'batch_' + action, result))
@@ -130,7 +158,8 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
         threading.Thread(target=work_batch, daemon=True).start()
 
     batch_action_buttons = []
-    for label, action in [('导入清单建批次', 'create'), ('刷新批次状态', 'status'), ('续办过期素材任务', 'resume')]:
+    for label, action in [('导入清单建批次', 'create'), ('运行1件就绪商品', 'run'),
+                          ('续办中断商品', 'resume'), ('刷新批次状态', 'status')]:
         button = ttk.Button(batch_buttons, text=label, command=lambda a=action: batch_action(a))
         button.pack(side='left', padx=(0, 8))
         batch_action_buttons.append(button)
@@ -141,11 +170,37 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
         buttons.append(button)
 
     def poll():
-        nonlocal busy, batch_busy
+        nonlocal busy, batch_busy, batch_run_active, last_progress_at
+        if batch_run_active and time.monotonic() - last_progress_at >= 2.0:
+            last_progress_at = time.monotonic()
+            try:
+                progress = batch_status()
+                active = [item for item in progress.get('products', [])
+                          if item.get('state') in ('editing', 'uploaded', 'submitting', 'submitted')]
+                stage_names = {'editing': '正在妙手编辑标题和图片',
+                               'uploaded': '素材已确认，等待保存',
+                               'submitting': '保存请求已发出，等待结果',
+                               'submitted': '已受理，正在双端只读核验'}
+                if active:
+                    current = active[0]
+                    batch_summary.set(f"商品 {current['product_id']}："
+                                      f"{stage_names.get(current['state'], current['state'])}；"
+                                      f"提交状态 {current['submission_state']}")
+                else:
+                    counts = progress.get('counts', {})
+                    batch_summary.set('批次计数：' + json.dumps(counts, ensure_ascii=False) + '；运行中，等待领取就绪商品。')
+                batch_log.delete('1.0', 'end')
+                for item in progress.get('products', []):
+                    if item.get('state') in ('editing', 'uploaded', 'submitting', 'submitted', 'blocked'):
+                        batch_log.insert('end', f"{item['product_id']}  {item['state']}  "
+                                         f"提交:{item['submission_state']}  {item.get('last_error') or ''}\n")
+            except (DoudianError, OSError, ValueError, KeyError):
+                pass
         try:
             ok,action,result = messages.get_nowait()
             if action.startswith('batch_'):
                 batch_busy = False
+                batch_run_active = False
                 for button in batch_action_buttons:
                     button.configure(state='normal')
                 if ok:
@@ -188,7 +243,7 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
     poll()
     if smoke_test:
         root.update_idletasks()
-        if len(fields) != 5 or len(buttons) != 5:
+        if len(fields) != 5 or len(buttons) != 5 or len(batch_action_buttons) != 4:
             raise RuntimeError('GUI controls incomplete')
         root.after(100,root.destroy)
     root.mainloop()
