@@ -29,12 +29,12 @@ _TOP_FIELDS = {
 }
 _REQUIRED_FIELDS = {'title', 'image_change', 'desc'}
 _REQUIRED_OPTIONS = {'new', 'onlyPreview', 'replaceImgsByImgUrls'}
-# Live pilot 3848324080143040538 proved that this Miao multi-field save changes
-# protected startSaleType from 0 to 1 even when only title/images/description are
-# selected. Keep all future writes closed until a different path passes dual readback.
+# The warehouse readback policy now distinguishes startSaleType from current shelf
+# state. New saves remain closed while the writer's complete acceptance is pending;
+# a successful read-only reconciliation alone does not validate new write attempts.
 SHELF_MODE_PRESERVATION_VERIFIED = False
 SHELF_MODE_BLOCK_MESSAGE = (
-    '已验证的妙手多字段保存会把审核后上架模式 startSaleType 从0改成1；当前写入路径无法保留原模式，已停止保存。'
+    'startSaleType 已按审核后去向解释，仓库状态的只读核验已修正；新保存流程尚待完整验收，写入器暂未开放。'
 )
 
 

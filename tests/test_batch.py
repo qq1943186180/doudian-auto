@@ -35,7 +35,7 @@ def _batch(tmp_path):
     return db, created['batch_id']
 
 
-def _writer_task(tmp_path):
+def _writer_task(tmp_path, *, protected_extra=None):
     db, batch_id = _batch(tmp_path)
     task = batch.claim_next('agent-a', batch_id=batch_id, db_path=db, lease_seconds=600)
     _, artifacts = _product_set(tmp_path, task['target_version'])
@@ -43,7 +43,7 @@ def _writer_task(tmp_path):
     claim = batch.claim_execution(task['id'], 'writer', db_path=db)
     batch.record_baseline(task['id'], 'writer', claim['execution_token'], {
         'product_id': task['product_id'], 'shop': '销霁百货', 'protected_complete': True,
-        'protected': {'sku': [{'price': '10', 'stock': '20'}]},
+        'protected': {'sku': [{'price': '10', 'stock': '20'}], **(protected_extra or {})},
         'mains': ['old-main-' + str(i) for i in range(5)],
         'details': ['old-detail-' + str(i) for i in range(6)],
     }, db_path=db)
@@ -242,6 +242,21 @@ def test_miaoshou_protected_3x4_images_compare_by_asset_identity():
     current['mainImageThreeToFour'] = old['mainImageThreeToFour']
     current['startSaleType'] = 1
     assert batch._miaoshou_protected_matches(current, old) is False
+
+
+def test_warehouse_policy_preserves_current_shelf_state_without_ignoring_commercial_changes():
+    before = {'status': 1, 'startSaleType': 0, 'checkStatus': 1,
+              'specPrices': [{'price': 10, 'stockNum': 20}]}
+    after = {**before, 'startSaleType': 1, 'checkStatus': 7}
+    assert batch._miaoshou_protected_matches(after, before) is False
+    assert batch._miaoshou_protected_matches(after, before, preserve_warehouse=True) is True
+    assert batch._miaoshou_protected_matches(
+        {**after, 'specPrices': [{'price': 11, 'stockNum': 20}]}, before,
+        preserve_warehouse=True) is False
+    for invalid in ({**after, 'status': 0}, {**after, 'startSaleType': 0},
+                    {**after, 'startSaleType': None}, {**after, 'status': True}):
+        assert batch._warehouse_shelf_preservation(invalid, before) is None
+    assert batch._warehouse_shelf_preservation(after, {**before, 'status': 0}) is None
 
 
 def test_title_repair_precondition_allows_only_review_and_shelf_mode_deltas():
@@ -686,6 +701,35 @@ def test_readback_cannot_verify_if_post_review_shelf_mode_changed(tmp_path):
 
     assert result['state'] == 'blocked'
     assert result['matches'] is False
+
+
+@pytest.mark.parametrize('proof_case', ['valid', 'missing', 'wrong_baseline', 'official_changed'])
+def test_unknown_save_warehouse_policy_requires_immutable_baseline_and_independent_match(
+        tmp_path, proof_case):
+    db, task, claim = _writer_task(tmp_path, protected_extra={'status': 1, 'startSaleType': 0})
+    _record_nine_uploads(db, task, claim)
+    batch.set_execution_state(task['id'], 'uploaded', db_path=db)
+    batch.begin_submission(task['id'], 'writer', claim['execution_token'], db_path=db)
+    batch.record_submission_result(task['id'], 'writer', claim['execution_token'],
+                                   {'state': 'unknown', 'error': 'response_lost'}, db_path=db)
+    page = {'product_id': task['product_id'], 'shop': task['shop'], 'complete': True,
+            'matches_target': True, 'protected_match': True}
+    miao = {**page, 'shelf_mode_matches_original': False, 'shelf_status': 1,
+            'start_sale_type': 1}
+    policy = batch._warehouse_shelf_preservation(
+        {'status': 1, 'startSaleType': 1}, {'status': 1, 'startSaleType': 0})
+    if proof_case != 'missing':
+        miao['shelf_state_preservation'] = policy
+    if proof_case == 'wrong_baseline':
+        miao['shelf_state_preservation'] = {**policy, 'before_mode': 1}
+    official = {**page, 'protected_match': proof_case != 'official_changed'}
+    result = batch.record_execution_readback(
+        task['id'], 'writer', claim['execution_token'],
+        {'read_only': True, 'miaoshou': miao, 'doudian': official}, db_path=db)
+    assert result['state'] == ('verified' if proof_case == 'valid' else 'blocked')
+    assert result['submission_state'] == ('verified_by_readback' if proof_case == 'valid' else 'unknown')
+    current = batch.batch_status(task['batch_id'], db_path=db)['products'][0]
+    assert current['submission_attempts'] == 1
 
 
 def test_readback_detects_changed_sku_values(tmp_path):

@@ -931,9 +931,19 @@ def record_execution_readback(task_id, owner, token, evidence, *, db_path=None):
             raise DoudianError('readback_identity', '妙手与抖店读回未同时匹配店铺和商品ID。')
         matched = all(page.get('matches_target') is True and page.get('protected_match') is True
                       for page in pages)
-        # This has its own field because the current online status may still be
-        # "on shelf" even after the post-review listing mode was changed.
-        matched = matched and evidence.get('miaoshou', {}).get('shelf_mode_matches_original') is True
+        miao_page = evidence['miaoshou']
+        shelf_preserved = miao_page.get('shelf_mode_matches_original') is True
+        if not shelf_preserved and miao_page.get('shelf_state_preservation'):
+            baseline = json.loads(row['baseline_json'] or '{}')
+            observed = {'status': miao_page.get('shelf_status'),
+                        'startSaleType': miao_page.get('start_sale_type')}
+            policy = _warehouse_shelf_preservation(observed, baseline.get('protected'))
+            # Validate against the immutable baseline, not a caller-supplied claim.
+            # The official page must independently preserve all original fields.
+            shelf_preserved = (policy is not None and
+                               miao_page['shelf_state_preservation'] == policy and
+                               evidence['doudian'].get('protected_match') is True)
+        matched = matched and shelf_preserved
         if not all(page.get('complete') is True for page in pages):
             raise DoudianError('readback_incomplete', '任一平台读取字段不完整，不能标为一致。')
         current_mappings = json.loads(row['upload_map_json'] or '[]')
@@ -1056,7 +1066,7 @@ def verified_acceptance_results(product_ids, *, db_path=None):
 def execution_readiness(endpoint):
     """Probe the browser and the durable three-product writer acceptance record."""
     from .bridge import Bridge
-    from .miaoshou_batch_editor import SHELF_MODE_PRESERVATION_VERIFIED
+    from .miaoshou_batch_editor import SHELF_MODE_BLOCK_MESSAGE, SHELF_MODE_PRESERVATION_VERIFIED
 
     status = Bridge(endpoint, session='miaoshou-batch-doctor').status()
     ready = bool(status.get('running') and status.get('extension_connected') and
@@ -1073,7 +1083,7 @@ def execution_readiness(endpoint):
     writer_ready = bool(ready and acceptance_verified and SHELF_MODE_PRESERVATION_VERIFIED)
     reason = None if writer_ready else (
         '浏览器连接未就绪。' if not ready else
-        '妙手批量保存已实测会把审核后上架模式 startSaleType 从0改为1；写入器已关闭，需先验证可保留原模式的写入路径。'
+        SHELF_MODE_BLOCK_MESSAGE
         if not SHELF_MODE_PRESERVATION_VERIFIED else
         '需要3件商品的妙手与抖店独立读回验收后才开放全批量运行。')
     return {'browser_ready': ready, 'bridge': status, 'writer_ready': writer_ready,
@@ -1138,9 +1148,10 @@ def _target_asset_slots(assets):
             [('details', slot, asset['path']) for slot, asset in enumerate(details, 1)])
 
 
-def _matches_miaoshou_target(before, after, title, mappings):
+def _matches_miaoshou_target(before, after, title, mappings, *, preserve_warehouse=False):
     return (_matches_miaoshou_content(before, after, title, mappings) and
-            _miaoshou_protected_matches(after.get('protected'), before.get('protected')))
+            _miaoshou_protected_matches(after.get('protected'), before.get('protected'),
+                                        preserve_warehouse=preserve_warehouse))
 
 
 def _matches_miaoshou_content(before, after, title, mappings):
@@ -1259,11 +1270,37 @@ def _matches_saved_baseline(miaoshou, doudian, baseline):
     return True
 
 
-def _miaoshou_protected_matches(current, expected):
+def _warehouse_shelf_preservation(current, expected):
+    """Describe the one observed normalization that preserves an off-shelf product.
+
+    startSaleType is the destination *after review*, not the current shelf state.
+    The official product/edit docs define 0 as immediate listing and 1 as warehouse.
+    A warehouse edit must retain status=1 and end in mode=1, even when its historical
+    value was 0. Never apply this policy to listed products or unknown state values.
+    """
+    if not isinstance(current, dict) or not isinstance(expected, dict):
+        return None
+    values = (expected.get('status'), current.get('status'),
+              expected.get('startSaleType'), current.get('startSaleType'))
+    if (any(type(value) is not int for value in values) or
+            values[0:2] != (1, 1) or values[2] not in (0, 1) or values[3] != 1):
+        return None
+    return {'policy': 'preserve_warehouse_v1', 'before_status': 1, 'after_status': 1,
+            'before_mode': values[2], 'after_mode': 1, 'expected_after_mode': 1,
+            'raw_mode_changed': values[2] != 1,
+            'source': 'https://op.jinritemai.com/docs/api-docs/14/250?from=list'}
+
+
+def _miaoshou_protected_matches(current, expected, *, preserve_warehouse=False):
     """Compare protected Miaoshou values, normalizing CDN renditions by asset identity."""
     if not isinstance(current, dict) or not isinstance(expected, dict):
         return False
     left, right = dict(current), dict(expected)
+    if preserve_warehouse:
+        if _warehouse_shelf_preservation(current, expected) is None:
+            return False
+        left.pop('startSaleType')
+        right.pop('startSaleType')
     # Review status is a platform workflow state and is reported independently from
     # shelf status. Editing title/images can move it to "approved, waiting to list".
     left.pop('checkStatus', None)
@@ -1489,8 +1526,11 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                                                    official_after, mappings)
                     except DoudianError:
                         final_mappings = None
+                    shelf_policy = _warehouse_shelf_preservation(
+                        miao_after.get('protected'), baseline.get('protected'))
                     miao_match = bool(final_mappings) and _matches_miaoshou_target(
-                        baseline, miao_after, manifest['title'], final_mappings)
+                        baseline, miao_after, manifest['title'], final_mappings,
+                        preserve_warehouse=shelf_policy is not None)
                     try:
                         compare_protected(official_before, official_after)
                         official_protected = True
@@ -1507,7 +1547,9 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                                       len(miao_after.get('details') or []) >= 4),
                                      'matches_target': miao_match,
                                      'protected_match': _miaoshou_protected_matches(
-                                         miao_after.get('protected'), baseline.get('protected')),
+                                         miao_after.get('protected'), baseline.get('protected'),
+                                         preserve_warehouse=shelf_policy is not None),
+                                     'shelf_state_preservation': shelf_policy,
                                      'title': miao_after.get('title'),
                                      'main_count': len(miao_after.get('mains') or []),
                                      'detail_count': len(miao_after.get('details') or []),
@@ -1657,8 +1699,11 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                                                official_after, mappings)
                 except DoudianError:
                     final_mappings = None
+                shelf_policy = _warehouse_shelf_preservation(
+                    miao_after.get('protected'), miao_before.get('protected'))
                 miao_match = bool(final_mappings) and _matches_miaoshou_target(
-                    miao_before, miao_after, manifest['title'], final_mappings)
+                    miao_before, miao_after, manifest['title'], final_mappings,
+                    preserve_warehouse=shelf_policy is not None)
                 try:
                     compare_protected(official_before, official_after)
                     official_protected = True
@@ -1674,17 +1719,19 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                                   and len(miao_after.get('details') or []) >= 4),
                                  'matches_target': miao_match,
                                  'protected_match': _miaoshou_protected_matches(
-                                     miao_after.get('protected'), miao_before.get('protected')),
+                                     miao_after.get('protected'), miao_before.get('protected'),
+                                     preserve_warehouse=shelf_policy is not None),
+                                 'shelf_state_preservation': shelf_policy,
                                  'title': miao_after.get('title'),
                                  'main_count': len(miao_after.get('mains') or []),
                                  'detail_count': len(miao_after.get('details') or []),
                                  'shelf_status': miao_after.get('protected', {}).get('status'),
                                  'review_status': miao_after.get('protected', {}).get('checkStatus'),
                                  'start_sale_type': miao_after.get('protected', {}).get('startSaleType'),
-                                 'start_sale_type_before': baseline.get('protected', {}).get('startSaleType'),
+                                 'start_sale_type_before': miao_before.get('protected', {}).get('startSaleType'),
                                  'shelf_mode_matches_original': (
                                      miao_after.get('protected', {}).get('startSaleType') ==
-                                     baseline.get('protected', {}).get('startSaleType'))},
+                                     miao_before.get('protected', {}).get('startSaleType'))},
                     'doudian': {'product_id': item['product_id'], 'shop': item['shop'],
                                 'complete': bool(official_after.get('shop_confirmed') and
                                                  official_after.get('protected')),
