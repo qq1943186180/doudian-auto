@@ -71,7 +71,12 @@ class Bridge:
             for tab in reversed(tabs.get('tabs', [])):
                 candidate = urlparse(tab.get('url', ''))
                 if tab.get('url') == url or (pid and candidate.hostname == 'fxg.jinritemai.com' and candidate.path == '/ffa/g/create' and parse_qs(candidate.query).get('product_id') == pid):
-                    return self.command('find_tab', {'url': tab['url']})
+                    # find_tab matches by host in some Bridge versions and can
+                    # select a different same-host product page. Attach by the
+                    # exact tab id returned by list_tabs instead.
+                    if tab.get('tabId') is not None:
+                        return self.command('attach_tab', {'tabId': tab['tabId']})
+                    raise DoudianError('tab_id_missing', '匹配的浏览器标签没有可验证的标签ID。')
         return self.command('navigate', {'url': url, 'newTab': True, 'group_title': '抖店本地上传'})
 
     def screenshot(self, destination):

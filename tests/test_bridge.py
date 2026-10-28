@@ -25,7 +25,7 @@ def server():
             if action == 'evaluate':
                 data = {'ok':True,'data':{'type':'string','value':json.dumps({'title':'中文'})}}
             elif action == 'list_tabs':
-                data = {'ok':True,'data':{'tabs':[{'url':'https://fxg.jinritemai.com/ffa/g/create?product_id=3790019980637110699&tracking=1'}]}}
+                data = {'ok':True,'data':{'tabs':[{'tabId':9,'url':'https://fxg.jinritemai.com/ffa/g/create?product_id=3790019980637110699&tracking=1'}]}}
             elif action == 'fail':
                 data = {'ok':False,'error':{'code':'not_connected','message':'secret'}}
             else:
@@ -59,12 +59,12 @@ def test_envelope_unicode_session_and_errors(server):
     assert 'secret' not in str(exc.value)
 
 
-def test_reuse_session_editor_after_tracking_redirect(server,monkeypatch):
+def test_reuse_session_editor_after_tracking_redirect_by_exact_tab_id(server,monkeypatch):
     bridge,calls = server
     monkeypatch.setattr(bridge,'require_ready',lambda:None)
     bridge.open('https://fxg.jinritemai.com/ffa/g/create?product_id=3790019980637110699')
-    assert [c['action'] for c in calls] == ['list_tabs','find_tab']
-    assert calls[-1]['args']['url'].endswith('tracking=1')
+    assert [c['action'] for c in calls] == ['list_tabs','attach_tab']
+    assert calls[-1]['args']['tabId'] == 9
 
 
 def test_external_endpoint_rejected():

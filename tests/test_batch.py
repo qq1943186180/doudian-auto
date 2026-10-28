@@ -62,6 +62,55 @@ def _record_nine_uploads(db, task, claim):
                                          'confirmed': True}, db_path=db)
 
 
+def test_run_batch_blocks_all_writes_until_shelf_mode_preservation_is_verified(tmp_path, monkeypatch):
+    db, task, _ = _writer_task(tmp_path)
+    from doudian_auto import miaoshou_batch_editor
+    monkeypatch.setattr(miaoshou_batch_editor, 'SHELF_MODE_PRESERVATION_VERIFIED', False)
+
+    class ForbiddenBridge:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError('browser must not be opened while the save path is unsafe')
+
+    monkeypatch.setattr('doudian_auto.bridge.Bridge', ForbiddenBridge)
+    with pytest.raises(DoudianError) as caught:
+        batch.run_batch('http://127.0.0.1:10086', product_ids=[task['product_id']],
+                        limit=1, owner='writer', db_path=db)
+
+    status = batch.batch_status(task['batch_id'], db_path=db)
+    current = next(row for row in status['products'] if row['id'] == task['id'])
+    assert caught.value.code == 'shelf_mode_unpreservable'
+    assert 'startSaleType' in str(caught.value)
+    assert current['state'] == 'editing'
+    assert current['submission_attempts'] == 0
+
+
+def test_execution_readiness_reports_unsafe_shelf_mode_even_with_acceptance_proof(
+        tmp_path, monkeypatch):
+    from doudian_auto import miaoshou_batch_editor
+    proof_path = tmp_path / 'miaoshou-writer-acceptance.json'
+    proof_path.write_text(json.dumps({
+        'schema_version': 1,
+        'verified_product_ids': ['100000000000000001', '100000000000000002', '100000000000000003'],
+        'readback_hashes': ['a' * 64, 'b' * 64, 'c' * 64],
+    }), encoding='utf-8')
+    monkeypatch.setattr(batch, 'DB_PATH', tmp_path / 'queue.sqlite3')
+    monkeypatch.setattr(miaoshou_batch_editor, 'SHELF_MODE_PRESERVATION_VERIFIED', False)
+
+    class ConnectedBridge:
+        def __init__(self, *args, **kwargs):
+            pass
+        def status(self):
+            return {'running': True, 'extension_connected': True, 'version_mismatch': False}
+
+    monkeypatch.setattr('doudian_auto.bridge.Bridge', ConnectedBridge)
+    readiness = batch.execution_readiness('http://127.0.0.1:10086')
+
+    assert readiness['browser_ready'] is True
+    assert readiness['shelf_mode_preservation_verified'] is False
+    assert readiness['writer_ready'] is False
+    assert 'startSaleType' in readiness['reason']
+
+
 def test_agent_claim_is_atomic_and_completion_requires_current_token(tmp_path):
     db, batch_id = _batch(tmp_path)
     task = batch.claim_next('agent-a', batch_id=batch_id, db_path=db, lease_seconds=600)
@@ -290,6 +339,83 @@ def test_unknown_submission_cannot_return_to_write_state(tmp_path):
     assert persisted['submission_state'] == 'unknown'
 
 
+def _preclick_unknown_task(tmp_path):
+    db, task, claim = _writer_task(tmp_path)
+    _record_nine_uploads(db, task, claim)
+    conn = batch._db(db)
+    baseline = json.loads(conn.execute('SELECT baseline_json FROM products WHERE id=?',
+                                       (task['id'],)).fetchone()[0])
+    baseline['title'] = '原商品标题'
+    baseline['doudian_baseline'] = {'title': '原商品标题'}
+    baseline_hash = batch.hashlib.sha256(
+        json.dumps(baseline, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+    conn.execute('UPDATE products SET baseline_json=?,baseline_hash=? WHERE id=?',
+                 (json.dumps(baseline, ensure_ascii=False), baseline_hash, task['id']))
+    conn.close()
+    batch.set_execution_state(task['id'], 'uploaded', db_path=db)
+    batch.begin_submission(task['id'], 'writer', claim['execution_token'], db_path=db)
+    batch.record_submission_result(task['id'], 'writer', claim['execution_token'],
+                                   {'state': 'unknown', 'error': 'miaoshou_batch_control_not_unique'},
+                                   db_path=db)
+    conn = batch._db(db)
+    row = dict(conn.execute('SELECT * FROM products WHERE id=?', (task['id'],)).fetchone())
+    conn.close()
+    readback = {
+        'read_only': True,
+        'miaoshou': {'product_id': row['product_id'], 'shop': row['shop'], 'complete': True,
+                     'matches_target': False, 'protected_match': True,
+                     'shelf_mode_matches_original': True, 'title': baseline['title']},
+        'doudian': {'product_id': row['product_id'], 'shop': row['shop'], 'complete': True,
+                    'matches_target': False, 'protected_match': True,
+                    'title': baseline['doudian_baseline']['title']},
+    }
+    batch.record_execution_readback(task['id'], 'writer', claim['execution_token'],
+                                    readback, db_path=db)
+    conn = batch._db(db)
+    row = dict(conn.execute('SELECT * FROM products WHERE id=?', (task['id'],)).fetchone())
+    conn.close()
+    intent = json.loads(row['submission_intent_json'])
+    proof = {
+        'click_issued': False, 'failure_code': 'miaoshou_batch_control_not_unique',
+        'read_only': True, 'miaoshou_matches_baseline': True, 'doudian_matches_baseline': True,
+        'product_id': row['product_id'], 'shop': row['shop'],
+        'target_version': row['target_version'], 'baseline_sha256': row['baseline_hash'],
+        'readback_sha256': row['readback_hash'],
+        'submission_intent_sha256': batch.hashlib.sha256(
+            json.dumps(intent, sort_keys=True).encode()).hexdigest(),
+        'miaoshou_title': baseline['title'], 'doudian_title': baseline['doudian_baseline']['title'],
+    }
+    return db, task, claim, proof
+
+
+def test_proven_preclick_failure_can_restore_upload_without_counting_a_save(tmp_path):
+    db, task, claim, proof = _preclick_unknown_task(tmp_path)
+
+    result = batch.restore_proven_preclick_failure(
+        task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+
+    assert result['preclick_failure_recovered'] is True
+    row = batch.batch_status(task['batch_id'], db_path=db)['products'][0]
+    assert row['state'] == 'uploaded'
+    assert row['submission_state'] == 'not_attempted'
+    assert row['submission_attempts'] == 0
+
+
+def test_preclick_recovery_rejects_any_possible_click_or_missing_dual_readback(tmp_path):
+    db, task, claim, proof = _preclick_unknown_task(tmp_path)
+    unsafe = {**proof, 'click_issued': True, 'doudian_matches_baseline': False}
+
+    with pytest.raises(DoudianError) as rejected:
+        batch.restore_proven_preclick_failure(
+            task['id'], 'writer', claim['execution_token'], unsafe, db_path=db)
+
+    assert rejected.value.code == 'preclick_recovery_not_proven'
+    row = batch.batch_status(task['batch_id'], db_path=db)['products'][0]
+    assert row['state'] == 'blocked'
+    assert row['submission_state'] == 'unknown'
+    assert row['submission_attempts'] == 1
+
+
 def test_execution_claim_is_exclusive_and_expired_claim_survives_restart(tmp_path):
     db, task, claim = _writer_task(tmp_path)
     assert batch.claim_execution(task['id'], 'writer-b', db_path=db) is None
@@ -401,6 +527,49 @@ def test_begin_submission_rejects_a_legacy_temp_mapping_even_if_marked_confirmed
     with pytest.raises(DoudianError) as caught:
         batch.begin_submission(task['id'], 'writer', claim['execution_token'], db_path=db)
     assert caught.value.code == 'uploads_incomplete'
+
+
+def test_same_content_upload_url_refresh_is_allowed_only_before_submission(tmp_path):
+    db, task, claim = _writer_task(tmp_path)
+    _record_nine_uploads(db, task, claim)
+    staged_url = 'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-28/x/main.png?dy'
+    batch.record_upload_mapping(
+        task['id'], 'writer', claim['execution_token'], 'mains', 1,
+        {'source_sha256': f'{1:064x}', 'remote_key': staged_url, 'remote_url': staged_url,
+         'asset_state': 'staged', 'confirmed': True},
+        allow_same_content_refresh=True, db_path=db)
+
+    conn = batch._db(db)
+    try:
+        mappings = json.loads(conn.execute('SELECT upload_map_json FROM products WHERE id=?',
+                                           (task['id'],)).fetchone()[0])
+        refreshed = next(item for item in mappings if item['slot'] == 'mains:1')
+        assert refreshed['remote_url'] == staged_url
+        assert refreshed['asset_state'] == 'staged'
+        event = conn.execute("SELECT detail FROM product_events WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                             (task['id'],)).fetchone()
+        assert json.loads(event['detail'])['event'] == 'equivalent_asset_url_refreshed'
+        conn.execute("UPDATE products SET submission_attempts=1,submission_state='failed' WHERE id=?",
+                     (task['id'],))
+    finally:
+        conn.close()
+
+    replacement = staged_url.replace('main.png', 'main-retry.png')
+    with pytest.raises(DoudianError) as after_attempt:
+        batch.record_upload_mapping(
+            task['id'], 'writer', claim['execution_token'], 'mains', 1,
+            {'source_sha256': f'{1:064x}', 'remote_key': replacement, 'remote_url': replacement,
+             'asset_state': 'staged', 'confirmed': True},
+            allow_same_content_refresh=True, db_path=db)
+    assert after_attempt.value.code == 'upload_mapping_conflict'
+
+    with pytest.raises(DoudianError) as changed_bytes:
+        batch.record_upload_mapping(
+            task['id'], 'writer', claim['execution_token'], 'mains', 1,
+            {'source_sha256': 'f' * 64, 'remote_key': replacement, 'remote_url': replacement,
+             'asset_state': 'staged', 'confirmed': True},
+            allow_same_content_refresh=True, db_path=db)
+    assert changed_bytes.value.code == 'upload_mapping_conflict'
 
 
 def test_staged_urls_finalize_only_from_matching_permanent_dual_readback(tmp_path):
@@ -645,7 +814,7 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
             return None
         def command(self, action, args=None):
             self.commands.append(action)
-            return {'success': True, 'closed': 0}
+            return {'success': True, 'closed': 0, 'tabs': []}
 
     class FakeEditor:
         def __init__(self, bridge):
@@ -661,93 +830,50 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
                                                           'startSaleType': 0},
                     'protected_complete': True}
         def require_shelf_mode_preservable(self, expected_mode):
-            assert expected_mode == 0
-            return {'preservable': True, 'mode': 0}
-        def fill_title(self, product_id, title):
+            raise AssertionError('multi-field path must not use the quick-editor shelf-mode guard')
+        def stop_capture(self):
+            return None
+
+    class FakeBatchEditor:
+        def __init__(self, bridge, shop, **kwargs):
+            pass
+        def close_preview_if_open(self):
+            return False
+        def verify_prepared(self, *, product_id, title, baseline, asset_paths):
+            if product_id == ids[0]:
+                raise DoudianError('form_not_prepared', 'fake form needs preparation')
+            return mappings(product_id, asset_paths)
+        def prepare(self, *, product_id, **kwargs):
             raise DoudianError('fake_ui_failure', 'fake pre-save UI failure')
+        def prepare_submission(self, *, product_id, title, mappings, **kwargs):
+            return {'marker': 'fake-final-button', 'product_id': product_id, 'title': title}
+        def click_start_once(self, **kwargs):
+            return {'state': 'failed', 'error': 'business_validation'}
+
+    def mappings(product_id, asset_paths):
+        out = []
+        for index, path in enumerate(asset_paths):
+            slot = f'mains:{index+1}' if index < 5 else f'details:{index-4}'
+            url = f'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-28/{product_id}-{index}.png?dy'
+            out.append({'slot': slot, 'source_sha256': batch._digest(path),
+                        'remote_key': url, 'remote_url': url,
+                        'asset_state': 'staged', 'confirmed': True})
+        return out
 
     monkeypatch.setattr('doudian_auto.bridge.Bridge', FakeBridge)
     monkeypatch.setattr('doudian_auto.editor.Editor', FakeEditor)
     monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor', FakeMiaoshou)
+    monkeypatch.setattr('doudian_auto.miaoshou_batch_editor.MiaoshouBatchEditor', FakeBatchEditor)
+    monkeypatch.setattr('doudian_auto.miaoshou_batch_editor.SHELF_MODE_PRESERVATION_VERIFIED', True)
     monkeypatch.setattr(batch, '_stable_doudian_snapshot', lambda editor, identity: baseline(identity['product_id']))
     result = batch.run_batch('http://127.0.0.1:10086', batch_id=batch_id, product_ids=ids,
                              limit=2, owner='test-writer', db_path=db)
     assert [item['product_id'] for item in result['run']] == ids
-    assert all(item['state'] == 'editing' and item['resumable'] is True for item in result['run']), result
-    assert FakeBridge.instances[0].commands == ['close_session', 'close_session']
+    assert result['run'][0]['state'] == 'editing' and result['run'][0]['resumable'] is True
+    assert result['run'][1]['state'] == 'uploaded' and result['run'][1]['submission_state'] == 'failed'
+    assert FakeBridge.instances[0].commands.count('close_session') == 1
     assert result['browser_session_cleanup'] == {'attempted': True, 'closed': 0}
-    assert batch.batch_status(batch_id, db_path=db)['counts'] == {'editing': 2}
-
-
-def test_batch_shelf_mode_preflight_stops_before_any_edit_or_upload(tmp_path, monkeypatch):
-    pid = '3850072900438720565'
-    source = tmp_path / 'products.json'
-    source.write_text(json.dumps({'products': [
-        {'shop': '销霁百货', 'product_id': pid, 'source_title': 'original'}
-    ]}, ensure_ascii=False), encoding='utf-8')
-    db = tmp_path / 'queue.sqlite3'
-    batch_id = batch.create_batch(source, db_path=db)['batch_id']
-    task = batch.claim_next('asset-agent', batch_id=batch_id, product_id=pid, db_path=db)
-    _, assets = _product_set(tmp_path, task['target_version'], product_id=pid)
-    batch.complete_agent_task(task['id'], 'asset-agent', task['lease_token'], assets, db_path=db)
-
-    def snapshot(product_id):
-        return {'product_id': product_id, 'shop': '销霁百货', 'shop_confirmed': True,
-                'title': 'original', 'mains': [f'old-main-{i}' for i in range(5)],
-                'details': [f'old-detail-{i}' for i in range(4)],
-                'protected': [], 'draft_loaded': False, 'rejected': False}
-
-    class FakeBridge:
-        def __init__(self, *args, **kwargs):
-            self.commands = []
-        def require_ready(self):
-            return None
-        def command(self, action, args=None):
-            self.commands.append(action)
-            return {'success': True, 'closed': 0}
-
-    class FakeEditor:
-        def __init__(self, bridge):
-            pass
-
-    class FakeMiaoshou:
-        writes = []
-        def __init__(self, bridge, shop, **kwargs):
-            pass
-        def open_product(self, product_id, *, fresh=True):
-            return None
-        def read_product(self, product_id):
-            return {'product_id': product_id, 'shop': '销霁百货', 'title': 'original',
-                    'mains': [f'old-main-{i}' for i in range(5)],
-                    'details': [f'old-detail-{i}' for i in range(4)],
-                    'protected': {'specPrices': [{'price': '10'}], 'status': 0, 'startSaleType': 0},
-                    'protected_complete': True}
-        def require_shelf_mode_preservable(self, expected_mode):
-            assert expected_mode == 0
-            raise DoudianError('miaoshou_shelf_mode_not_editable', 'missing shelf mode control')
-        def fill_title(self, product_id, title):
-            self.writes.append(('title', product_id, title))
-        def replace_slot(self, *args, **kwargs):
-            self.writes.append(('image', args))
-        def click_save_once(self):
-            self.writes.append(('save',))
-            raise AssertionError('preflight must block save')
-
-    monkeypatch.setattr('doudian_auto.bridge.Bridge', FakeBridge)
-    monkeypatch.setattr('doudian_auto.editor.Editor', FakeEditor)
-    monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor', FakeMiaoshou)
-    monkeypatch.setattr(batch, '_stable_doudian_snapshot', lambda editor, identity: snapshot(identity['product_id']))
-
-    result = batch.run_batch('http://127.0.0.1:10086', batch_id=batch_id,
-                             product_ids=[pid], limit=1, owner='test-writer', db_path=db)
-
-    assert result['run'][0]['reason'] == 'miaoshou_shelf_mode_not_editable'
-    assert result['run'][0]['state'] == 'ready'
-    assert result['run'][0]['resumable'] is True
-    assert FakeMiaoshou.writes == []
-    current = batch.batch_status(batch_id, db_path=db)['products'][0]
-    assert current['submission_state'] == 'not_attempted'
-    assert current['submission_attempts'] == 0
+    assert batch.batch_status(batch_id, db_path=db)['counts'] == {'editing': 1, 'uploaded': 1}
 
 
 def test_acceptance_results_include_only_persisted_dual_readback_verified_products(tmp_path):

@@ -621,7 +621,8 @@ def record_baseline(task_id, owner, token, baseline, *, db_path=None):
         conn.close()
 
 
-def record_upload_mapping(task_id, owner, token, kind, slot, mapping, *, db_path=None):
+def record_upload_mapping(task_id, owner, token, kind, slot, mapping, *, db_path=None,
+                          allow_same_content_refresh=False):
     """Durably remember a read-back-confirmed permanent material replacement."""
     if kind not in ('mains', 'details') or not isinstance(mapping, dict):
         raise DoudianError('invalid_upload_mapping', '图片映射类型无效。')
@@ -676,8 +677,24 @@ def record_upload_mapping(task_id, owner, token, kind, slot, mapping, *, db_path
             if (existing.get('source_sha256') != source_hash or
                     existing.get('remote_key') != remote_key or
                     existing.get('remote_url') != remote_url):
-                raise DoudianError('upload_mapping_conflict', '槽位已有不同的已确认素材，拒绝覆盖映射。')
-            existing.update(asset_state=asset_state)
+                safe_refresh = (allow_same_content_refresh is True and
+                                existing.get('source_sha256') == source_hash and
+                                row['state'] in ('editing', 'uploaded') and
+                                row['submission_state'] == 'not_attempted' and
+                                int(row['submission_attempts'] or 0) == 0 and
+                                row['submission_intent_json'] is None)
+                if not safe_refresh:
+                    raise DoudianError('upload_mapping_conflict', '槽位已有不同的已确认素材，拒绝覆盖映射。')
+                items = [entry for entry in items
+                         if not (isinstance(entry, dict) and entry.get('slot') == key)]
+                items.append(item)
+                conn.execute('''INSERT INTO product_events(task_id,from_state,to_state,occurred_at,
+                                elapsed_seconds,detail) VALUES(?,?,?,?,?,?)''',
+                             (task_id, row['state'], row['state'], time.time(), 0,
+                              json.dumps({'event': 'equivalent_asset_url_refreshed', 'slot': key,
+                                          'source_sha256': source_hash}, ensure_ascii=False, sort_keys=True)))
+            else:
+                existing.update(asset_state=asset_state)
         elif not existing:
             items.append(item)
         conn.execute('UPDATE products SET upload_map_json=?,updated_at=? WHERE id=?',
@@ -726,6 +743,77 @@ def begin_submission(task_id, owner, token, *, db_path=None):
                                                  json.dumps({'intent_sha256': hashlib.sha256(json.dumps(intent, sort_keys=True).encode()).hexdigest()})))
         conn.commit()
         return intent
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def restore_proven_preclick_failure(task_id, owner, token, proof, *, db_path=None):
+    """Return to uploaded only when an intent was persisted but its save click was not sent.
+
+    This narrow recovery is for the observed control-lookup failure that is raised
+    before Bridge.click is called. It requires a fresh dual-page baseline readback,
+    and keeps an audit event for the discarded intent. Unknown results after a click
+    remain permanently readback-only.
+    """
+    allowed_codes = {'miaoshou_batch_control_not_unique'}
+    if (not isinstance(proof, dict) or proof.get('click_issued') is not False or
+            proof.get('failure_code') not in allowed_codes or proof.get('read_only') is not True or
+            proof.get('miaoshou_matches_baseline') is not True or
+            proof.get('doudian_matches_baseline') is not True):
+        raise DoudianError('preclick_recovery_not_proven', '未证明保存点击没有发出且双端仍等于原基线，保持隔离。')
+    conn = _db(db_path)
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        row = _execution_row(conn, task_id, owner, token, states={'blocked'})
+        try:
+            intent = json.loads(row['submission_intent_json'] or '')
+            baseline = json.loads(row['baseline_json'] or '')
+            prior_readback = json.loads(row['readback_json'] or '')
+        except (TypeError, ValueError):
+            raise DoudianError('preclick_recovery_not_proven', '保存意图或基线不完整，保持隔离。')
+        intent_hash = hashlib.sha256(json.dumps(intent, sort_keys=True).encode()).hexdigest()
+        baseline_hash = hashlib.sha256(
+            json.dumps(baseline, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+        miao_readback = prior_readback.get('miaoshou') if isinstance(prior_readback, dict) else None
+        doudian_readback = prior_readback.get('doudian') if isinstance(prior_readback, dict) else None
+        if (row['state'] != 'blocked' or row['last_error'] != 'readback_mismatch' or
+                row['submission_state'] != 'unknown' or int(row['submission_attempts'] or 0) != 1 or
+                intent.get('save_click_count') != 1 or intent.get('attempt') != 1 or
+                baseline_hash != row['baseline_hash'] or
+                row['readback_hash'] is None or prior_readback.get('read_only') is not True or
+                proof.get('readback_sha256') != row['readback_hash'] or
+                not isinstance(miao_readback, dict) or not isinstance(doudian_readback, dict) or
+                miao_readback.get('title') != baseline.get('title') or
+                doudian_readback.get('title') != (baseline.get('doudian_baseline') or {}).get('title') or
+                miao_readback.get('protected_match') is not True or
+                doudian_readback.get('protected_match') is not True or
+                miao_readback.get('shelf_mode_matches_original') is not True or
+                proof.get('product_id') != row['product_id'] or
+                proof.get('shop') != row['shop'] or
+                proof.get('target_version') != row['target_version'] or
+                proof.get('baseline_sha256') != row['baseline_hash'] or
+                proof.get('submission_intent_sha256') != intent_hash or
+                proof.get('miaoshou_title') != baseline.get('title') or
+                proof.get('doudian_title') != (baseline.get('doudian_baseline') or {}).get('title')):
+            raise DoudianError('preclick_recovery_state_changed', '任务、提交意图或读回证据与当前记录不一致。')
+        now = time.time()
+        detail = {'event': 'submission_preclick_aborted', 'click_issued': False,
+                  'failure_code': proof['failure_code'], 'submission_intent_sha256': intent_hash,
+                  'baseline_sha256': row['baseline_hash'], 'read_only': True,
+                  'miaoshou_matches_baseline': True, 'doudian_matches_baseline': True}
+        conn.execute('''UPDATE products SET state='uploaded',submission_state='not_attempted',
+                        submission_attempts=0,submission_intent_json=NULL,last_error=?,updated_at=?
+                        WHERE id=?''', ('save_button_precheck_failed', now, task_id))
+        conn.execute('''INSERT INTO product_events(task_id,from_state,to_state,occurred_at,elapsed_seconds,detail)
+                        VALUES(?,?,?,?,?,?)''', (task_id, 'blocked', 'uploaded', now,
+                                                 max(0, now-row['updated_at']),
+                                                 json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+        conn.commit()
+        return {'task_id': task_id, 'state': 'uploaded', 'submission_state': 'not_attempted',
+                'submission_attempts': 0, 'preclick_failure_recovered': True}
     except Exception:
         conn.rollback()
         raise
@@ -968,6 +1056,7 @@ def verified_acceptance_results(product_ids, *, db_path=None):
 def execution_readiness(endpoint):
     """Probe the browser and the durable three-product writer acceptance record."""
     from .bridge import Bridge
+    from .miaoshou_batch_editor import SHELF_MODE_PRESERVATION_VERIFIED
 
     status = Bridge(endpoint, session='miaoshou-batch-doctor').status()
     ready = bool(status.get('running') and status.get('extension_connected') and
@@ -978,14 +1067,19 @@ def execution_readiness(endpoint):
         proof = read_json(proof_path)
     except (OSError, ValueError):
         pass
-    writer_ready = bool(proof and proof.get('schema_version') == 1 and
-                        len(set(proof.get('verified_product_ids', []))) >= 3 and
-                        len(proof.get('readback_hashes', [])) >= 3)
-    return {'browser_ready': ready, 'bridge': status, 'writer_ready': ready and writer_ready,
+    acceptance_verified = bool(proof and proof.get('schema_version') == 1 and
+                               len(set(proof.get('verified_product_ids', []))) >= 3 and
+                               len(proof.get('readback_hashes', [])) >= 3)
+    writer_ready = bool(ready and acceptance_verified and SHELF_MODE_PRESERVATION_VERIFIED)
+    reason = None if writer_ready else (
+        '浏览器连接未就绪。' if not ready else
+        '妙手批量保存已实测会把审核后上架模式 startSaleType 从0改为1；写入器已关闭，需先验证可保留原模式的写入路径。'
+        if not SHELF_MODE_PRESERVATION_VERIFIED else
+        '需要3件商品的妙手与抖店独立读回验收后才开放全批量运行。')
+    return {'browser_ready': ready, 'bridge': status, 'writer_ready': writer_ready,
+            'shelf_mode_preservation_verified': SHELF_MODE_PRESERVATION_VERIFIED,
             'acceptance_products': proof.get('verified_product_ids', []) if writer_ready else [],
-            'reason': None if ready and writer_ready else
-                      ('浏览器连接未就绪。' if not ready else
-                       '需要3件商品的妙手与抖店独立读回验收后才开放全批量运行。')}
+            'reason': reason}
 
 
 def _stable_doudian_snapshot(editor, identity):
@@ -1284,6 +1378,25 @@ def _close_batch_session(bridge):
                 'error': getattr(exc, 'code', type(exc).__name__)}
 
 
+def _close_task_miaoshou_batch_tab(bridge):
+    """Close only the single Miaoshou multi-field task tab after queue persistence."""
+    try:
+        tabs = bridge.command('list_tabs') or {}
+        matches = [tab for tab in tabs.get('tabs', [])
+                   if urlparse(tab.get('url', '')).hostname == 'v2-dd.chengji-inc.com' and
+                   urlparse(tab.get('url', '')).path == '/product/batch/edit']
+        if not matches:
+            return {'attempted': False, 'closed': 0}
+        if len(matches) != 1:
+            return {'attempted': True, 'closed': 0, 'reason': 'ambiguous_task_tabs'}
+        bridge.command('attach_tab', {'tabId': matches[0]['tabId']})
+        result = bridge.command('close_tab') or {}
+        return {'attempted': True, 'closed': int(bool(result.get('closed')))}
+    except Exception as exc:
+        return {'attempted': True, 'closed': 0,
+                'error': getattr(exc, 'code', type(exc).__name__)}
+
+
 def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='codex-miaoshou-writer',
               db_path=None, session='miaoshou-auto-batch-20261028', resume_only=False,
               readback_only=False):
@@ -1291,6 +1404,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
     from .bridge import Bridge
     from .editor import Editor
     from .miaoshou_editor import MiaoshouEditor
+    from .miaoshou_batch_editor import (MiaoshouBatchEditor, SHELF_MODE_BLOCK_MESSAGE,
+                                        SHELF_MODE_PRESERVATION_VERIFIED)
     from .workflow import compare_protected
 
     if not 1 <= int(limit) <= 20:
@@ -1332,13 +1447,18 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
         return {'run': [], 'recovered_legacy_versions': recovered_legacy,
                 'message': '没有符合筛选条件且素材已通过校验的商品。'}
     candidates = candidates[:int(limit)]
+    write_candidates = [item for item in candidates
+                        if item['state'] in ('ready', 'editing', 'uploaded') or
+                        (item['state'] == 'blocked' and item.get('submission_state') == 'not_attempted')]
+    if write_candidates and not SHELF_MODE_PRESERVATION_VERIFIED:
+        raise DoudianError('shelf_mode_unpreservable', SHELF_MODE_BLOCK_MESSAGE)
     results = []
     with Lock(DATA_ROOT / 'browser.lock'):
         bridge = Bridge(endpoint, session=session, timeout=25)
         bridge.require_ready()
-        # Reuse the durable queue, not a stale editor. Any unfinished page state is
-        # already captured in the queue before old session-owned tabs are cleared.
-        _close_batch_session(bridge)
+        # Preserve a prepared user-owned batch form through validation. The adapter
+        # selects the unique exact route; task tabs are closed only after the result
+        # has been durably recorded.
         for item in candidates:
             task_id = item['id']
             claim = claim_execution(task_id, owner, db_path=db_path, lease_seconds=7200)
@@ -1432,8 +1552,9 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 miao = MiaoshouEditor(bridge, item['shop'], session=session)
                 miao.open_product(item['product_id'], fresh=True)
                 miao_before = miao.read_product(item['product_id'])
-                miao.require_shelf_mode_preservable(
-                    miao_before.get('protected', {}).get('startSaleType'))
+                if miao_before.get('protected', {}).get('startSaleType') is None:
+                    raise DoudianError('shelf_mode_unknown',
+                                       '妙手基线没有读回审核后的上架模式，未开始批量编辑。')
                 agent_facts = read_json(ready['path']).get('facts') or {}
                 source_title = next((agent_facts.get(key) for key in
                                      ('current_title', 'old_title', 'product_name_from_snapshot')
@@ -1468,43 +1589,58 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                         claim['state'] = 'editing'
                     miao_before = baseline
                     official_before = baseline['doudian_baseline']
-                miao.fill_title(item['product_id'], manifest['title'])
-                mappings = []
-                prior_maps = json.loads(claim.get('upload_map_json') or '[]')
-                prior_by_slot = {entry.get('slot'): entry for entry in prior_maps
-                                 if _confirmed_upload_mapping(entry)}
                 target_assets = _target_asset_slots(manifest['assets'])
                 if len([x for x in target_assets if x[0] == 'mains']) != 5 or len(target_assets) != 9:
                     raise DoudianError('asset_manifest_incomplete', '目标版本必须是5张主图和4张新详情图。')
-                for kind, slot, path in target_assets:
-                    renew_execution(task_id, owner, claim['execution_token'],
-                                    db_path=db_path, lease_seconds=7200)
-                    key = f'{kind}:{slot}'
-                    expected_hash = _digest(path)
-                    prior = prior_by_slot.get(key)
-                    if prior and prior.get('source_sha256') != expected_hash:
-                        raise DoudianError('upload_mapping_conflict', '续办槽位的来源素材哈希与目标版本不同。')
-                    mapping = miao.replace_slot(kind, slot, path,
-                                                reuse_url=prior.get('remote_url') if prior else None)
-                    if prior and mapping['remote_key'] != prior.get('remote_key'):
-                        raise DoudianError('upload_mapping_conflict', '复用素材后的妙手槽位标识与已确认映射不一致。')
-                    record_upload_mapping(task_id, owner, claim['execution_token'], kind, slot,
-                                          mapping, db_path=db_path)
-                    mappings.append({'slot': f'{kind}:{slot}', 'source_sha256': mapping['source_sha256'],
-                                     'remote_key': mapping['remote_key'], 'remote_url': mapping['remote_url'],
-                                     'asset_state': mapping['asset_state'], 'confirmed': True})
+                main_paths = [path for kind, _, path in target_assets if kind == 'mains']
+                detail_paths = [path for kind, _, path in target_assets if kind == 'details']
+                asset_paths = main_paths + detail_paths
+                batch_editor = MiaoshouBatchEditor(bridge, item['shop'], session=session)
+                try:
+                    mappings = batch_editor.verify_prepared(
+                        product_id=item['product_id'], title=manifest['title'],
+                        baseline=miao_before, asset_paths=asset_paths)
+                except DoudianError as form_error:
+                    if form_error.code in {'wrong_shop', 'miaoshou_batch_wrong_page',
+                                           'miaoshou_batch_tab_ambiguous'}:
+                        raise
+                    batch_editor.prepare(product_id=item['product_id'], title=manifest['title'],
+                                          baseline=miao_before, main_paths=main_paths,
+                                          detail_paths=detail_paths)
+                    mappings = batch_editor.verify_prepared(
+                        product_id=item['product_id'], title=manifest['title'],
+                        baseline=miao_before, asset_paths=asset_paths)
+                for mapping in mappings:
+                    kind, raw_slot = mapping['slot'].split(':', 1)
+                    record_upload_mapping(task_id, owner, claim['execution_token'], kind,
+                                          int(raw_slot), mapping, db_path=db_path,
+                                          allow_same_content_refresh=True)
+                miao.stop_capture()
                 set_execution_state(task_id, 'uploaded', db_path=db_path)
+                # Build and validate the page-level result preview before recording
+                # a save intent. The final button does not exist until this step.
+                prepared_submission = batch_editor.prepare_submission(
+                    product_id=item['product_id'], shop=item['shop'],
+                    title=manifest['title'], mappings=mappings)
                 begin_submission(task_id, owner, claim['execution_token'], db_path=db_path)
                 submission_intent = True
                 try:
-                    result = miao.click_save_once()
+                    result = batch_editor.click_start_once(
+                        product_id=item['product_id'], title=manifest['title'],
+                        baseline=miao_before, asset_paths=asset_paths,
+                        validated_mappings=mappings,
+                        prepared_submission=prepared_submission)
                 except Exception as exc:
                     result = {'state': 'unknown', 'error': getattr(exc, 'code', type(exc).__name__)}
                 result_state = record_submission_result(task_id, owner, claim['execution_token'],
                                                         result, db_path=db_path)
                 submission_intent = False
-                if result_state['submission_state'] not in ('accepted',):
-                    miao.stop_capture()
+                if result_state['submission_state'] == 'failed':
+                    results.append({'task_id': task_id, 'product_id': item['product_id'],
+                                    'state': result_state['state'], 'submission_state': result_state['submission_state'],
+                                    'reason': result.get('error')})
+                    continue
+                if result_state['submission_state'] not in ('accepted', 'unknown'):
                     results.append({'task_id': task_id, 'product_id': item['product_id'],
                                     'state': result_state['state'], 'submission_state': result_state['submission_state'],
                                     'reason': result.get('error')})
@@ -1589,7 +1725,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                          'doudian_draft_or_rejected', 'shelf_state_unknown', 'wrong_identity',
                                          'target_version_conflict', 'target_version_mismatch',
                                          'artifact_product_mismatch', 'artifact_manifest_changed',
-                                         'protected_incomplete', 'baseline_incomplete'}
+                                         'protected_incomplete', 'baseline_incomplete',
+                                         'shelf_mode_unpreservable'}
                         if fatal:
                             set_execution_state(task_id, 'blocked', error=code, db_path=db_path)
                         else:
@@ -1611,9 +1748,11 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 except DoudianError:
                     pass
         session_cleanup = _close_batch_session(bridge)
+        task_tab_cleanup = _close_task_miaoshou_batch_tab(bridge)
         return {'run': results, 'recovered_legacy_versions': recovered_legacy,
                 'continue_after_item_error': True,
                 'browser_session_cleanup': session_cleanup,
+                'task_batch_tab_cleanup': task_tab_cleanup,
                 'completed': sum(1 for item in results if item.get('state') == 'verified'),
                 'blocked': sum(1 for item in results if item.get('state') == 'blocked')}
 
