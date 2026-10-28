@@ -270,8 +270,8 @@ def test_title_repair_precondition_allows_only_review_and_shelf_mode_deltas():
     assert batch._miaoshou_title_repair_fields_match(current, baseline) is False
 
 
-def _accepted_mismatch_title_repair_task(tmp_path):
-    db, task, claim = _writer_task(tmp_path)
+def _accepted_mismatch_title_repair_task(tmp_path, *, protected_extra=None):
+    db, task, claim = _writer_task(tmp_path, protected_extra=protected_extra)
     _record_nine_uploads(db, task, claim)
     readback_hash = 'a' * 64
     conn = batch._db(db)
@@ -311,6 +311,35 @@ def test_title_repair_requires_original_shelf_mode_before_save(tmp_path):
     assert row['submission_attempts'] == 1
 
 
+@pytest.mark.parametrize('case', ['valid', 'forged_policy', 'shelf_changed', 'unknown_save'])
+def test_title_repair_warehouse_policy_is_bound_and_never_retries_unknown(tmp_path, case):
+    db, task, claim, proof = _accepted_mismatch_title_repair_task(
+        tmp_path, protected_extra={'status': 1, 'startSaleType': 0})
+    policy = batch._warehouse_shelf_preservation(
+        {'status': 1, 'startSaleType': 1}, {'status': 1, 'startSaleType': 0})
+    proof.update(shelf_mode_matches_original=False, shelf_status=1, start_sale_type=1,
+                 shelf_state_preservation=policy)
+    if case == 'forged_policy':
+        proof['shelf_state_preservation'] = {**policy, 'before_mode': 1}
+    elif case == 'shelf_changed':
+        proof['shelf_status'] = 0
+    elif case == 'unknown_save':
+        conn = batch._db(db)
+        conn.execute("UPDATE products SET submission_state='unknown' WHERE id=?", (task['id'],))
+        conn.close()
+    if case == 'valid':
+        intent = batch.begin_title_repair_submission(
+            task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+        assert intent['shelf_state_preservation'] == policy
+        assert intent['shelf_mode_matches_original'] is False
+        assert intent['attempt'] == 2
+    else:
+        with pytest.raises(DoudianError):
+            batch.begin_title_repair_submission(
+                task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+        assert batch.batch_status(task['batch_id'], db_path=db)['products'][0]['submission_attempts'] == 1
+
+
 def test_title_repair_submission_is_durable_and_limited_to_one_repair(tmp_path):
     db, task, claim, proof = _accepted_mismatch_title_repair_task(tmp_path)
 
@@ -324,6 +353,148 @@ def test_title_repair_submission_is_durable_and_limited_to_one_repair(tmp_path):
     assert row['state'] == 'submitting'
     assert row['submission_state'] == 'unknown'
     assert row['submission_attempts'] == 2
+
+
+@pytest.mark.parametrize('failure_case', ['known_rejection', 'missing_receipt', 'unknown'])
+def test_only_documented_completed_rejection_can_switch_to_title_only_page(tmp_path, failure_case):
+    db, task, claim, proof = _accepted_mismatch_title_repair_task(tmp_path)
+    batch.begin_title_repair_submission(task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+    batch.record_submission_result(task['id'], 'writer', claim['execution_token'], {
+        'state': 'unknown' if failure_case == 'unknown' else 'failed',
+        'error': 'explicit_platform_rejection', 'http_status': 200,
+        'request_id': None if failure_case == 'missing_receipt' else 'observed-completed-request'}, db_path=db)
+    proof['repair_path'] = 'title-batch'
+    proof['title_only_preview'] = {
+        'url': 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=title',
+        'shop': task['shop'], 'product_ids': [task['product_id']], 'row_ids': [task['product_id']],
+        'count': 1, 'checked_methods': ['new'], 'overlength': 'fail', 'repair_size': False,
+        'shelf_unchanged': True, 'timer': False, 'old_title': proof['current_title'],
+        'input_title': proof['target_title'], 'row_title': proof['target_title'],
+        'rendered_units': batch.validate_title(proof['target_title'])[0], 'save_buttons': 1, 'final_submit': True}
+    if failure_case != 'known_rejection':
+        with pytest.raises(DoudianError):
+            batch.begin_title_repair_submission(task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+        return
+    intent = batch.begin_title_repair_submission(task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+    assert intent['attempt'] == 3 and intent['previous_failure_sha256']
+    batch.record_submission_result(task['id'], 'writer', claim['execution_token'],
+                                   {'state': 'failed', 'error': 'explicit_platform_rejection',
+                                    'http_status': 200, 'request_id': 'last'}, db_path=db)
+    with pytest.raises(DoudianError):
+        batch.begin_title_repair_submission(task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+
+
+@pytest.mark.parametrize('final_was_clicked', [False, True])
+def test_temp_preview_response_never_rearms_an_unknown_submit(tmp_path, final_was_clicked):
+    db, task, claim, proof = _accepted_mismatch_title_repair_task(tmp_path)
+    proof.update(repair_path='title-batch', resume_preview_only=True, no_product_submit_issued=True)
+    preview = {'url': 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=title',
+        'shop': task['shop'], 'product_ids': [task['product_id']], 'row_ids': [task['product_id']],
+        'count': 1, 'checked_methods': ['new'], 'overlength': 'fail', 'repair_size': False,
+        'shelf_unchanged': True, 'timer': False, 'old_title': proof['current_title'],
+        'input_title': proof['target_title'], 'row_title': proof['target_title'],
+        'rendered_units': batch.validate_title(proof['target_title'])[0], 'save_buttons': 1, 'final_submit': True}
+    proof['title_only_preview'] = preview
+    old_preview = {'final_submit': True} if final_was_clicked else {}
+    old_intent = {'repair_path': 'title-batch', 'title_only_preview': old_preview, 'attempt': 2}
+    response = {'observed_endpoint': '/api/v2/product/batch/saveTempBatchTask',
+                'error': 'title_batch_success_requires_readback', 'http_status': 200,
+                'response_result': 'success', 'request_title_matches': True, 'request_id': 'preview'}
+    if final_was_clicked:
+        response['clicked_control'] = 'J_batchEditProduct'
+    conn = batch._db(db)
+    old = json.loads(conn.execute('SELECT baseline_json FROM products WHERE id=?', (task['id'],)).fetchone()[0])
+    old['title'] = proof['current_title']
+    maps = json.loads(conn.execute('SELECT upload_map_json FROM products WHERE id=?', (task['id'],)).fetchone()[0])
+    page = {'title': proof['current_title'], 'complete': True, 'protected_match': True}
+    evidence = {'read_only': True, 'miaoshou': page, 'doudian': page, 'final_asset_mappings': maps}
+    conn.execute("UPDATE products SET submission_state='unknown',submission_attempts=2,submission_intent_json=?,baseline_json=?,readback_json=? WHERE id=?",
+                 (json.dumps(old_intent), json.dumps(old), json.dumps(evidence), task['id']))
+    conn.execute("INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) VALUES(?,'submitting','blocked',0,?)",
+                 (task['id'], json.dumps(response)))
+    conn.close()
+    with pytest.raises(DoudianError):
+        batch.begin_title_repair_submission(task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+
+
+@pytest.mark.parametrize('save_result', ['accepted', 'unknown'])
+@pytest.mark.parametrize('save_path', ['quick', 'title-batch'])
+def test_title_repair_saves_once_and_reconciles_without_touching_images(tmp_path, monkeypatch, save_result, save_path):
+    db, task, claim, _ = _accepted_mismatch_title_repair_task(
+        tmp_path, protected_extra={'status': 1, 'startSaleType': 0})
+    ready = batch.load_ready_artifacts(task['id'], db_path=db)
+    target = ready['manifest']['title']
+    conn = batch._db(db)
+    row = conn.execute('SELECT baseline_json,upload_map_json FROM products WHERE id=?', (task['id'],)).fetchone()
+    baseline = json.loads(row['baseline_json'])
+    maps = json.loads(row['upload_map_json'])
+    conn.close()
+    sections = [{'section': name, 'observation': 'ready', 'inputs': [], 'selections': [],
+                 'static_fields': [], 'images': []}
+                for name in ('基础信息', '价格库存', '服务与履约')]
+    mains = [x['remote_url'] for x in maps if x['slot'].startswith('mains:')]
+    details = [x['remote_url'] for x in maps if x['slot'].startswith('details:')] + baseline['details'][4:]
+    baseline['title'] = 'old title'
+    baseline['doudian_baseline'] = {'protected': sections}
+    calls = []
+    saved = False
+
+    class FakeBridge:
+        def __init__(self, *args, **kwargs): self.session = kwargs.get('session')
+        def require_ready(self): pass
+        def command(self, action, args=None): return {'tabs': [], 'closed': 0}
+    class FakeEditor:
+        def __init__(self, bridge): pass
+    class FakeMiao:
+        def __init__(self, *args, **kwargs): pass
+        def open_product(self, *args, **kwargs): pass
+        def read_product(self, pid):
+            return {'product_id': pid, 'shop': task['shop'], 'title': target if saved else 'old title',
+                    'mains': mains, 'details': details, 'protected_complete': True,
+                    'protected': {**baseline['protected'], 'startSaleType': 1}}
+        def require_shelf_mode_preservable(self, mode):
+            raise AssertionError('warehouse proof must not require a nonexistent raw-mode control')
+        def fill_title(self, pid, title): calls.append(('fill', title))
+        def prepare_save(self, pid, title): return {'product_id': pid, 'title': title, 'selector': '@e1'}
+        def click_save_once(self, *, prepared_save):
+            nonlocal saved
+            calls.append(('save', prepared_save['title']))
+            saved = True
+            return {'state': save_result}
+        def stop_capture(self): pass
+    class FakeTitle:
+        def __init__(self, *args, **kwargs): pass
+        def prepare_save(self, pid, old_title, title):
+            return {'marker': 'one', 'product_id': pid, 'old_title': old_title, 'title': title,
+                    'state': {'url': 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=title',
+                    'shop': task['shop'], 'product_ids': [pid], 'row_ids': [pid], 'count': 1,
+                    'checked_methods': ['new'], 'overlength': 'fail', 'repair_size': False,
+                    'shelf_unchanged': True, 'timer': False, 'old_title': old_title,
+                    'input_title': title, 'row_title': title,
+                    'rendered_units': batch.validate_title(title)[0], 'save_buttons': 1, 'final_submit': True}}
+        def click_save_once(self, prepared):
+            nonlocal saved
+            calls.append(('save', prepared['title']))
+            saved = True
+            return {'state': save_result}
+    def official(editor, identity):
+        return {'product_id': task['product_id'], 'shop': task['shop'], 'shop_confirmed': True,
+                'title': target if saved else 'old title', 'mains': mains, 'details': details,
+                'protected': sections, 'draft_loaded': False, 'rejected': False}
+    monkeypatch.setattr('doudian_auto.bridge.Bridge', FakeBridge)
+    monkeypatch.setattr('doudian_auto.editor.Editor', FakeEditor)
+    monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor', FakeMiao)
+    monkeypatch.setattr('doudian_auto.miaoshou_title_editor.MiaoshouTitleEditor', FakeTitle)
+    monkeypatch.setattr(batch, '_stable_doudian_snapshot', official)
+    monkeypatch.setattr(batch, '_stored_execution_baseline', lambda *args: baseline)
+    batch.release_execution(task['id'], 'writer', claim['execution_token'], db_path=db)
+    result = batch.repair_accepted_title_mismatches('http://127.0.0.1:10086',
+        product_ids=[task['product_id']], owner='writer', db_path=db, save_path=save_path)
+    assert result['completed'] == 1, result
+    assert calls == ([('fill', target)] if save_path == 'quick' else []) + [('save', target)]
+    current = batch.batch_status(task['batch_id'], db_path=db)['products'][0]
+    assert current['state'] == 'verified' and current['submission_attempts'] == 2
+    assert current['submission_state'] == ('accepted' if save_result == 'accepted' else 'verified_by_readback')
 
 
 def test_artifact_validator_rejects_duplicates_and_wrong_product(tmp_path):

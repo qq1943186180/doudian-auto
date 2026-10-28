@@ -292,7 +292,7 @@ class MiaoshouEditor:
         time.sleep(0.3)
 
     def fill_title(self, product_id, title):
-        from .title import validate_title
+        from .title import title_units, validate_title
 
         _, errors = validate_title(title)
         if errors:
@@ -334,12 +334,10 @@ class MiaoshouEditor:
                                             'params': {'type': event_type, 'key': 'Tab', 'code': 'Tab',
                                                        'windowsVirtualKeyCode': 9}})
             self.bridge.wait(
-                lambda: self.bridge.evaluate(
-                    "(()=>{const d=document.querySelector('.product-edit-dialog');"
-                    "const f=d&&[...d.querySelectorAll('.el-form-item__label')].find(x=>(x.innerText||'').trim()==='商品标题：');"
-                    "const i=f&&f.parentElement.querySelector('input.el-input__inner');return i?i.value:null})()"),
-                lambda current: current == title,
-                '标题没有稳定写入妙手表单。', seconds=12)
+                lambda: self.title_form_state(product_id),
+                lambda current: (current.get('title') == title and current.get('identity') is True and
+                                 current.get('rendered_units') == title_units(title)),
+                '标题或页面实时字数没有同步，未证明妙手表单已接收新标题。', seconds=12)
         finally:
             if focus_enabled:
                 self.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
@@ -347,6 +345,33 @@ class MiaoshouEditor:
         current_id = self.bridge.evaluate("(()=>{const d=document.querySelector('.product-edit-dialog');return d&&d.innerText.includes('ID：" + str(product_id) + "')})()")
         if current_id is not True:
             raise DoudianError('wrong_identity', '标题填写后编辑窗商品ID发生变化。')
+
+    def title_form_state(self, product_id):
+        """Read both the input and the separately rendered model-driven counter."""
+        result = self.bridge.evaluate(
+            "(()=>{const d=document.querySelector('.product-edit-dialog');"
+            "const f=d&&[...d.querySelectorAll('.el-form-item__label')].find(x=>(x.innerText||'').trim()==='商品标题：');"
+            "const i=f&&f.parentElement.querySelector('input.el-input__inner');"
+            "const c=f&&f.parentElement.querySelector('.el-input__suffix .limit-num');"
+            "const m=c&&(c.innerText||'').trim().match(/^(\\d+)\\s*\\/\\s*60$/);"
+            "return {identity:!!d&&(d.innerText||'').includes('ID：" + str(product_id) + "'),"
+            "title:i?i.value:null,rendered_units:m?Number(m[1]):null}})()")
+        return result if isinstance(result, dict) else {}
+
+    def prepare_save(self, product_id, title):
+        from .title import title_units
+
+        state = self.title_form_state(product_id)
+        if (state.get('identity') is not True or state.get('title') != title or
+                state.get('rendered_units') != title_units(title)):
+            raise DoudianError('miaoshou_title_model_unconfirmed', '保存前标题和实时字数未同时匹配。')
+        snap = self._snapshot()
+        refs = [ref for line in snap['tree_text'].splitlines()
+                if 'button "保存到抖店(F)"' in line and (ref := _ref(line))]
+        if len(refs) != 1:
+            raise DoudianError('miaoshou_save_not_unique', '保存到抖店按钮未唯一定位。')
+        return {'selector': refs[0], 'product_id': str(product_id), 'title': title,
+                'rendered_units': state['rendered_units']}
 
     @staticmethod
     def _image_list_selector(kind):
@@ -633,18 +658,27 @@ class MiaoshouEditor:
                 'asset_state': 'permanent' if permanent else 'staged', 'confirmed': True,
                 'import_response': imported}
 
-    def click_save_once(self):
+    def click_save_once(self, *, prepared_save=None):
+        if prepared_save is not None:
+            current = self.prepare_save(prepared_save['product_id'], prepared_save['title'])
+            if current != prepared_save:
+                raise DoudianError('miaoshou_save_preflight_changed', '保存前控件或标题状态已变化。')
+        else:
+            current = None
         snap = self._snapshot()
         lines = snap['tree_text'].splitlines()
         refs = [ref for line in lines if 'button "保存到抖店(F)"' in line and (ref := _ref(line))]
         if len(refs) != 1:
             raise DoudianError('miaoshou_save_not_unique', '保存到抖店按钮未唯一定位。')
+        prior = self.bridge.command('network', {'cmd': 'list', 'filter': SAVE_ENDPOINT}) or {}
+        prior_ids = {request.get('requestId') for request in prior.get('requests', [])}
         self.bridge.command('network', {'cmd': 'start'})
-        self.bridge.command('click', {'selector': refs[0]})
+        self.bridge.command('click', {'selector': current['selector'] if current else refs[0]})
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             capture = self.bridge.command('network', {'cmd': 'list', 'filter': SAVE_ENDPOINT})
-            requests = [r for r in capture.get('requests', []) if r.get('completed')]
+            requests = [r for r in capture.get('requests', []) if r.get('completed') and
+                        r.get('requestId') not in prior_ids and r.get('method') == 'POST']
             if requests:
                 latest = requests[-1]
                 detail = self.bridge.command('network', {'cmd': 'detail', 'requestId': latest['requestId']})
@@ -656,8 +690,10 @@ class MiaoshouEditor:
                     return {'state': 'failed', 'request_id': latest['requestId'],
                             'http_status': latest.get('status'), 'error': 'http_error'}
                 if isinstance(body, dict) and body.get('result') not in ('success', 'SUCCESS'):
+                    from .miaoshou_title_editor import rejection_details
                     return {'state': 'failed', 'request_id': latest['requestId'],
-                            'http_status': latest.get('status'), 'error': 'explicit_platform_rejection'}
+                            'http_status': latest.get('status'), 'error': 'explicit_platform_rejection',
+                            'platform_details': rejection_details(body)}
             time.sleep(0.35)
         return {'state': 'unknown', 'error': 'save_response_timeout'}
 

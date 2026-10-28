@@ -698,12 +698,10 @@ def run(args):
                     status = batch_queue.batch_status()
                     requested = set(args.product_ids)
                     candidates = [p for p in status['products'] if p['product_id'] in requested and
-                                  p['state'] == 'blocked' and
-                                  p.get('submission_state') == 'accepted' and
-                                  p.get('last_error') == 'readback_mismatch']
+                                  batch_queue.title_repair_candidate(p)]
                     return {'dry_run': True, 'candidate_count': len(candidates),
                             'candidates': candidates,
-                            'next': '加 --apply 后会先双端只读核验；原货架模式不一致时不会填写或保存。'}
+                            'next': '加 --apply 后先双端核验图片及商业字段，再经标题专用预览只保存标题。'}
                 return batch_queue.repair_accepted_title_mismatches(
                     args.endpoint, product_ids=args.product_ids, owner=args.owner, session=args.session)
             if args.batch_command == 'resume':

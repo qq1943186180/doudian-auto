@@ -177,7 +177,10 @@ def test_close_replace_popup_remeasures_once_after_a_transient_timeout():
                if action == 'cdp' and args.get('method') == 'Input.dispatchMouseEvent') == 3
 
 
-def test_fill_title_uses_trusted_keyboard_events_and_blurs_input():
+@pytest.mark.parametrize('counter_matches', [True, False])
+def test_fill_title_requires_trusted_input_and_model_counter(counter_matches):
+    from doudian_auto.title import title_units
+    target = '厨房水槽挂式沥水篮不锈钢过滤篮'
     class TitleBridge:
         def __init__(self):
             self.calls = []
@@ -188,8 +191,9 @@ def test_fill_title_uses_trusted_keyboard_events_and_blurs_input():
                 return {'count': 1, 'text': '商品信息'}
             if "return {id:i.id,value:i.value,x:r.x+r.width/2,y:r.y+r.height/2}" in code:
                 return {'id': 'title-input', 'value': 'old title', 'x': 100, 'y': 200}
-            if "return i?i.value:null" in code:
-                return '厨房水槽挂式沥水篮不锈钢过滤篮'
+            if "rendered_units:m?Number" in code:
+                return {'title': target, 'identity': True,
+                        'rendered_units': title_units(target) if counter_matches else 0}
             return True
 
         def command(self, action, args):
@@ -198,13 +202,18 @@ def test_fill_title_uses_trusted_keyboard_events_and_blurs_input():
 
         def wait(self, probe, predicate, message, seconds):
             result = probe()
-            assert predicate(result)
+            if not predicate(result):
+                raise DoudianError('page_timeout', message)
             return result
 
     bridge = TitleBridge()
     editor = MiaoshouEditor(bridge, '销霁百货')
 
-    editor.fill_title('3848319372858884337', '厨房水槽挂式沥水篮不锈钢过滤篮')
+    if counter_matches:
+        editor.fill_title('3848319372858884337', target)
+    else:
+        with pytest.raises(DoudianError, match='实时字数没有同步'):
+            editor.fill_title('3848319372858884337', target)
 
     methods = [args['method'] for action, args in bridge.calls
                if action == 'cdp' and 'method' in args]
@@ -222,6 +231,33 @@ def test_fill_title_uses_trusted_keyboard_events_and_blurs_input():
     tab_events = [args['params'] for action, args in bridge.calls
                   if action == 'cdp' and args.get('method') == 'Input.dispatchKeyEvent'][-2:]
     assert [event['key'] for event in tab_events] == ['Tab', 'Tab']
+
+
+def test_save_ignores_previous_success_and_classifies_only_the_new_request():
+    class SaveBridge:
+        def __init__(self):
+            self.clicks = 0
+            self.details = []
+        def command(self, action, args):
+            if action == 'click':
+                self.clicks += 1
+                return {'success': True}
+            if args.get('cmd') == 'list':
+                old = {'requestId': 'old-success', 'method': 'POST', 'completed': True, 'status': 200}
+                fresh = {'requestId': 'new-failure', 'method': 'POST', 'completed': True, 'status': 400}
+                return {'requests': [old, fresh] if self.clicks else [old]}
+            if args.get('cmd') == 'detail':
+                self.details.append(args['requestId'])
+                return {'body': {'result': 'fail'}}
+            return {}
+    bridge = SaveBridge()
+    editor = MiaoshouEditor(bridge, '销霁百货')
+    editor._snapshot = lambda: {'tree_text': '- button "保存到抖店(F)" [ref=e1]'}
+    result = editor.click_save_once()
+    assert result['state'] == 'failed'
+    assert result['request_id'] == 'new-failure'
+    assert bridge.clicks == 1
+    assert bridge.details == ['new-failure']
 
 
 def test_image_group_selectors_use_the_observed_main_and_detail_lists():

@@ -826,23 +826,37 @@ def begin_title_repair_submission(task_id, owner, token, proof, *, db_path=None)
 
     The old save must be accepted (never unknown), both pages must currently show the
     intended permanent images, and the official commercial fields must still match.
-    This function cannot be used for general retries or a second repair.
+    A documented, completed quick-form rejection may switch once to the title-only
+    page (attempt 3). Unknown saves and further repairs are never eligible.
     """
     if not isinstance(proof, dict):
         raise DoudianError('title_repair_proof_invalid', '标题修复必须先提供当前双端只读核验。')
     required_true = ('read_only', 'images_match', 'detail_tail_match',
                      'official_protected_match', 'miao_other_fields_match',
-                     'shelf_status_matches', 'shelf_mode_matches_original')
-    if any(proof.get(key) is not True for key in required_true):
+                     'shelf_status_matches')
+    raw_mode_match = proof.get('shelf_mode_matches_original') is True
+    if (any(proof.get(key) is not True for key in required_true) or
+            (not raw_mode_match and not proof.get('shelf_state_preservation'))):
         raise DoudianError('title_repair_unsafe', '标题修复前置核验未通过，拒绝再次保存。')
     if not proof.get('current_title') or proof.get('current_title') == proof.get('target_title'):
         raise DoudianError('title_repair_not_needed', '当前标题与目标相同或读取不完整。')
     conn = _db(db_path)
     try:
         conn.execute('BEGIN IMMEDIATE')
-        row = _execution_row(conn, task_id, owner, token, states={'blocked'})
-        if (row['submission_state'] != 'accepted' or row['last_error'] != 'readback_mismatch' or
-                int(row['submission_attempts'] or 0) != 1 or not row['readback_hash'] or
+        row = _execution_row(conn, task_id, owner, token, states={'blocked', 'uploaded'})
+        first_repair = (row['state'] == 'blocked' and row['submission_state'] == 'accepted' and
+                        row['last_error'] == 'readback_mismatch' and row['submission_attempts'] == 1)
+        failure_row = conn.execute("SELECT detail FROM product_events WHERE task_id=? AND from_state='submitting' AND to_state='uploaded' ORDER BY id DESC LIMIT 1", (task_id,)).fetchone()
+        failure = json.loads(failure_row['detail']) if failure_row else {}
+        previous_intent = json.loads(row['submission_intent_json'] or '{}')
+        known_failed_repair = (row['state'] == 'uploaded' and row['submission_state'] == 'failed' and
+                              row['submission_attempts'] == 2 and row['last_error'] == 'explicit_platform_rejection' and
+                              proof.get('repair_path') == 'title-batch' and failure.get('state') == 'failed' and
+                              previous_intent.get('repair_kind') == 'title-only' and
+                              previous_intent.get('repair_path', 'quick') == 'quick' and
+                              failure.get('error') == 'explicit_platform_rejection' and
+                              failure.get('http_status') == 200 and bool(failure.get('request_id')))
+        if (not (first_repair or known_failed_repair) or not row['readback_hash'] or
                 proof.get('previous_readback_sha256') != row['readback_hash'] or
                 proof.get('product_id') != row['product_id'] or proof.get('shop') != row['shop'] or
                 proof.get('target_version') != row['target_version'] or
@@ -851,6 +865,17 @@ def begin_title_repair_submission(task_id, owner, token, proof, *, db_path=None)
         prior_evidence = json.loads(row['readback_json'] or '{}')
         if prior_evidence.get('read_only') is not True:
             raise DoudianError('title_repair_evidence_missing', '上一轮缺少双端只读读回证据。')
+        if not raw_mode_match:
+            original = json.loads(row['baseline_json'] or '{}')
+            policy = _warehouse_shelf_preservation(
+                {'status': proof.get('shelf_status'), 'startSaleType': proof.get('start_sale_type')},
+                original.get('protected'))
+            if policy is None or proof.get('shelf_state_preservation') != policy:
+                raise DoudianError('title_repair_unsafe', '仓库状态策略与不可变原基线不一致。')
+        if proof.get('repair_path') == 'title-batch':
+            from .miaoshou_title_editor import validate_title_preview
+            validate_title_preview(proof.get('title_only_preview') or {}, row['product_id'], row['shop'],
+                                   proof['current_title'], proof['target_title'])
         mappings = json.loads(row['upload_map_json'] or '[]')
         expected_slots = {*(f'mains:{slot}' for slot in range(1, 6)),
                           *(f'details:{slot}' for slot in range(1, 5))}
@@ -863,19 +888,26 @@ def begin_title_repair_submission(task_id, owner, token, proof, *, db_path=None)
         intent = {
             'target_version': row['target_version'], 'manifest_sha256': row['artifacts_hash'],
             'baseline_sha256': row['baseline_hash'], 'previous_readback_sha256': row['readback_hash'],
-            'repair_kind': 'title-only', 'attempt': 2, 'save_click_count': 1,
+            'repair_kind': 'title-only', 'repair_path': proof.get('repair_path', 'quick'),
+            'attempt': 3 if known_failed_repair else 2, 'save_click_count': 1,
+            'previous_failure_sha256': hashlib.sha256(failure_row['detail'].encode()).hexdigest()
+                                      if known_failed_repair else None,
             'images_match_before_repair': True,
             'shelf_mode_matches_original': proof.get('shelf_mode_matches_original') is True,
+            'shelf_state_preservation': proof.get('shelf_state_preservation'),
+            'title_only_preview': proof.get('title_only_preview'),
             'created_at': now,
         }
         conn.execute('''UPDATE products SET state='submitting',submission_state='unknown',
-                        submission_attempts=2,submission_intent_json=?,last_error=NULL,updated_at=?
-                        WHERE id=?''', (json.dumps(intent, sort_keys=True), now, task_id))
+                        submission_attempts=?,submission_intent_json=?,last_error=NULL,updated_at=?
+                        WHERE id=?''', (intent['attempt'], json.dumps(intent, sort_keys=True), now, task_id))
         conn.execute('''INSERT INTO product_events(task_id,from_state,to_state,occurred_at,elapsed_seconds,detail)
                         VALUES(?,?,?,?,?,?)''',
-                     (task_id, 'blocked', 'submitting', now, max(0, now-row['updated_at']),
+                     (task_id, row['state'], 'submitting', now, max(0, now-row['updated_at']),
                       json.dumps({'repair_kind': 'title-only', 'previous_readback_sha256': row['readback_hash'],
-                                  'shelf_mode_matches_original': intent['shelf_mode_matches_original']},
+                                  'repair_path': intent['repair_path'], 'attempt': intent['attempt'],
+                                  'shelf_mode_matches_original': intent['shelf_mode_matches_original'],
+                                  'shelf_state_preservation': intent['shelf_state_preservation']},
                                  ensure_ascii=False, sort_keys=True)))
         conn.commit()
         return intent
@@ -1315,8 +1347,8 @@ def _miaoshou_title_repair_fields_match(current, expected):
     """Prove a corrective title-only save would not overwrite other Miao fields.
 
     The review and post-review shelf-mode fields are excluded from this *precondition*
-    comparison only: they are reported separately and shelf-mode mismatch still blocks
-    final verification. Every other commercial field, including current shelf status,
+    comparison only: they are checked separately by raw equality or the explicit
+    warehouse-state policy. Every other commercial field, including current shelf status,
     must match the observed pre-repair state.
     """
     if not isinstance(current, dict) or not isinstance(expected, dict):
@@ -1804,22 +1836,33 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 'blocked': sum(1 for item in results if item.get('state') == 'blocked')}
 
 
+def title_repair_candidate(item):
+    return ((item.get('state') == 'blocked' and item.get('submission_state') == 'accepted' and
+             item.get('last_error') == 'readback_mismatch' and item.get('submission_attempts') == 1) or
+            (item.get('state') == 'uploaded' and item.get('submission_state') == 'failed' and
+             item.get('last_error') == 'explicit_platform_rejection' and item.get('submission_attempts') == 2))
+
+
 def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miaoshou-title-repair',
-                                     db_path=None, session='miaoshou-title-repair-20261028'):
+                                     db_path=None, session='miaoshou-title-repair-20261028',
+                                     save_path='title-batch'):
     """Correct only the title after an accepted save whose two reads still show the old title.
 
     The task must have exactly one accepted save already. Before this one corrective save,
     the routine independently proves that all 9 target image slots and the detail tail are
     correct, official protected fields still match the original baseline, and Miao's other
     editable fields are unchanged. It never repairs an unknown result or attempts a second
-    title repair.
+    title repair, except one route switch after an observed explicit rejection.
     """
     from .bridge import Bridge
     from .editor import Editor
     from .miaoshou_editor import MiaoshouEditor
+    from .miaoshou_title_editor import MiaoshouTitleEditor
     from .workflow import compare_protected
 
     requested = [str(pid) for pid in (product_ids or [])]
+    if save_path not in ('quick', 'title-batch'):
+        raise DoudianError('title_repair_path', '标题修复路径无效。')
     if not requested or len(set(requested)) != len(requested) or len(requested) > 10:
         raise DoudianError('title_repair_scope', '标题修复必须指定1至10个不同商品ID。')
     status = batch_status(db_path=db_path)
@@ -1827,8 +1870,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
     candidates = []
     for pid in requested:
         item = by_id.get(pid)
-        if (item and item['state'] == 'blocked' and item.get('submission_state') == 'accepted' and
-                item.get('last_error') == 'readback_mismatch'):
+        if item and title_repair_candidate(item):
             candidates.append(item)
     if not candidates:
         return {'run': [], 'message': '没有符合条件的“保存已受理、标题仍是旧值”修复任务。'}
@@ -1846,7 +1888,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                                 'state': 'skipped', 'reason': 'another_browser_writer_active'})
                 continue
             miao = None
-            miao_after = None
+            miao_after_reader = None
             save_intent = False
             try:
                 ready = load_ready_artifacts(task_id, db_path=db_path)
@@ -1863,8 +1905,11 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                 miao = MiaoshouEditor(bridge, item['shop'], session=session)
                 miao.open_product(item['product_id'], fresh=True)
                 miao_before = miao.read_product(item['product_id'])
-                miao.require_shelf_mode_preservable(
-                    baseline.get('protected', {}).get('startSaleType'))
+                shelf_policy = _warehouse_shelf_preservation(
+                    miao_before.get('protected'), baseline.get('protected'))
+                if shelf_policy is None:
+                    miao.require_shelf_mode_preservable(
+                        baseline.get('protected', {}).get('startSaleType'))
                 if (miao_before.get('title') != baseline.get('title') or
                         official_before.get('title') != baseline.get('title') or
                         manifest.get('title') == baseline.get('title')):
@@ -1886,30 +1931,42 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                     'images_match': len(final_before) == 9,
                     'detail_tail_match': True, 'official_protected_match': True,
                     'miao_other_fields_match': True, 'shelf_status_matches': True,
+                    'repair_path': save_path,
+                    'shelf_status': miao_before.get('protected', {}).get('status'),
+                    'start_sale_type': miao_before.get('protected', {}).get('startSaleType'),
+                    'shelf_state_preservation': shelf_policy,
                     'shelf_mode_matches_original': (
                         miao_before.get('protected', {}).get('startSaleType') ==
                         baseline.get('protected', {}).get('startSaleType')),
                 }
-                if not proof['shelf_mode_matches_original']:
+                if not proof['shelf_mode_matches_original'] and shelf_policy is None:
                     raise DoudianError(
                         'title_repair_shelf_mode_changed',
                         '审核通过后的上架模式与原值不同；先从妙手页面恢复并读回该字段，再修复标题。')
-                miao.fill_title(item['product_id'], manifest['title'])
+                if save_path == 'title-batch':
+                    title_editor = MiaoshouTitleEditor(bridge, item['shop'], session=session)
+                    prepared_save = title_editor.prepare_save(item['product_id'], miao_before['title'], manifest['title'])
+                    proof['title_only_preview'] = prepared_save['state']
+                else:
+                    miao.fill_title(item['product_id'], manifest['title'])
+                    prepared_save = miao.prepare_save(item['product_id'], manifest['title'])
                 begin_title_repair_submission(task_id, owner, claim['execution_token'], proof,
                                               db_path=db_path)
                 save_intent = True
                 try:
-                    result = miao.click_save_once()
+                    result = (title_editor.click_save_once(prepared_save) if save_path == 'title-batch'
+                              else miao.click_save_once(prepared_save=prepared_save))
                 except Exception as exc:
                     result = {'state': 'unknown', 'error': getattr(exc, 'code', type(exc).__name__)}
                 result_state = record_submission_result(task_id, owner, claim['execution_token'],
                                                         result, db_path=db_path)
                 save_intent = False
-                if result_state['submission_state'] != 'accepted':
+                if result_state['submission_state'] not in ('accepted', 'unknown'):
                     results.append({'task_id': task_id, 'product_id': item['product_id'],
                                     'state': result_state['state'],
                                     'submission_state': result_state['submission_state'],
-                                    'reason': result.get('error'), 'repair_kind': 'title-only'})
+                                    'reason': result.get('error'), 'platform_details': result.get('platform_details'),
+                                    'repair_kind': 'title-only'})
                     continue
 
                 miao.stop_capture()
@@ -1924,8 +1981,11 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                     final_after = None
                 miao_content = bool(final_after) and _matches_miaoshou_content(
                     baseline, miao_after, manifest['title'], final_after)
-                miao_repair_fields = _miaoshou_protected_matches(
+                after_shelf_policy = _warehouse_shelf_preservation(
                     miao_after.get('protected'), baseline.get('protected'))
+                miao_repair_fields = _miaoshou_protected_matches(
+                    miao_after.get('protected'), baseline.get('protected'),
+                    preserve_warehouse=after_shelf_policy is not None)
                 try:
                     compare_protected(official_before, official_after)
                     official_repair_fields = True
@@ -1955,6 +2015,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                         'start_sale_type': miao_after.get('protected', {}).get('startSaleType'),
                         'start_sale_type_before': baseline.get('protected', {}).get('startSaleType'),
                         'shelf_mode_matches_original': shelf_mode_matches,
+                        'shelf_state_preservation': after_shelf_policy,
                     },
                     'doudian': {
                         'product_id': item['product_id'], 'shop': item['shop'],
@@ -1996,8 +2057,8 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
             finally:
                 if miao:
                     miao.stop_capture()
-                if miao_after:
-                    miao_after.stop_capture()
+                if miao_after_reader:
+                    miao_after_reader.stop_capture()
                 try:
                     release_execution(task_id, owner, claim['execution_token'], db_path=db_path)
                 except DoudianError:

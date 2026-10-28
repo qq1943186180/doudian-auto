@@ -234,7 +234,7 @@ class MiaoshouBatchEditor:
     def _ensure_checkbox(self, value, checked):
         marker = 'miao-batch-' + uuid.uuid4().hex
         quoted = json.dumps(str(value), ensure_ascii=True)
-        probe = ("(()=>{const xs=[...document.querySelectorAll('input[type=checkbox]')].filter(x=>x.value===" +
+        probe = ("(()=>{const xs=[...document.querySelectorAll('input[type=checkbox]')].filter(x=>x.offsetParent!==null&&x.value===" +
                  quoted + "&&!x.disabled);if(xs.length!==1)return {count:xs.length};"
                  "if(xs[0].checked===" + ('true' if checked else 'false') + ")return {count:1,unchanged:true};"
                  "const label=xs[0].closest('label');if(!label)return {count:0};"
@@ -254,7 +254,7 @@ class MiaoshouBatchEditor:
     def _ensure_radio(self, name, value):
         marker = 'miao-batch-' + uuid.uuid4().hex
         name_q, value_q = json.dumps(name), json.dumps(value)
-        probe = ("(()=>{const xs=[...document.querySelectorAll('input[type=radio]')].filter(x=>x.name===" +
+        probe = ("(()=>{const xs=[...document.querySelectorAll('input[type=radio]')].filter(x=>x.offsetParent!==null&&x.name===" +
                  name_q + "&&x.value===" + value_q + "&&!x.disabled);if(xs.length!==1)return {count:xs.length};"
                  "if(xs[0].checked)return {count:1,unchanged:true};const label=xs[0].closest('label');"
                  "if(!label)return {count:0};label.setAttribute('data-codex-miao-batch','__MARKER__');return {count:1}})()")
