@@ -3,13 +3,15 @@
 更新：2026-10-28（Asia/Shanghai）；Agent：codex-miaoshou-batch。
 源码：C:/Users/19431/code/clis/doudian-auto；main；私有 origin https://github.com/qq1943186180/doudian-auto。
 
-### T-20261026-002 · 194-76 · 妙手全仓优化程序首阶段
+### T-20261026-002 · 194-76 · 妙手全仓优化程序与页面验收
 
-- 状态：in_progress。commit `b49de5c` 已完成并测试；妙手页面执行器尚未实现，不能把当前队列说成完整自动运行。
-- 新增 SQLite 批次队列、最多3个 agent 的原子租约、标题和图片校验、清单哈希复验、耗时事件、GUI批次导入/状态/异常展示；CLI 有 `batch` 与 `agent` 子命令。skill 已同步仓库、Codex、WorkBuddy；桌面快捷方式「妙手批量优化」。
-- 已从 `miaoshou-all-20261026/queue.json` 导入61件：55件待素材准备，6件因已有编辑/上传/保存或 agent 任务而隔离（红包袋、男童裤、宠物除味剂、第二款男士内裤、发夹、行李箱轮子套）。首件内裤旧 `verified` 仍需迁移其5+4证据后再标记。
-- 当前 `batch run` 只作健康检查并返回 `writer_ready=false`。妙手写入需先经允许的 Kimi 页面探索；本轮只读标签页请求被执行策略拒绝，未改线上商品。
-- 验证：148项 Python 测试通过，GUI smoke test、compileall 通过。下一步完成真实妙手页面读取/写入适配及3件端到端验收，再更新 Linear、HANDOFF 并推送。
+- 状态：in_progress。程序提交 `1520fa1` 已推送 `origin/main`；三件真实完整验收未通过，写入器保持 `writer_ready=false`。
+- 已实现持久化 SQLite 队列、最多3个 agent 原子领取、妙手 UI 适配器、单写入器、上传槽位映射、一次保存与双端读回、只读恢复、标题补救命令、GUI 进度/异常/续办入口；标题及图片校验和素材哈希复验沿用既有工具。
+- 61件队列当前为52件 `needs_agent`、1件 `editing/not_attempted`（商品20，先前 `page_timeout`，可续办）、8件 `blocked`（6件已有旧任务痕迹，2件保存已受理但读回不匹配）。未重复保存。
+- 已在妙手授权店铺用商品ID筛选，读取商品快速编辑表单；该商品当前下架/未提审，本轮只读，没有改动。商品编辑窗及「设置」弹窗没有可读的审核后上架模式 `startSaleType` 控件。
+- 对两件旧的受理保存完成妙手和抖店只读读回：5张主图与详情目标槽位匹配、原详情尾图保留，但标题仍旧；`startSaleType` 从基线0变成1，两端整体比对失败。程序已增加写前闸门，货架模式字段缺失或不一致时，在输入标题/上传图片之前停止。
+- 验证：全量 Python **190 passed**；妙手/批次专项48 passed；DOM **24 passed**；`compileall`、GUI smoke、CLI dry-run及双端只读续办通过。桌面快捷方式仍指向本仓虚拟环境；仓库/Codex/WorkBuddy 三份 `miaoshou-auto-batch` skill 的 SHA-256 一致。
+- 下一步：先解决妙手无法读取或保留 `startSaleType` 的问题，再执行3件完整写入验收；在此之前不要对两件已受理商品再次保存，也不要把写入器标为 ready。
 
 ## 给人的说明
 
