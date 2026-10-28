@@ -2,7 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
-| T-20261026-002 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 安全拦截与妙手多字段适配已推送（69a11f2）；204 Python + 24 DOM 测试通过。61件队列：52待素材、9阻塞。商品20仅保存点击1次；抖店目标标题/9图已落地，妙手标题/5主图/4详情落地，但 `startSaleType` 0→1，任务 `blocked/unknown` 且仅只读。设置/编辑页均无该模式控件；写入器全入口 fail closed、`writer_ready=false`。下一步先验证可保留该模式的受支持写入路径，再做3件验收。 |
+| T-20261026-002 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 仓库状态核验修复d17a391已推送；本轮53专项测试通过。纠正先前判断：`startSaleType` 是审核后去向，仓库商品0→1且货架保持1可符合保留状态。新窄范围策略保留原始差异并独立核验；商品20双端标题/9图/商业字段通过，已verified_by_readback，保存次数仍1。商品24/29仍旧标题，保持阻塞。队列52待素材、8阻塞、1verified；新写入仍关闭，待修标题链路并补足3件完整验收。 |
 | T-20261026-001 | [194-52](https://linear.app/1943186180/issue/194-52) | done | 194-52 交付后审查（WorkBuddy）：9/9 声明校验独立复现（4 素材 assets + 3 compare + 2 负例）、141 测试全过、git/推送/备份/桌面快捷方式齐全。修两处断档——① `~/.workbuddy/skills` 副本同步 canonical（此前=194-52 当天 zip 原样，含标题下限 15 的旧 bug，已随 canonical 修为 16 并委托 `doudian_auto` 包）；② 补本映射行 + Codex 会话证据归档 `docs/agent-workflow/history/194-52/` |
 | T-20261021-003 | [194-52](https://linear.app/1943186180/issue/194-52) | done | 封装个人 skill `doudian-product-workflow` + 离线校验 `doudian_check.py`（Codex 2026-10-21）：官方 quick_validate 通过；4 款素材 + 3 款读回比对 + 改价/错标题 2 负例共 9 项全过；skill.zip 与 HANDOFF 归档于 `docs/agent-workflow/history/194-52/`；独立上传适配器当时未实现（后在 194-54 落地） |
 | T-20261022-014 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 按 Codex 结论重做保护字段采集：撤掉「子集容忍」（实测非虚拟列表，且交换两行价格即可绕过）；新增 `_wait_sections_mounted` 分区级等待（半挂载 88/3/0 → 稳定 98/7/11，两帧一致不足以判定）；修 abandon P1（拒绝 abandoned 阶段重入、未核验结案需 `--confirm-unverified`、uploaded 白名单接受 None）。141 Python + 24 jsdom 全过；真机端到端验证被 bridge 阻塞未完成（commit cb5abd2） |
