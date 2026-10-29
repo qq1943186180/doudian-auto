@@ -62,14 +62,16 @@ def _record_nine_uploads(db, task, claim):
                                          'confirmed': True}, db_path=db)
 
 
-def test_run_batch_blocks_all_writes_until_shelf_mode_preservation_is_verified(tmp_path, monkeypatch):
+def test_run_batch_blocks_all_writes_without_current_upload_path_acceptance(tmp_path, monkeypatch):
     db, task, _ = _writer_task(tmp_path)
-    from doudian_auto import miaoshou_batch_editor
-    monkeypatch.setattr(miaoshou_batch_editor, 'SHELF_MODE_PRESERVATION_VERIFIED', False)
 
     class ForbiddenBridge:
         def __init__(self, *args, **kwargs):
-            raise AssertionError('browser must not be opened while the save path is unsafe')
+            pass
+        def status(self):
+            return {'running': True, 'extension_connected': True}
+        def command(self, *args, **kwargs):
+            raise AssertionError('no page actions before writer acceptance')
 
     monkeypatch.setattr('doudian_auto.bridge.Bridge', ForbiddenBridge)
     with pytest.raises(DoudianError) as caught:
@@ -78,15 +80,13 @@ def test_run_batch_blocks_all_writes_until_shelf_mode_preservation_is_verified(t
 
     status = batch.batch_status(task['batch_id'], db_path=db)
     current = next(row for row in status['products'] if row['id'] == task['id'])
-    assert caught.value.code == 'shelf_mode_unpreservable'
-    assert 'startSaleType' in str(caught.value)
+    assert caught.value.code == 'writer_not_accepted'
     assert current['state'] == 'editing'
     assert current['submission_attempts'] == 0
 
 
-def test_execution_readiness_reports_unsafe_shelf_mode_even_with_acceptance_proof(
+def test_execution_readiness_rejects_legacy_proof_even_with_three_saved_products(
         tmp_path, monkeypatch):
-    from doudian_auto import miaoshou_batch_editor
     proof_path = tmp_path / 'miaoshou-writer-acceptance.json'
     proof_path.write_text(json.dumps({
         'schema_version': 1,
@@ -94,7 +94,6 @@ def test_execution_readiness_reports_unsafe_shelf_mode_even_with_acceptance_proo
         'readback_hashes': ['a' * 64, 'b' * 64, 'c' * 64],
     }), encoding='utf-8')
     monkeypatch.setattr(batch, 'DB_PATH', tmp_path / 'queue.sqlite3')
-    monkeypatch.setattr(miaoshou_batch_editor, 'SHELF_MODE_PRESERVATION_VERIFIED', False)
 
     class ConnectedBridge:
         def __init__(self, *args, **kwargs):
@@ -108,7 +107,7 @@ def test_execution_readiness_reports_unsafe_shelf_mode_even_with_acceptance_proo
     assert readiness['browser_ready'] is True
     assert readiness['shelf_mode_preservation_verified'] is False
     assert readiness['writer_ready'] is False
-    assert 'startSaleType' in readiness['reason']
+    assert '新上传路径' in readiness['reason']
 
 
 def test_agent_claim_is_atomic_and_completion_requires_current_token(tmp_path):
@@ -1041,7 +1040,7 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
         def open_product(self, product_id, *, fresh=True):
             self.product_id = product_id
         def read_product(self, product_id):
-            return {**baseline(product_id), 'protected': {'specPrices': [{'price': '10'}], 'status': 0,
+            return {**baseline(product_id), 'protected': {'specPrices': [{'price': '10'}], 'status': 1,
                                                           'startSaleType': 0},
                     'protected_complete': True}
         def require_shelf_mode_preservable(self, expected_mode):
@@ -1058,8 +1057,16 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
             if product_id == ids[0]:
                 raise DoudianError('form_not_prepared', 'fake form needs preparation')
             return mappings(product_id, asset_paths)
-        def prepare(self, *, product_id, **kwargs):
-            raise DoudianError('fake_ui_failure', 'fake pre-save UI failure')
+        def prepare(self, *, product_id, main_paths, detail_paths, on_upload, **kwargs):
+            if product_id == ids[0]:
+                raise DoudianError('fake_ui_failure', 'fake pre-save UI failure')
+            items = mappings(product_id, main_paths + detail_paths)
+            for item in items:
+                kind, slot = item['slot'].split(':')
+                on_upload(kind, int(slot), item)
+            from doudian_auto.miaoshou_batch_editor import WRITER_REVISION
+            return {'writer_revision': WRITER_REVISION, 'fresh_form': True,
+                    'uploaded_slots': [item['slot'] for item in items]}
         def prepare_submission(self, *, product_id, title, mappings, **kwargs):
             return {'marker': 'fake-final-button', 'product_id': product_id, 'title': title}
         def click_start_once(self, **kwargs):
@@ -1072,14 +1079,18 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
             url = f'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-28/{product_id}-{index}.png?dy'
             out.append({'slot': slot, 'source_sha256': batch._digest(path),
                         'remote_key': url, 'remote_url': url,
-                        'asset_state': 'staged', 'confirmed': True})
+                        'asset_state': 'staged', 'confirmed': True,
+                        'content_verification': {'source_sha256': batch._digest(path),
+                                                 'remote_sha256': batch._digest(path),
+                                                 'remote_url': url, 'match': 'bytes'}})
         return out
 
     monkeypatch.setattr('doudian_auto.bridge.Bridge', FakeBridge)
     monkeypatch.setattr('doudian_auto.editor.Editor', FakeEditor)
     monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor', FakeMiaoshou)
     monkeypatch.setattr('doudian_auto.miaoshou_batch_editor.MiaoshouBatchEditor', FakeBatchEditor)
-    monkeypatch.setattr('doudian_auto.miaoshou_batch_editor.SHELF_MODE_PRESERVATION_VERIFIED', True)
+    monkeypatch.setattr(batch, 'execution_readiness', lambda *a, **k: {
+        'writer_ready': True, 'acceptance_sha256': 'a' * 64})
     monkeypatch.setattr(batch, '_stable_doudian_snapshot', lambda editor, identity: baseline(identity['product_id']))
     result = batch.run_batch('http://127.0.0.1:10086', batch_id=batch_id, product_ids=ids,
                              limit=2, owner='test-writer', db_path=db)
@@ -1091,7 +1102,7 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
     assert batch.batch_status(batch_id, db_path=db)['counts'] == {'editing': 1, 'uploaded': 1}
 
 
-def test_acceptance_results_include_only_persisted_dual_readback_verified_products(tmp_path):
+def test_old_readback_success_cannot_accept_a_new_upload_path(tmp_path):
     source = tmp_path / 'products.json'
     product_ids = ['3848319372858884337', '3848324080143040538', '3848322422084337743']
     source.write_text(json.dumps({'products': [
@@ -1112,8 +1123,10 @@ def test_acceptance_results_include_only_persisted_dual_readback_verified_produc
 
     results = batch.verified_acceptance_results([*product_ids, product_ids[0]], db_path=db)
 
-    assert results == [{'product_id': product_ids[0], 'state': 'verified',
-                        'readback_sha256': 'a' * 64}]
+    assert results == []
+    with pytest.raises(DoudianError) as rejected:
+        batch.mark_writer_acceptance([{'product_id': pid, 'state': 'verified'} for pid in product_ids], db_path=db)
+    assert rejected.value.code == 'writer_acceptance_incomplete'
 
 
 def test_batch_resume_uses_readback_only_before_writer_acceptance(tmp_path, monkeypatch, capsys):

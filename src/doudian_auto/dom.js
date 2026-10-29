@@ -170,7 +170,17 @@
     // Filtering them out silently dropped sections between snapshots, so a baseline with
     // 8 blocks compared against a live read with 5 and every index misaligned. Observation
     // state is therefore recorded per section instead of inferred from absence.
-    const sections = all('[id^="goodsEditScrollContainer-"]');
+    const sectionNodes = all('[id^="goodsEditScrollContainer-"]');
+    // Clothing pages render a second, empty hideModule placeholder with the same
+    // 尺码表 ID as the populated size table. Ignore only that positively empty
+    // placeholder when exactly one substantive peer covers the same section.
+    // A duplicate with text, fields, controls or images is retained and rejected
+    // by the protected-field comparison instead of silently losing data.
+    const emptyPlaceholder = e => String(e.className).includes('style_hideModule') &&
+      !e.querySelector('[attr-field-id],input,textarea,select,[role="switch"],[role="combobox"],img') &&
+      !(e.textContent || '').trim();
+    const sections = sectionNodes.filter(e => !emptyPlaceholder(e) ||
+      sectionNodes.filter(peer => peer.id === e.id && !emptyPlaceholder(peer)).length !== 1);
     const names = ['基础信息','价格库存','服务与履约'];
     if (!names.every(name=>sections.some(e=>e.id.endsWith('-'+name)))) return {...identity,error:'protected_sections_missing'};
     const protectedFields = sections.map(section => {

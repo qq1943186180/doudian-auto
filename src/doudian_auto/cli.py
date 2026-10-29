@@ -756,12 +756,12 @@ def run(args):
             result = batch_queue.run_batch(args.endpoint, batch_id=args.batch_id,
                                            product_ids=args.product_ids,
                                            limit=max(args.limit, 3) if args.acceptance else args.limit,
-                                           owner=args.owner, session=args.session)
+                                           owner=args.owner, session=args.session,
+                                           acceptance_product_ids=args.product_ids if args.acceptance else None)
             verified = batch_queue.verified_acceptance_results(args.product_ids)
             if args.acceptance and len(verified) >= 3:
                 result['writer_acceptance'] = batch_queue.mark_writer_acceptance(verified)
-            return {**result, 'writer_ready': bool(args.acceptance and len(verified) >= 3) or
-                    readiness.get('writer_ready', False), 'browser_ready': readiness.get('browser_ready', False)}
+            return {**result, **batch_queue.execution_readiness(args.endpoint)}
         if args.agent_command == 'next':
             if not 60 <= args.lease_seconds <= 7200:
                 raise DoudianError('invalid_lease', '租约必须为60至7200秒。')

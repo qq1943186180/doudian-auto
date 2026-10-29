@@ -34,7 +34,7 @@ def _form(tmp_path):
         'shop': '销霁百货', 'product_ids': [pid], 'result_product_ids': [pid],
         'result_count': 1, 'selected_top_fields': ['title', 'image_change', 'desc'],
         'selected_enabled_options': ['new', 'onlyPreview', 'replaceImgsByImgUrls'],
-        'title': title, 'main_mode': 'replaceImgByIndex', 'timer_checked': False,
+        'title': title, 'main_mode': 'replaceImgByIndex', 'timer_checked': False, 'overlength': 'fail',
         'main_images': mains,
         'detail_pairs': [{'source': old_details[i], 'target': details[i]} for i in range(4)],
         'preview_detail': {'visible': True, 'labels': ['商品标题', '详情图', '主图'],
@@ -170,6 +170,7 @@ def test_submission_requires_fresh_page_preview_and_one_enabled_save_button(tmp_
     (lambda state: state['detail_pairs'][1].update(source=state['detail_pairs'][0]['source']),
      'miaoshou_batch_source_mismatch'),
     (lambda state: state.update(timer_checked=True), 'miaoshou_batch_timer_enabled'),
+    (lambda state: state.update(overlength='cut'), 'miaoshou_batch_title_truncation'),
     (lambda state: state['preview_detail'].update(new_mains=['wrong'] * 5),
      'miaoshou_batch_preview_main_target_mismatch'),
 ])
@@ -182,3 +183,40 @@ def test_multi_field_form_rejects_scope_or_preview_drift(tmp_path, change, code)
                                   title=title, baseline=baseline, asset_paths=paths)
 
     assert rejected.value.code == code
+
+
+def test_default_adapter_cannot_submit_or_submit_outside_its_three_product_scope():
+    from doudian_auto.miaoshou_batch_editor import WRITER_REVISION
+    class ForbiddenBridge:
+        def command(self, *args, **kwargs):
+            pytest.fail('scope must be checked before any page action')
+    for scope in (None, {'kind': 'acceptance', 'writer_revision': WRITER_REVISION,
+                         'product_ids': ['1', '2', '3']}):
+        editor = MiaoshouBatchEditor(ForbiddenBridge(), '销霁百货', submission_scope=scope)
+        with pytest.raises(DoudianError) as rejected:
+            editor.prepare_submission(product_id='4', shop='销霁百货', title='目标标题', mappings=[])
+        assert rejected.value.code == 'writer_not_accepted'
+
+
+def test_successful_upload_is_confirmed_by_the_exact_slot_even_when_picker_stays_open(tmp_path, monkeypatch):
+    url = 'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-29/x/asset.png?dy'
+    calls = []
+    class Bridge:
+        def command(self, action, args=None):
+            calls.append((action, args))
+            return {'success': True}
+        def evaluate(self, code):
+            return {'dialogs': 1, 'files': 1}
+        def wait(self, probe, predicate, message, seconds):
+            value = probe()
+            assert predicate(value)
+            return value
+    path = tmp_path/'asset.png'
+    Image.new('RGB', (600,600), 'red').save(path)
+    editor = MiaoshouBatchEditor(Bridge(), '销霁百货')
+    monkeypatch.setattr(editor, '_checked_content', lambda actual, source: {'remote_url': actual, 'match': 'bytes'})
+    monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor._close_replace_popup', lambda self: calls.append(('close_picker', None)))
+    result = editor._upload_open_image_dialog(path, lambda: url)
+    assert result['remote_url'] == url
+    assert [action for action, _ in calls].count('upload') == 1
+    assert [action for action, _ in calls].count('close_picker') == 1
