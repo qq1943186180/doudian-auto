@@ -241,6 +241,9 @@ def compare_protected(before, after):
     `20,10` passed. Coverage gaps have to be fixed in the collector, not tolerated in the
     comparison.
     """
+    if 'sku_evidence' in before or 'sku_evidence' in after:
+        from .official_skus import compare_official_skus
+        compare_official_skus(before.get('sku_evidence'), after.get('sku_evidence'))
     baseline = _section_index(before)
     current = _section_index(after)
     missing = [name for name in _REQUIRED_SECTIONS if name not in baseline or name not in current]

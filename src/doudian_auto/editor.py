@@ -73,6 +73,11 @@ class Editor:
     def read(self, manifest):
         return self.dom('snapshot', manifest)
 
+    def read_skus(self, manifest):
+        from .official_skus import parse_official_skus
+        response = self.bridge.command('official_sku_read', {'product_id': manifest['product_id']})
+        return parse_official_skus(response, product_id=manifest['product_id'])
+
     def section_counts(self, manifest):
         """Per-section control counts: the readiness signal for the protected blocks.
 

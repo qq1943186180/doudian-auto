@@ -22,7 +22,7 @@ from .workflow import is_permanent_material_url, is_temporary_upload_url, resour
 
 MIAOSHOU_HOST = 'v2-dd.chengji-inc.com'
 BATCH_EDIT_URL = 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field'
-WRITER_REVISION = 'multi-field-20261029-v3'
+WRITER_REVISION = 'multi-field-20261029-v4'
 _TOP_FIELDS = {
     'title', 'short_product_name', 'brand_id', 'item_num', 'product_format',
     'fabric_material', 'price', 'size_temp', 'transport_id', '7day_return',

@@ -32,6 +32,36 @@ async function fixture(t) {
   return {run:(action,args={})=>runEgo({action,args,statePath,session:'test'}),calls,statePath,page};
 }
 
+test('official SKU evidence comes from one UI reload and drops context tokens and actions',async t=>{
+  const f=await fixture(t);
+  const url='https://fxg.jinritemai.com/ffa/g/create?product_id=3850072653520044313';
+  f.page.url=async()=>url;
+  const events=[];
+  f.page.events=async()=>events.splice(0);
+  f.page.reload=async()=>{
+    f.calls.push('reload');
+    events.push({method:'Network.requestWillBeSent',params:{requestId:'schema-1',request:{
+      url:'https://fxg.jinritemai.com/product/tproduct/getSchema',method:'POST'}}},
+      {method:'Network.responseReceived',params:{requestId:'schema-1',response:{status:200}}},
+      {method:'Network.loadingFinished',params:{requestId:'schema-1'}});
+  };
+  const body=JSON.stringify({errno:0,code:0,data:{context:{product_id:'3850072653520044313',shop_id:'177970452',
+    operation_type:'normal',model_type:'normal',token:'secret-auth',n_token:'secret-native'},
+    model:{sku_detail:{value:[{sku_id:'3387918799208229'}],actions:[{url:'do-not-store'}]},
+      spec_detail:{value:[]}},global:{not_evidence:true}}});
+  f.page.cdp=async method=>method==='Network.getResponseBody'?{body,base64Encoded:false}:{};
+  const result=await f.run('official_sku_read',{product_id:'3850072653520044313'});
+  assert.equal(f.calls.filter(x=>x==='reload').length,1);
+  assert.equal(result.completed,true);assert.equal(result.page_url,url);
+  assert.equal(JSON.parse(result.body).data.context.product_id,'3850072653520044313');
+  assert.equal(/secret-|do-not-store|not_evidence/.test(JSON.stringify(result)),false);
+});
+
+test('official schema redaction refuses unsafe numeric product IDs',async()=>{
+  const {redactOfficialSchema}=await runtime;
+  assert.throws(()=>redactOfficialSchema('{"data":{"context":{"product_id":3850072653520044313},"model":{}}}'),/Unsafe numeric ID/);
+});
+
 test('repairs a zero-sized background Page from an observed peer viewport',async t=>{
   const f=await fixture(t);
   let repaired=false;

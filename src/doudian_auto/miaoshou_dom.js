@@ -31,9 +31,14 @@
   if (op === 'edit_button') {
     const rows = [...document.querySelectorAll('.pro-table-custom-body-row')]
       .filter(row => (text(row).match(/\d{16,22}/g) || []).includes(String(p.product_id)));
-    const buttons = rows.flatMap(row => [...row.querySelectorAll('button')]
-      .filter(button => text(button) === '编辑商品' && visible(button)));
-    return {...mark(buttons), rows: rows.length};
+    const buttons = rows.filter(visible).flatMap(row => [...row.querySelectorAll('button')]
+      .filter(button => text(button) === '编辑商品' && !button.disabled));
+    // On narrow windows the real row is visible while its action column is to
+    // the right of the viewport. Scroll only the unique button of the visible
+    // exact-ID row; cached rows at y=-9000 are never candidates.
+    if (buttons.length === 1 && !visible(buttons[0]))
+      buttons[0].scrollIntoView({block:'nearest',inline:'center',behavior:'instant'});
+    return {...mark(buttons.filter(visible)), rows: rows.length};
   }
   if (op === 'dialog') {
     const dialogs = all('.product-edit-dialog');

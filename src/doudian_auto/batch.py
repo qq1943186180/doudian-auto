@@ -1119,6 +1119,16 @@ def record_execution_readback(task_id, owner, token, evidence, *, db_path=None):
             raise DoudianError('readback_identity', '妙手与抖店读回未同时匹配店铺和商品ID。')
         matched = all(page.get('matches_target') is True and page.get('protected_match') is True
                       for page in pages)
+        intent = json.loads(row['submission_intent_json'] or '{}')
+        from .miaoshou_batch_editor import WRITER_REVISION
+        if (intent.get('writer_preparation') or {}).get('writer_revision') == WRITER_REVISION:
+            from .official_skus import compare_official_skus
+            baseline = json.loads(row['baseline_json'] or '{}')
+            try:
+                compare_official_skus((baseline.get('doudian_baseline') or {}).get('sku_evidence'),
+                                      evidence['doudian'].get('sku_evidence'))
+            except DoudianError:
+                matched = False
         miao_page = evidence['miaoshou']
         shelf_preserved = miao_page.get('shelf_mode_matches_original') is True
         if not shelf_preserved and miao_page.get('shelf_state_preservation'):
@@ -1268,6 +1278,13 @@ def verified_acceptance_results(product_ids, *, db_path=None):
             if not row['readback_json'] or hashlib.sha256(row['readback_json'].encode('utf-8')).hexdigest() != row['readback_hash']:
                 continue
             evidence = json.loads(row['readback_json'])
+            from .official_skus import compare_official_skus
+            baseline = json.loads(row['baseline_json'] or '{}')
+            try:
+                compare_official_skus((baseline.get('doudian_baseline') or {}).get('sku_evidence'),
+                                      (evidence.get('doudian') or {}).get('sku_evidence'))
+            except DoudianError:
+                continue
             pages = [evidence.get('miaoshou') or {}, evidence.get('doudian') or {}]
             if (evidence.get('target_version') != row['target_version'] or
                     evidence.get('manifest_sha256') != row['artifacts_hash'] or
@@ -1324,9 +1341,11 @@ def _stable_doudian_snapshot(editor, identity):
         # cards at 0x0. Focus emulation lets the browser finish its normal page layout
         # without bringing the tab over the user's foreground app.
         editor.open(identity, fresh=True)
+        sku_evidence = editor.read_skus(identity)
         editor.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
                                       'params': {'enabled': True}})
         focused = True
+        editor.dom('scroll', identity, kind='details')
         editor.wait_details(identity, seconds=30)
         previous = None
         steady = 0
@@ -1345,6 +1364,8 @@ def _stable_doudian_snapshot(editor, identity):
         else:
             raise DoudianError('doudian_read_timeout', '抖店保护字段没有稳定挂载。')
         snapshot = editor.wait_details(identity, seconds=10)
+        snapshot['sku_evidence'] = sku_evidence
+        snapshot['sku_coverage'] = '官方页面本次加载的全部SKU响应；不受虚拟表格可见行数限制。'
         compare_protected(snapshot, snapshot)  # refuses missing or partially observed sections
         if snapshot.get('product_id') != identity['product_id'] or not snapshot.get('shop_confirmed'):
             raise DoudianError('wrong_identity', '抖店读回的店铺或商品ID不匹配。')
@@ -1370,6 +1391,8 @@ def _fresh_dual_readback(miao_read, official, identity, title):
         miao_read.open_product(identity['product_id'], fresh=True)
         miao_after = miao_read.read_product(identity['product_id'])
         official_after = _stable_doudian_snapshot(official, identity)
+        from .official_skus import verify_miaoshou_skus
+        verify_miaoshou_skus(miao_after, official_after.get('sku_evidence'))
         return miao_after, official_after
 
     return wait_for_target_titles(read_pair, title)
@@ -1819,6 +1842,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                                      official_after.get('protected')),
                                     'matches_target': doudian_match,
                                     'protected_match': official_protected,
+                                    'sku_evidence': official_after.get('sku_evidence'),
                                     'title': official_after.get('title'),
                                     'main_count': len(official_after.get('mains') or []),
                                     'detail_count': len(official_after.get('details') or []),
@@ -1861,6 +1885,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                         _image_keys(miao_before['mains']) != _image_keys(official_before.get('mains')) or
                         _image_keys(miao_before['details']) != _image_keys(official_before.get('details'))):
                     raise DoudianError('baseline_disagreement', '妙手与抖店的标题或图片基线不一致。')
+                from .official_skus import verify_miaoshou_skus
+                verify_miaoshou_skus(miao_before, official_before.get('sku_evidence'))
                 expected_skus = agent_facts.get('sku_count')
                 actual_skus = len(miao_before['protected'].get('specPrices') or [])
                 if expected_skus and int(expected_skus) != actual_skus:
@@ -2000,6 +2026,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                                  official_after.get('protected')),
                                 'matches_target': doudian_match,
                                 'protected_match': official_protected,
+                                'sku_evidence': official_after.get('sku_evidence'),
                                 'title': official_after.get('title'),
                                 'main_count': len(official_after.get('mains') or []),
                                 'detail_count': len(official_after.get('details') or []),
@@ -2040,6 +2067,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                          'visual_review_facts', 'visual_review_references', 'visual_review_incomplete',
                                          'visual_review_slots', 'original_asset_not_revision', 'image_provenance_missing',
                                          'protected_incomplete', 'baseline_incomplete',
+                                         'official_sku_incomplete', 'sku_sources_disagree',
                                          'shelf_mode_unpreservable'}
                         if fatal:
                             set_execution_state(task_id, 'blocked', error=code, db_path=db_path)

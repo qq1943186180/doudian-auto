@@ -35,6 +35,22 @@ test('hidden ancestors and another shop cannot supply an action', () => {
   assert.equal(call('edit_button').count,0);
   assert.equal(call('edit_button',{shop:'另一店'}).error,'wrong_shop');
 });
+
+test('scrolls an offscreen action column of the one visible exact-ID row', () => {
+  const {w,call}=fixture();
+  const live=w.document.getElementById('live');
+  const original=live.getBoundingClientRect.bind(live);
+  let scrolled=false;
+  live.getBoundingClientRect=()=>scrolled?original():{left:1500,right:1600,top:100,bottom:130,width:100,height:30};
+  w.document.elementFromPoint=(x,y)=>{
+    if(y>=100&&y<=130)return x<1100?w.document.querySelector('#live').parentElement:null;
+    return null;
+  };
+  live.scrollIntoView=()=>{scrolled=true;w.document.elementFromPoint=()=>live;};
+  assert.equal(call('edit_button').count,1);
+  assert.equal(scrolled,true);
+  assert.equal(w.document.querySelector('[data-codex-miao-target]').id,'live');
+});
 test('title ignores the keyword selector inside the same labelled form item', () => {
   const {call}=fixture(`<div class="product-edit-dialog" data-y="20">ID：${pid}<div class="el-form-item"><label class="el-form-item__label">商品标题：</label><input name="name" class="el-input__inner" value="当前商品标题"><input class="el-input__inner" value="算法热词"></div></div>`);
   assert.deepEqual(call('dialog'),{count:1,identity:true,title:'当前商品标题'});

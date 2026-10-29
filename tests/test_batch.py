@@ -1037,11 +1037,21 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
          'static_fields': [], 'images': []}
         for name in ('基础信息', '价格库存', '服务与履约')
     ]
+    from doudian_auto.official_skus import parse_official_skus
+    def sku_evidence(pid):
+        data = {'errno': 0, 'code': 0, 'data': {'context': {'product_id': pid, 'shop_id': '177970452',
+            'operation_type': 'normal', 'model_type': 'normal'}, 'model': {'spec_detail': {'value': []},
+            'sku_detail': {'value': [{'id': '1', 'sku_id': '1', 'price': '10',
+            'stock_info': {'stock_num': 20}, 'step_stock_info': {'stock_num': 0},
+            'spec_detail_ids': [], 'code': '', 'sku_status': True}]}}}}
+        return parse_official_skus({'status': 200, 'completed': True, 'requestId': 'fake-fresh-schema',
+            'url': 'https://fxg.jinritemai.com/product/tproduct/getSchema',
+            'page_url': 'https://fxg.jinritemai.com/ffa/g/create?product_id='+pid, 'body': json.dumps(data)}, product_id=pid)
     baseline = lambda pid: {
         'product_id': pid, 'shop': '销霁百货', 'shop_confirmed': True,
         'title': 'original', 'mains': [f'main-{i}' for i in range(5)],
         'details': [f'detail-{i}' for i in range(4)], 'protected': protected_sections,
-        'draft_loaded': False, 'rejected': False,
+        'draft_loaded': False, 'rejected': False, 'sku_evidence': sku_evidence(pid),
     }
 
     class FakeBridge:
@@ -1066,7 +1076,8 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
         def open_product(self, product_id, *, fresh=True):
             self.product_id = product_id
         def read_product(self, product_id):
-            return {**baseline(product_id), 'protected': {'specPrices': [{'price': '10'}], 'status': 1,
+                return {**baseline(product_id), 'protected': {'specPrices': [{'price': '10', 'skuId': 1,
+                        'specDetailIds': [], 'stockNum': 20, 'stepStockNum': 0, 'code': '', 'skuStatus': True}], 'status': 1,
                                                           'startSaleType': 0},
                     'protected_complete': True}
         def require_shelf_mode_preservable(self, expected_mode):

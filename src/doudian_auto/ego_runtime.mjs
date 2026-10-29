@@ -1,5 +1,21 @@
 // Runs inside the documented ego-browser Node runtime. No new browser/profile and
 // no direct website writes: every mutation uses the page's ordinary controls.
+export function redactOfficialSchema(body) {
+  const data=JSON.parse(body,(_key,value)=>{
+    if(typeof value==='number'&&Number.isInteger(value)&&!Number.isSafeInteger(value))
+      throw new Error('Unsafe numeric ID in official response');
+    return value;
+  });
+  const context=data.data?.context,model=data.data?.model;
+  if(!context||!model)throw new Error('Official product schema missing');
+  // Keep only product identity and field values. Schema context also contains
+  // tokens; component actions and capability metadata are not readback evidence.
+  return JSON.stringify({errno:data.errno,code:data.code,data:{context:{
+    product_id:context.product_id,shop_id:context.shop_id,
+    operation_type:context.operation_type,model_type:context.model_type},model:{
+    sku_detail:{value:model.sku_detail?.value},spec_detail:{value:model.spec_detail?.value}}}});
+}
+
 export async function runEgo(request) {
   const fs = await import('node:fs/promises');
   const {action,args={},statePath,session,runId} = request;
@@ -84,6 +100,38 @@ export async function runEgo(request) {
     fail('ego_network_command','Unsupported network observation.');
   }
   await ensureViewport(page);
+  if(action==='official_sku_read') {
+    const url=new URL(await page.url());
+    if(url.hostname!=='fxg.jinritemai.com'||url.pathname!=='/ffa/g/create'||
+       url.searchParams.get('product_id')!==String(args.product_id))
+      fail('wrong_identity','Official SKU read requires the exact current product editor.');
+    await page.cdp('Network.enable',{});await page.events();
+    const started=Date.now(),requests=new Map();
+    await page.reload(); // UI reload only; never invoke or replay a business API.
+    while(Date.now()-started<30000){
+      for(const event of await page.events()){
+        const p=event.params??{},id=p.requestId;
+        if(event.method==='Network.requestWillBeSent'){
+          const u=new URL(p.request.url);
+          if(u.origin==='https://fxg.jinritemai.com'&&u.pathname==='/product/tproduct/getSchema'&&p.request.method==='POST')
+            requests.set(id,{requestId:page.label+':'+started+':'+id,url:u.origin+u.pathname,status:null});
+        }
+        const item=requests.get(id);if(!item)continue;
+        if(event.method==='Network.responseReceived')item.status=p.response.status;
+        if(event.method==='Network.loadingFinished'&&item.status===200){
+          const response=await page.cdp('Network.getResponseBody',{requestId:id});
+          if(response.base64Encoded||response.body.length>4000000)
+            fail('official_sku_schema_invalid','Official schema encoding or size changed.');
+          let body;
+          try{body=redactOfficialSchema(response.body);}
+          catch{fail('official_sku_schema_invalid','Official schema cannot be read without losing identity.');}
+          return {...item,completed:true,page_url:await page.url(),body};
+        }
+      }
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    fail('official_sku_read_timeout','No fresh official product schema was observed; no reload retry.');
+  }
   if(action==='evaluate')return {value:await page.evaluate(args.code)};
   if(action==='snapshot') {
     // DOM text avoids Ego's snapshot-ref file-lock failure. No fabricated refs.
