@@ -100,6 +100,33 @@ export async function runEgo(request) {
     fail('ego_network_command','Unsupported network observation.');
   }
   await ensureViewport(page);
+  if(action==='checkbox') {
+    const current=await page.evaluate(selector=>{
+      const xs=[...document.querySelectorAll(selector)].filter(x=>{
+        if(x.tagName!=='INPUT'||!['checkbox','radio'].includes(x.type)||x.disabled||x.offsetParent===null)return false;
+        const visual=x.parentElement?.querySelector(x.type==='radio'?'.el-radio__inner':'.el-checkbox__inner');
+        const rect=visual?.getBoundingClientRect();
+        return !!rect&&rect.width>0&&rect.height>0&&visual.closest('label')===x.closest('label');
+      });
+      return {count:xs.length,checked:xs.length===1?xs[0].checked:null,type:xs[0]?.type};
+    },args.selector);
+    if(current.count!==1||typeof args.checked!=='boolean'||(current.type==='radio'&&!args.checked))fail('ego_checkbox_not_unique','No unique observed enabled check control.');
+    if(current.checked===args.checked)return {unchanged:true,checked:current.checked};
+    // Element Plus keeps the accessible input at zero size. The documented focus
+    // wrapper rejects it, while DOM.focus + one trusted Space works even when the
+    // Ego window is minimized. Never assign checked or dispatch synthetic events.
+    await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
+    try {
+      const doc=await page.cdp('DOM.getDocument',{depth:0});
+      const node=await page.cdp('DOM.querySelector',{nodeId:doc.root.nodeId,selector:args.selector});
+      if(!node.nodeId)fail('ego_checkbox_not_unique','Checkbox disappeared before focus.');
+      await page.cdp('DOM.focus',{nodeId:node.nodeId});
+      const focused=await page.evaluate(selector=>document.activeElement===document.querySelector(selector),args.selector);
+      if(!focused)fail('ego_checkbox_focus_failed','Checkbox focus was not confirmed.');
+      await page.keyboard.press('Space');
+      return {changed:true,checked:await page.evaluate(selector=>document.querySelector(selector)?.checked,args.selector)};
+    }finally{await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:false});}
+  }
   if(action==='official_sku_read') {
     const url=new URL(await page.url());
     if(url.hostname!=='fxg.jinritemai.com'||url.pathname!=='/ffa/g/create'||

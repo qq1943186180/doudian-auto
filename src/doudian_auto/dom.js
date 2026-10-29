@@ -195,7 +195,19 @@
         })),
         selections: all('[role="combobox"],[class*="select-selection-item"],[class*="Select_value"]', section).filter(e=>!target(e) && visible(e)).map(text),
         static_fields: all('[attr-field-id]',section).filter(e=>!target(e) && !e.contains(document.querySelector('#pg-title-input')) && !e.contains(main) && !e.contains(detail) && visible(e) && !e.querySelector('input,textarea,select,[role="switch"],[role="combobox"]')).map(e=>({field:e.getAttribute('attr-field-id'),text:text(e).slice(0,3000)})),
-        images: [...new Set(all('img',section).filter(e=>!target(e) && visible(e)).map(e=>e.currentSrc||e.src).filter(s=>s.includes('ecom-shop-material/')).map(canonical))]
+        images: (() => {
+          const urls = [...new Set(all('img',section).filter(e=>!target(e) && visible(e)).map(e=>e.currentSrc||e.src).filter(s=>s.includes('ecom-shop-material/')).map(canonical))];
+          if (!section.id.endsWith('-价格库存')) return urls;
+          // The spec picker and SKU table repeat the same material. CDN host or
+          // rendition changes must not turn that display mirror into an extra
+          // SKU image. Full per-spec identities remain in sku_evidence.
+          const seen = new Set();
+          return urls.filter(url => {
+            const key = url.split('ecom-shop-material/')[1].split(/[~?]/)[0];
+            if (seen.has(key)) return false;
+            seen.add(key); return true;
+          });
+        })()
       };
       // A hidden section reports zero of everything, which is indistinguishable from
       // genuinely empty fields, so the observation state is recorded separately and never

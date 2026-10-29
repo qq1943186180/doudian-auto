@@ -284,15 +284,19 @@ class MiaoshouBatchEditor:
         if state.get('unchanged'):
             return
         try:
-            self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
+            if getattr(self.bridge, 'endpoint', None) == 'ego':
+                self.bridge.command('checkbox', {'selector': f'input[data-codex-miao-checkbox="{marker}"]',
+                                                 'checked': bool(checked)})
+            else:
+                self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
         finally:
             self.bridge.evaluate(
-                "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"]')"
-                ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
+                "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"],[data-codex-miao-checkbox=\"" + marker + "\"]')"
+                ".forEach(x=>{x.removeAttribute('data-codex-miao-batch');x.removeAttribute('data-codex-miao-checkbox')});return true})()")
 
         self._wait_eval("(()=>{const xs=[...document.querySelectorAll('input[type=checkbox]')].filter(x=>x.offsetParent!==null&&x.value===" +
             quoted + ");return xs.length===1&&xs[0].checked===" + ('true' if checked else 'false') + "})()",
-            lambda confirmed: confirmed is True, '妙手勾选状态未生效，未继续填写。', seconds=3)
+            lambda confirmed: confirmed is True, f'妙手勾选状态 {value} 未生效，未继续填写。', seconds=3)
 
     def _ensure_radio(self, name, value):
         marker = 'miao-batch-' + uuid.uuid4().hex
@@ -300,18 +304,27 @@ class MiaoshouBatchEditor:
         probe = ("(()=>{const xs=[...document.querySelectorAll('input[type=radio]')].filter(x=>x.offsetParent!==null&&x.name===" +
                  name_q + "&&x.value===" + value_q + "&&!x.disabled);if(xs.length!==1)return {count:xs.length};"
                  "if(xs[0].checked)return {count:1,unchanged:true};const label=xs[0].closest('label');"
-                 "if(!label)return {count:0};label.setAttribute('data-codex-miao-batch','__MARKER__');return {count:1}})()")
+                 "const box=xs[0].parentElement?.querySelector('.el-radio__inner');"
+                 "if(!label||!box||box.closest('label')!==label)return {count:0};"
+                 "box.setAttribute('data-codex-miao-batch','__MARKER__');"
+                 "xs[0].setAttribute('data-codex-miao-checkbox','__MARKER__');return {count:1}})()")
         state = self.bridge.evaluate(probe.replace('__MARKER__', marker))
         if not isinstance(state, dict) or state.get('count') != 1:
             raise DoudianError('miaoshou_batch_radio_missing', f'妙手批量页方式 {value} 不唯一或缺失。')
         if state.get('unchanged'):
             return
         try:
-            self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
+            if getattr(self.bridge, 'endpoint', None) == 'ego':
+                self.bridge.command('checkbox', {'selector': f'input[data-codex-miao-checkbox="{marker}"]', 'checked': True})
+            else:
+                self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
         finally:
             self.bridge.evaluate(
-                "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"]')"
-                ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
+                "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"],[data-codex-miao-checkbox=\"" + marker + "\"]')"
+                ".forEach(x=>{x.removeAttribute('data-codex-miao-batch');x.removeAttribute('data-codex-miao-checkbox')});return true})()")
+        self._wait_eval("(()=>{const xs=[...document.querySelectorAll('input[type=radio]')].filter(x=>x.offsetParent!==null&&x.name===" +
+                        name_q + "&&x.value===" + value_q + ");return xs.length===1&&xs[0].checked})()",
+                        lambda confirmed: confirmed is True, f'妙手单选方式 {value} 未生效。', seconds=3)
 
     def _click_indexed(self, selector, index, *, expected_count, error_code):
         marker = 'miao-batch-' + uuid.uuid4().hex
@@ -373,7 +386,7 @@ class MiaoshouBatchEditor:
                     self._fill_visible(selector + ' textarea[placeholder*="过滤的图片链接"]', reuse)
                     self._click_exact_text(selector + ' button', '添加要过滤的图片')
                 else:
-                    self._fill_visible(selector + ' input[placeholder="请输入图片链接地址"]', reuse)
+                    self._fill_visible(selector + ' textarea[placeholder="请输入图片链接地址"]', reuse)
                     self._click_exact_text(selector + ' button', '确定')
             else:
                 self.bridge.command('upload', {'selector': selector + ' input[type="file"]',
@@ -447,6 +460,22 @@ class MiaoshouBatchEditor:
         if current != count:
             raise DoudianError('miaoshou_batch_detail_rows', '详情替换行数不是4，拒绝继续。')
 
+    def close_image_picker_if_open(self):
+        state = self.bridge.evaluate(
+            "(()=>({main:[...document.querySelectorAll('.replace-image-dialog')].filter(x=>x.offsetParent!==null).length,"
+            "detail:[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length}))()")
+        if not isinstance(state, dict) or state.get('main') not in (0, 1) or state.get('detail') not in (0, 1) or sum(state.values()) > 1:
+            raise DoudianError('miaoshou_batch_modal_open', '中断后的图片选择窗口不唯一，未继续操作。')
+        if state['main']:
+            from .miaoshou_editor import MiaoshouEditor
+            MiaoshouEditor(self.bridge, self.shop, session=self.session)._close_replace_popup()
+        elif state['detail']:
+            self._click_exact_text('.select-product-filter-dialog button', '关闭')
+            self._wait_eval(
+                "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()",
+                lambda count: count == 0, '中断后的图片窗口未关闭。', seconds=5)
+        return bool(state['main'] or state['detail'])
+
     def _select_detail_source(self, index, url):
         current = self.bridge.evaluate(
             "(()=>{const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>"
@@ -486,7 +515,12 @@ class MiaoshouBatchEditor:
             "?.querySelector('.add-img-box img');return i?(i.currentSrc||i.src):null})()",
             lambda value: isinstance(value, str) and resource_key(value) == resource_key(url),
             '详情来源地址添加后没有读回到指定槽位。', seconds=15)
-        self._click_exact_text('.select-product-filter-dialog button', '关闭')
+        visible_dialogs = self.bridge.evaluate(
+            "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()")
+        if visible_dialogs == 1:
+            self._click_exact_text('.select-product-filter-dialog button', '关闭')
+        elif visible_dialogs != 0:
+            raise DoudianError('miaoshou_batch_upload_layout', '详情来源选择窗口数量无法确认。')
 
     def prepare(self, *, product_id, title, baseline, main_paths, detail_paths, fresh_form=False,
                 on_upload=None, reuse_mappings=None):
@@ -494,10 +528,35 @@ class MiaoshouBatchEditor:
         if len(main_paths) != 5 or len(detail_paths) != 4:
             raise DoudianError('asset_manifest_incomplete', '妙手批量编辑需要5张主图和4张详情图。')
         self.open(reuse_existing=True)
+        self.close_image_picker_if_open()
+        self.close_preview_if_open()
+        prior = self.observe()
+        reuse_by_slot = {item.get('slot'): item for item in reuse_mappings or []}
+        # The route is shared by successive products. Inspect its scope before
+        # filling a new ID; otherwise that erases the evidence of a stale form.
+        if prior.get('product_ids') != [str(product_id)] or not reuse_by_slot:
+            fresh_form = True
+        if prior.get('product_ids') == [str(product_id)] and prior.get('shop') == self.shop:
+            candidates = [('mains', i + 1, path, url) for i, (path, url) in
+                          enumerate(zip(main_paths, prior.get('main_images') or []))]
+            candidates += [('details', i + 1, path, pair.get('target')) for i, (path, pair) in
+                           enumerate(zip(detail_paths, prior.get('detail_pairs') or []))]
+            for kind, slot, path, url in candidates:
+                if f'{kind}:{slot}' in reuse_by_slot or not (is_temporary_upload_url(url) or is_permanent_material_url(url)):
+                    continue
+                try:
+                    check = self._checked_content(url, path)
+                except DoudianError as exc:
+                    if exc.code != 'material_content_mismatch':
+                        raise
+                    continue  # A different candidate is cleared with this task's stale form.
+                mapping = self._mapping(kind, slot, check)
+                if on_upload:
+                    on_upload(kind, slot, mapping)
+                reuse_by_slot[mapping['slot']] = mapping
         if fresh_form:
             self.bridge.command('navigate', {'url': BATCH_EDIT_URL, 'newTab': False})
             self._visible()
-        self.close_preview_if_open()
         self._click_exact_text('[role=tab]', '按商品ID修改')
         self._fill_visible('textarea[placeholder*="请输入商品ID"]', str(product_id))
         for value in sorted(_TOP_FIELDS):
@@ -509,11 +568,10 @@ class MiaoshouBatchEditor:
         self._ensure_checkbox('onlyPreview', True)
         self._ensure_checkbox('replaceImgsByImgUrls', True)
         self._ensure_detail_rows(4)
-        reuse_by_slot = {item.get('slot'): item for item in reuse_mappings or []}
         reused = []
         def previous(kind, slot, path):
             item = reuse_by_slot.get(f'{kind}:{slot}') or {}
-            if (not fresh_form and item.get('confirmed') is True and
+            if (item.get('confirmed') is True and
                     item.get('source_sha256') == hashlib.sha256(Path(path).read_bytes()).hexdigest() and
                     (is_temporary_upload_url(item.get('remote_url')) or is_permanent_material_url(item.get('remote_url')))):
                 reused.append(f'{kind}:{slot}')

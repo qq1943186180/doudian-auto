@@ -142,6 +142,40 @@ test('does not replay a failed native action or create another space',async t=>{
   assert.equal(f.calls.filter(x=>Array.isArray(x)&&x[0]==='space').length,1);
 });
 
+for(const type of ['checkbox','radio'])test(`selects a zero-sized accessible ${type} with one trusted Space and never replays it`,async t=>{
+  const f=await fixture(t);const {JSDOM}=require('jsdom');
+  const dom=new JSDOM(`<label><span><input type="${type}" id="method"><span class="el-${type}__inner"></span></span><textarea disabled></textarea></label>`,{runScripts:'outside-only'});
+  const w=dom.window;const input=w.document.querySelector('input');
+  Object.defineProperty(w.HTMLElement.prototype,'offsetParent',{get(){return w.document.body;}});
+  w.HTMLElement.prototype.getBoundingClientRect=function(){return this===input?{width:0,height:0}:{width:14,height:14};};
+  f.page.evaluate=async(fn,arg)=>typeof fn==='function'?w.eval('('+fn.toString()+')')(arg):w.eval(fn);
+  f.page.cdp=async(method,args)=>{
+    f.calls.push(method);
+    if(method==='DOM.getDocument')return {root:{nodeId:1}};
+    if(method==='DOM.querySelector')return {nodeId:w.document.querySelector(args.selector)?2:0};
+    if(method==='DOM.focus')input.focus();
+    return {};
+  };
+  let presses=0;
+  f.page.keyboard={press:async key=>{assert.equal(key,'Space');presses++;input.click();}};
+  assert.equal((await f.run('checkbox',{selector:'#method',checked:true})).checked,true);
+  assert.equal(input.checked,true);assert.equal(presses,1);
+  assert.equal((await f.run('checkbox',{selector:'#method',checked:true})).unchanged,true);
+  assert.equal(presses,1);assert.equal(f.calls.includes('click'),false);
+  f.page.keyboard.press=async()=>{presses++;throw Error('input transport failed');};
+  if(type==='checkbox'){
+    await assert.rejects(f.run('checkbox',{selector:'#method',checked:false}),/transport failed/);
+    assert.equal(presses,2);
+  }else{
+    input.checked=false;
+    await assert.rejects(f.run('checkbox',{selector:'#method',checked:true}),/transport failed/);
+    assert.equal(presses,2);
+    await assert.rejects(f.run('checkbox',{selector:'#method',checked:false}),{code:'ego_checkbox_not_unique'});
+  }
+  assert.equal(f.calls.filter(x=>typeof x==='string').at(-1),'Emulation.setFocusEmulationEnabled');
+  dom.window.close();
+});
+
 test('reuses the task page across fresh navigations and finishes exactly once',async t=>{
   const f=await fixture(t);
   await f.run('navigate',{url:'https://v2-dd.chengji-inc.com/product/quick_edit',newTab:true});

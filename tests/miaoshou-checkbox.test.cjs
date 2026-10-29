@@ -19,6 +19,7 @@ test('clicks the small checkbox instead of the disabled editor at the label cent
   assert.equal(call().count,1);
   const target=w.document.querySelector('[data-codex-miao-batch="test"]');
   assert.equal(target.id,'box');
+  assert.equal(input.getAttribute('data-codex-miao-checkbox'),'test');
   target.click();
   assert.equal(input.checked,true);
 });

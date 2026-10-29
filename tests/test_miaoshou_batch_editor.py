@@ -205,7 +205,8 @@ def test_default_adapter_cannot_submit_or_submit_outside_its_three_product_scope
         assert rejected.value.code == 'writer_not_accepted'
 
 
-def test_successful_upload_is_confirmed_by_the_exact_slot_even_when_picker_stays_open(tmp_path, monkeypatch):
+@pytest.mark.parametrize('reuse', [False, True])
+def test_successful_upload_is_confirmed_by_the_exact_slot_even_when_picker_stays_open(tmp_path, monkeypatch, reuse):
     url = 'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-29/x/asset.png?dy'
     calls = []
     class Bridge:
@@ -221,11 +222,15 @@ def test_successful_upload_is_confirmed_by_the_exact_slot_even_when_picker_stays
     path = tmp_path/'asset.png'
     Image.new('RGB', (600,600), 'red').save(path)
     editor = MiaoshouBatchEditor(Bridge(), '销霁百货')
+    monkeypatch.setattr(editor, '_fill_visible', lambda selector, value: calls.append(('fill', (selector, value))))
+    monkeypatch.setattr(editor, '_click_exact_text', lambda selector, text: calls.append(('click_text', (selector, text))))
     monkeypatch.setattr(editor, '_checked_content', lambda actual, source: {'remote_url': actual, 'match': 'bytes'})
     monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor._close_replace_popup', lambda self: calls.append(('close_picker', None)))
-    result = editor._upload_open_image_dialog(path, lambda: url)
+    result = editor._upload_open_image_dialog(path, lambda: url, reuse=url if reuse else None)
     assert result['remote_url'] == url
-    assert [action for action, _ in calls].count('upload') == 1
+    assert [action for action, _ in calls].count('upload') == (0 if reuse else 1)
+    if reuse:
+        assert ('fill', ('.replace-image-dialog textarea[placeholder="请输入图片链接地址"]', url)) in calls
     assert [action for action, _ in calls].count('close_picker') == 1
 
 
@@ -297,10 +302,15 @@ def test_checkbox_that_does_not_toggle_stops_without_a_second_click():
 
 def test_detail_picker_label_toggle_is_restored_before_target_and_preview(tmp_path, monkeypatch):
     pid, title, baseline, paths, _ = _form(tmp_path)
-    editor = MiaoshouBatchEditor(object(), '销霁百货')
+    class Bridge:
+        def command(self, *args, **kwargs): return None
+    editor = MiaoshouBatchEditor(Bridge(), '销霁百货')
     mode = {'enabled': False}
     monkeypatch.setattr(editor, 'open', lambda **kwargs: None)
+    monkeypatch.setattr(editor, 'close_image_picker_if_open', lambda: None)
     monkeypatch.setattr(editor, 'close_preview_if_open', lambda: None)
+    monkeypatch.setattr(editor, '_visible', lambda: None)
+    monkeypatch.setattr(editor, 'observe', lambda: {'product_ids': [], 'shop': '销霁百货'})
     monkeypatch.setattr(editor, '_fill_visible', lambda *args: None)
     monkeypatch.setattr(editor, '_ensure_radio', lambda *args: None)
     monkeypatch.setattr(editor, '_ensure_detail_rows', lambda *args: None)
@@ -328,6 +338,83 @@ def test_detail_picker_label_toggle_is_restored_before_target_and_preview(tmp_pa
     result = editor.prepare(product_id=pid, title=title, baseline=baseline,
                             main_paths=paths[:5], detail_paths=paths[5:])
     assert len(result['uploaded_slots']) == 9 and mode['enabled']
+
+
+@pytest.mark.parametrize('same_product,arrived,timeout', [(False, False, False), (True, True, False), (True, True, True)])
+def test_fresh_form_keeps_bound_uploads_and_recovers_arrived_content_before_reset(tmp_path, monkeypatch, same_product, arrived, timeout):
+    import hashlib
+    pid, title, baseline, paths, _ = _form(tmp_path)
+    url='https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-30/bound-main.png?dy'
+    actions=[]
+    class Bridge:
+        def command(self, action, args): actions.append((action,args))
+    editor=MiaoshouBatchEditor(Bridge(),'销霁百货')
+    for name in ('open','close_image_picker_if_open','close_preview_if_open','_visible',
+                 '_click_exact_text','_fill_visible','_ensure_radio','_ensure_checkbox',
+                 '_ensure_detail_rows','_select_detail_source'):
+        monkeypatch.setattr(editor,name,lambda *args,**kwargs: None)
+    monkeypatch.setattr(editor,'observe',lambda:{'product_ids':[pid if same_product else 'another'],
+        'shop':'销霁百货','main_images':[url] if arrived else [],'detail_pairs':[]})
+    def check(actual,path):
+        if timeout: raise DoudianError('material_read_timeout','not confirmed')
+        return {'remote_url':actual,'source_sha256':hashlib.sha256(__import__('pathlib').Path(path).read_bytes()).hexdigest(),'match':'bytes'}
+    monkeypatch.setattr(editor,'_checked_content',check)
+    seen=[]
+    def upload_main(selector,index,path,count,reuse):
+        seen.append(reuse);return check(reuse or url,path)
+    monkeypatch.setattr(editor,'_upload_slot_image',upload_main)
+    monkeypatch.setattr(editor,'_upload_detail_target',lambda index,path,reuse: check(reuse or url,path))
+    monkeypatch.setattr(editor,'_wait_eval',lambda *args,**kwargs: None)
+    initial=[] if arrived else [editor._mapping('mains',1,check(url,paths[0]))]
+    persisted=[]
+    def invoke():return editor.prepare(product_id=pid,title=title,baseline=baseline,
+        main_paths=paths[:5],detail_paths=paths[5:],reuse_mappings=initial,
+        on_upload=lambda kind,slot,mapping:persisted.append((kind,slot,mapping)))
+    if timeout:
+        with pytest.raises(DoudianError) as error:invoke()
+        assert error.value.code=='material_read_timeout'
+        assert not actions and not seen
+    else:
+        result=invoke()
+        assert result['fresh_form'] is True
+        assert actions[0][0]=='navigate' and seen[0]==url
+        assert persisted[0][0:2]==('mains',1)
+
+
+@pytest.mark.parametrize('auto_closed',[False,True])
+def test_detail_source_accepts_its_picker_already_closing_after_the_source_arrives(monkeypatch,auto_closed):
+    url='https://p3-aio.ecombdimg.com/obj/ecom-shop-material/source_www600-900'
+    class Bridge:
+        def evaluate(self,code):
+            if 'setAttribute' in code:return {'count':1}
+            if 'return i?' in code:return None
+            return 0 if auto_closed else 1
+        def command(self,*args,**kwargs):pass
+    editor=MiaoshouBatchEditor(Bridge(),'销霁百货');actions=[]
+    monkeypatch.setattr(editor,'_wait_image_dialog',lambda **kwargs:None)
+    monkeypatch.setattr(editor,'_click_exact_text',lambda selector,text:actions.append(text))
+    monkeypatch.setattr(editor,'_wait_eval',lambda code,predicate,*args,**kwargs:predicate(url))
+    editor._select_detail_source(0,url)
+    assert ('关闭' in actions) is not auto_closed
+
+
+@pytest.mark.parametrize('counts', [{'main': 0, 'detail': 0}, {'main': 1, 'detail': 0},
+                                    {'main': 0, 'detail': 1}, {'main': 1, 'detail': 1}])
+def test_only_one_known_interrupted_picker_may_be_closed(counts, monkeypatch):
+    class Bridge:
+        def evaluate(self, code): return counts
+    editor = MiaoshouBatchEditor(Bridge(), '销霁百货')
+    actions = []
+    monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor._close_replace_popup',
+                        lambda self: actions.append('main'))
+    monkeypatch.setattr(editor, '_click_exact_text', lambda *args: actions.append('detail'))
+    monkeypatch.setattr(editor, '_wait_eval', lambda *args, **kwargs: 0)
+    if sum(counts.values()) > 1:
+        with pytest.raises(DoudianError): editor.close_image_picker_if_open()
+        assert not actions
+    else:
+        assert editor.close_image_picker_if_open() == bool(sum(counts.values()))
+        assert actions == ([next(k for k,v in counts.items() if v)] if sum(counts.values()) else [])
 
 
 @pytest.mark.parametrize('same', [True, False])

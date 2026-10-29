@@ -12,5 +12,6 @@
   const rect = target.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return {count: 0};
   target.setAttribute('data-codex-miao-batch', marker);
+  input.setAttribute('data-codex-miao-checkbox', marker);
   return {count: 1};
 }

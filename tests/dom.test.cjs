@@ -87,6 +87,17 @@ test('reads canonical ordered URLs, inputs and checkbox without coupling to titl
   assert.equal(checkbox.checked,true);
   page.window.close();
 });
+
+test('SKU display mirrors share one material identity across CDN hosts and renditions',()=>{
+  const {page,call}=fixture();
+  const price=page.window.document.getElementById('goodsEditScrollContainer-价格库存');
+  price.insertAdjacentHTML('beforeend','<img src="https://another.example/obj/ecom-shop-material/sku.jpg~tplv-crop.image">');
+  let fields=call('snapshot').protected.find(x=>x.section.endsWith('-价格库存'));
+  assert.equal(fields.images.length,1);
+  price.insertAdjacentHTML('beforeend','<img src="https://another.example/obj/ecom-shop-material/changed-sku.jpg">');
+  fields=call('snapshot').protected.find(x=>x.section.endsWith('-价格库存'));
+  assert.equal(fields.images.length,2);page.window.close();
+});
 test('wrong product and shop fail before any mutation',()=>{
   const {page,call} = fixture();
   assert.equal(call('delete',{kind:'mains',product_id:'3793430313384935495'}).error,'wrong_product');
