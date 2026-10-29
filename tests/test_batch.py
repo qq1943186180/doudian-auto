@@ -1018,7 +1018,8 @@ def test_agent_preparation_parallelism_is_capped_at_three(tmp_path):
     assert batch.claim_next('agent-4', batch_id=batch_id, db_path=db) is None
 
 
-def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
+@pytest.mark.parametrize('keep_session', [False, True])
+def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, keep_session):
     ids = ['3850072900438720563', '3850072900438720564']
     source = tmp_path / 'products.json'
     source.write_text(json.dumps({'products': [
@@ -1130,12 +1131,13 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch):
         'writer_ready': True, 'acceptance_sha256': 'a' * 64})
     monkeypatch.setattr(batch, '_stable_doudian_snapshot', lambda editor, identity: baseline(identity['product_id']))
     result = batch.run_batch('http://127.0.0.1:10086', batch_id=batch_id, product_ids=ids,
-                             limit=2, owner='test-writer', db_path=db)
+                             limit=2, owner='test-writer', db_path=db, keep_browser_session=keep_session)
     assert [item['product_id'] for item in result['run']] == ids
     assert result['run'][0]['state'] == 'editing' and result['run'][0]['resumable'] is True
     assert result['run'][1]['state'] == 'uploaded' and result['run'][1]['submission_state'] == 'failed'
-    assert FakeBridge.instances[0].commands.count('close_session') == 1
-    assert result['browser_session_cleanup'] == {'attempted': True, 'closed': 0}
+    assert FakeBridge.instances[0].commands.count('close_session') == (0 if keep_session else 1)
+    assert result['browser_session_cleanup'] == ({'attempted': False, 'reason': 'same_goal_continues'}
+                                                if keep_session else {'attempted': True, 'closed': 0})
     assert batch.batch_status(batch_id, db_path=db)['counts'] == {'editing': 1, 'uploaded': 1}
 
 

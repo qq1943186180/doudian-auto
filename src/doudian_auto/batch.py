@@ -1701,7 +1701,7 @@ def _close_task_miaoshou_batch_tab(bridge):
 
 def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='codex-miaoshou-writer',
               db_path=None, session='miaoshou-auto-batch-20261028', resume_only=False,
-              readback_only=False, acceptance_product_ids=None):
+              readback_only=False, acceptance_product_ids=None, keep_browser_session=False):
     """Run ready or safely resumable products serially through both merchant pages."""
     from .bridge import Bridge
     from .editor import Editor
@@ -2089,8 +2089,14 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                     release_execution(task_id, owner, claim['execution_token'], db_path=db_path)
                 except DoudianError:
                     pass
-        session_cleanup = _close_batch_session(bridge)
-        task_tab_cleanup = _close_task_miaoshou_batch_tab(bridge)
+        # A coordinator may prepare and execute successive acceptance products in
+        # the same TaskSpace. It owns one final close when that whole goal ends.
+        if keep_browser_session:
+            session_cleanup = {'attempted': False, 'reason': 'same_goal_continues'}
+            task_tab_cleanup = {'attempted': False, 'reason': 'same_goal_continues'}
+        else:
+            session_cleanup = _close_batch_session(bridge)
+            task_tab_cleanup = _close_task_miaoshou_batch_tab(bridge)
         return {'run': results, 'recovered_legacy_versions': recovered_legacy,
                 'continue_after_item_error': True,
                 'browser_session_cleanup': session_cleanup,
