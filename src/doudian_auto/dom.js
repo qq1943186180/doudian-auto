@@ -65,8 +65,12 @@
   const canonical = value => {try {const u = new URL(value); return u.origin + u.pathname;} catch {return value;}};
   const images = root => [...new Set(all('img', root).filter(visible).map(e => e.currentSrc || e.src).filter(s => /^https:\/\//.test(s) && s.includes('ecom-shop-material/') && !/\.svg(?:\?|$)/.test(s)).map(canonical))];
   const material = e => {const s = e.currentSrc || e.src; return /^https:\/\//.test(s) && s.includes('ecom-shop-material/') && !/\.svg(?:\?|$)/.test(s);};
-  // `complete` alone is also true for a failed load, so require decoded dimensions too.
-  const decoded = e => e.complete && e.naturalWidth > 1 && e.naturalHeight > 1;
+  // `complete` is also true for failed loads. Real listings may intentionally
+  // contain a decoded 1x1 tail image (the stored material itself is named
+  // `_www1-1`). Keep that exact slot; ordinary 1x1 placeholders still fail.
+  const decoded = e => e.complete && ((e.naturalWidth > 1 && e.naturalHeight > 1) ||
+    (e.naturalWidth === 1 && e.naturalHeight === 1 &&
+      /_www1-1(?:$|[~?])/.test(e.currentSrc || e.src)));
   // The hidden decorate canvas is a page-load snapshot: measured live, it never syncs
   // with edits (neither delete nor upload re-renders it). It therefore stays a
   // diagnostic counter only and never feeds the authoritative detail read.

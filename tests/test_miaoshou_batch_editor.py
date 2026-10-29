@@ -279,7 +279,7 @@ def test_checkbox_that_does_not_toggle_stops_without_a_second_click():
         def evaluate(self, code):
             if 'return xs.length===1&&' in code:
                 return False
-            if 'return {count:1}' in code:
+            if 'return {count: 1}' in code:
                 return {'count': 1}
             return True
         def command(self, action, args):
@@ -293,6 +293,41 @@ def test_checkbox_that_does_not_toggle_stops_without_a_second_click():
         editor._ensure_checkbox('title', True)
     assert rejected.value.code == 'miaoshou_batch_timeout'
     assert bridge.clicks == 1
+
+
+def test_detail_picker_label_toggle_is_restored_before_target_and_preview(tmp_path, monkeypatch):
+    pid, title, baseline, paths, _ = _form(tmp_path)
+    editor = MiaoshouBatchEditor(object(), '销霁百货')
+    mode = {'enabled': False}
+    monkeypatch.setattr(editor, 'open', lambda **kwargs: None)
+    monkeypatch.setattr(editor, 'close_preview_if_open', lambda: None)
+    monkeypatch.setattr(editor, '_fill_visible', lambda *args: None)
+    monkeypatch.setattr(editor, '_ensure_radio', lambda *args: None)
+    monkeypatch.setattr(editor, '_ensure_detail_rows', lambda *args: None)
+    def ensure(value, checked):
+        if value == 'replaceImgsByImgUrls': mode['enabled'] = checked
+    monkeypatch.setattr(editor, '_ensure_checkbox', ensure)
+    def click(selector, text):
+        if text == '预览修改效果': assert mode['enabled']
+    monkeypatch.setattr(editor, '_click_exact_text', click)
+    check = {'remote_url': 'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-30/x.png?dy',
+             'source_sha256': 'a' * 64, 'match': 'bytes'}
+    monkeypatch.setattr(editor, '_upload_slot_image', lambda *args: check)
+    def select_source(*args): mode['enabled'] = False
+    monkeypatch.setattr(editor, '_select_detail_source', select_source)
+    def upload_target(*args):
+        assert mode['enabled'], 'disabled target cannot open its picker'
+        mode['enabled'] = False
+        return check
+    monkeypatch.setattr(editor, '_upload_detail_target', upload_target)
+    def wait(code, predicate, *args, **kwargs):
+        value = {'ids': [pid], 'count': '1'}
+        assert predicate(value)
+        return value
+    monkeypatch.setattr(editor, '_wait_eval', wait)
+    result = editor.prepare(product_id=pid, title=title, baseline=baseline,
+                            main_paths=paths[:5], detail_paths=paths[5:])
+    assert len(result['uploaded_slots']) == 9 and mode['enabled']
 
 
 @pytest.mark.parametrize('same', [True, False])

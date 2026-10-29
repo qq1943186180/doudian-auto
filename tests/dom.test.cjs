@@ -222,6 +222,27 @@ test('an image that failed to decode is not treated as loaded',()=>{
   page.window.close();
 });
 
+test('preserves an intentionally stored decoded 1x1 tail image in exact slot order',()=>{
+  const {page,call}=fixture();
+  const last=page.window.document.querySelectorAll('[attr-field-id="商品详情"] img')[1];
+  last.src='https://p3-aio.ecombdimg.com/ecom-shop-material/jpeg_m_blank_sx_690_www1-1~tplv-fxg.image';
+  last.setAttribute('data-nw','1');last.setAttribute('data-nh','1');
+  const actual=call('snapshot');
+  assert.equal(actual.detail_status,'ready');assert.equal(actual.details.length,2);
+  assert.equal(actual.details[1],last.src);
+  last.setAttribute('data-nw','0');assert.equal(call('snapshot').detail_status,'pending');
+  page.window.close();
+});
+
+test('a one-pixel placeholder for a larger material remains pending',()=>{
+  const {page,call}=fixture();
+  const last=page.window.document.querySelectorAll('[attr-field-id="商品详情"] img')[1];
+  last.src='https://p3-aio.ecombdimg.com/ecom-shop-material/jpeg_m_pending_sx_690_www800-1200';
+  last.setAttribute('data-nw','1');last.setAttribute('data-nh','1');
+  assert.equal(call('snapshot').detail_status,'pending');
+  assert.equal(call('snapshot').details.length,1);page.window.close();
+});
+
 // --- protected section observation state ------------------------------------
 // The platform hides whole blocks with `visibility:hidden` + height 0. That state tracks
 // how far the page has been expanded, so the visible block set differs between reads and

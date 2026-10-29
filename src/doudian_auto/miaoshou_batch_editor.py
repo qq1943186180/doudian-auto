@@ -31,6 +31,7 @@ _TOP_FIELDS = {
 }
 _REQUIRED_FIELDS = {'title', 'image_change', 'desc'}
 _REQUIRED_OPTIONS = {'new', 'onlyPreview', 'replaceImgsByImgUrls'}
+_CHECKBOX_PROBE = Path(__file__).with_name('miaoshou_checkbox.js').read_text(encoding='utf-8')
 # The warehouse readback policy now distinguishes startSaleType from current shelf
 # state. New saves remain closed while the writer's complete acceptance is pending;
 # a successful read-only reconciliation alone does not validate new write attempts.
@@ -276,12 +277,8 @@ class MiaoshouBatchEditor:
     def _ensure_checkbox(self, value, checked):
         marker = 'miao-batch-' + uuid.uuid4().hex
         quoted = json.dumps(str(value), ensure_ascii=True)
-        probe = ("(()=>{const xs=[...document.querySelectorAll('input[type=checkbox]')].filter(x=>x.offsetParent!==null&&x.value===" +
-                 quoted + "&&!x.disabled);if(xs.length!==1)return {count:xs.length};"
-                 "if(xs[0].checked===" + ('true' if checked else 'false') + ")return {count:1,unchanged:true};"
-                 "const label=xs[0].closest('label');if(!label)return {count:0};"
-                 "label.setAttribute('data-codex-miao-batch','__MARKER__');return {count:1}})()")
-        state = self.bridge.evaluate(probe.replace('__MARKER__', marker))
+        probe = '(' + _CHECKBOX_PROBE + ')(' + json.dumps([str(value), bool(checked), marker])[1:-1] + ')'
+        state = self.bridge.evaluate(probe)
         if not isinstance(state, dict) or state.get('count') != 1:
             raise DoudianError('miaoshou_batch_checkbox_missing', f'妙手批量页字段选项 {value} 不唯一或缺失。')
         if state.get('unchanged'):
@@ -529,7 +526,12 @@ class MiaoshouBatchEditor:
                 on_upload('mains', index + 1, self._mapping('mains', index + 1, check))
         for index, path in enumerate(detail_paths):
             self._select_detail_source(index, baseline['details'][index])
+            # Selecting a fresh image inside the method's wrapping label can
+            # toggle its checkbox off. Restore the observed mode before the
+            # next control, and again after the target picker closes.
+            self._ensure_checkbox('replaceImgsByImgUrls', True)
             check = self._upload_detail_target(index, path, previous('details', index + 1, path))
+            self._ensure_checkbox('replaceImgsByImgUrls', True)
             if on_upload:
                 on_upload('details', index + 1, self._mapping('details', index + 1, check))
         self._click_exact_text('button', '预览修改效果')
