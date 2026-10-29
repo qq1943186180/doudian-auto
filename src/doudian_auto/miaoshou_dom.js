@@ -43,9 +43,9 @@
     const d = dialogs[0];
     const ids = text(d).match(/(?:ID|商品ID)[：:\s]*(\d{16,22})/g) || [];
     const identity = ids.some(value => value.match(/\d{16,22}/)?.[0] === String(p.product_id));
-    const titles = [...d.querySelectorAll('input[name="name"],.el-form-item input.el-input__inner')]
-      .filter(input => visible(input) && (input.name === 'name' ||
-        input.closest('.el-form-item')?.querySelector('.el-form-item__label')?.textContent.trim() === '商品标题：'));
+    // The same form item also contains an "算法热词" selector input. Only the
+    // observed named product-title control represents the persisted title.
+    const titles = [...d.querySelectorAll('input[name="name"]')].filter(visible);
     return {count: 1, identity, title: titles.length === 1 ? titles[0].value : null};
   }
   return {error: 'unsupported_operation'};

@@ -230,13 +230,17 @@ class MiaoshouEditor:
         raise DoudianError('miaoshou_read_timeout', '未捕获到妙手页面自身发出的商品基线读取。')
 
     def read_product(self, product_id):
-        dom = self._visible_dom('dialog', product_id)
-        if not isinstance(dom, dict) or dom.get('count') != 1 or dom.get('identity') is not True:
-            raise DoudianError('wrong_identity', '妙手店铺或商品信息窗未能确认。')
         detail = self._observed_edit_response(str(product_id))
         baseline = parse_edit_response(detail, expected_product_id=str(product_id), shop=self.shop)
-        if baseline['title'] != dom.get('title'):
-            raise DoudianError('miaoshou_title_disagreement', 'API读取标题与当前编辑窗标题不一致。')
+        try:
+            self.bridge.wait(lambda: self._visible_dom('dialog', product_id),
+                lambda dom: isinstance(dom, dict) and dom.get('count') == 1 and
+                    dom.get('identity') is True and dom.get('title') == baseline['title'],
+                'API读取标题与当前编辑窗标题不一致。', seconds=30)
+        except DoudianError as exc:
+            if exc.code != 'page_timeout':
+                raise
+            raise DoudianError('miaoshou_title_disagreement', 'API读取标题与当前编辑窗标题不一致。') from exc
         return baseline
 
     def require_shelf_mode_preservable(self, expected_mode):

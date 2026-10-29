@@ -11,6 +11,7 @@ async function fixture(t) {
   t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const calls=[],buffer=[];
   const page={label:'p1',openedBy:'agent',
+    info:async()=>({w:1462,h:795}),
     evaluate:async code => typeof code==='string'?{actual:true}:{count:1,x:40,y:80,actionable:true},
     cdp:async (method,args)=>{calls.push(method);if(method==='Network.getResponseBody')return {body:'{"result":"success"}',base64Encoded:false};return {};},
     events:async()=>buffer.splice(0),
@@ -23,13 +24,72 @@ async function fixture(t) {
     }},
     goto:async url=>{calls.push(url);}, url:async()=> 'https://v2-dd.chengji-inc.com/product/quick_edit'};
   const task={spaceId:8,page:()=>page,tabs:async()=>[{label:'p1',url:await page.url(),openedBy:'agent'}],
-    finish:async()=>calls.push('finish'),newPage:async()=>{throw Error('should reuse page');}};
+    finish:async()=>calls.push('finish'),pages:async()=>[page],newPage:async()=>{throw Error('should reuse page');}};
   global.taskSpace=async id=>{calls.push(['space',id]);return task;};
   global.listTaskSpaces=async()=>[];
   const {runEgo}=await runtime;
   const statePath=path.join(root,'state.json');
   return {run:(action,args={})=>runEgo({action,args,statePath,session:'test'}),calls,statePath,page};
 }
+
+test('repairs a zero-sized background Page from an observed peer viewport',async t=>{
+  const f=await fixture(t);
+  let repaired=false;
+  const task=await global.taskSpace();
+  const peer={info:async()=>({w:2036,h:1015})};
+  task.pages=async()=>[f.page,peer];
+  f.page.info=async()=>repaired?{w:2036,h:1015}:{w:0,h:0};
+  const original=f.page.cdp;
+  f.page.cdp=async(method,args)=>{
+    if(method==='Emulation.setDeviceMetricsOverride'){
+      assert.equal(args.width,2036);assert.equal(args.height,1015);repaired=true;
+    }
+    return original(method,args);
+  };
+  assert.deepEqual((await f.run('evaluate',{code:'observed DOM'})).value,{actual:true});
+  assert.equal(repaired,true);
+});
+
+test('keeps the first measured task viewport when the browser window is resized',async t=>{
+  const f=await fixture(t);
+  await f.run('evaluate',{code:'baseline viewport'});
+  let width=2514,height=1253;
+  f.page.info=async()=>({w:width,h:height});
+  const original=f.page.cdp;
+  f.page.cdp=async(method,args)=>{
+    if(method==='Emulation.setDeviceMetricsOverride'){
+      width=args.width;height=args.height;
+    }
+    return original(method,args);
+  };
+  await f.run('evaluate',{code:'readback viewport'});
+  assert.deepEqual([width,height],[1462,795]);
+});
+
+test('fills a named input replaced by a textarea on focus and confirms after blur',async t=>{
+  const f=await fixture(t);
+  const {JSDOM}=require('jsdom');
+  const dom=new JSDOM('<input name="productId" data-observed="yes"><button>查询</button>',{runScripts:'outside-only'});
+  const w=dom.window;
+  Object.defineProperty(w.HTMLElement.prototype,'offsetParent',{get(){return w.document.body;}});
+  w.HTMLElement.prototype.getBoundingClientRect=()=>({x:10,y:10,width:100,height:30});
+  w.HTMLElement.prototype.scrollIntoView=()=>{};
+  w.document.elementFromPoint=()=>w.document.querySelector('input,textarea');
+  f.page.evaluate=async(fn,arg)=>typeof fn==='function'?w.eval('('+fn.toString()+')')(arg):w.eval(fn);
+  f.page.mouse.click=async()=>{
+    const replacement=w.document.createElement('textarea');replacement.name='productId';
+    w.document.querySelector('input').replaceWith(replacement);replacement.focus();return {};
+  };
+  f.page.keyboard={insertText:async text=>{w.document.activeElement.value=text;},press:async key=>{
+    if(key==='Tab'){
+      const old=w.document.activeElement,input=w.document.createElement('input');
+      input.name='productId';input.value=old.value;old.replaceWith(input);w.document.querySelector('button').focus();
+    }
+  }};
+  const result=await f.run('fill',{selector:'[data-observed="yes"]',value:'3850072653520044313'});
+  assert.equal(result.success,true);
+  assert.equal(w.document.querySelector('input[name=productId]').value,'3850072653520044313');
+});
 
 test('captures response in the action round and retains it in the next round without headers',async t=>{
   const f=await fixture(t);

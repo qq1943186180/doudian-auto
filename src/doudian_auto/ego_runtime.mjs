@@ -20,6 +20,29 @@ export async function runEgo(request) {
   state.spaceId=task.spaceId;
   state.active??='p1';
   await save();
+  const ensureViewport=async page=>{
+    let info=await page.info();
+    let viewport=state.viewport;
+    if(!viewport||viewport.width<=0||viewport.height<=0){
+      viewport=info.w>0&&info.h>0?{width:info.w,height:info.h}:null;
+      if(!viewport){
+        for(const peer of await task.pages()){
+          const observed=await peer.info();
+          if(observed.w>0&&observed.h>0){viewport={width:observed.w,height:observed.h};break;}
+        }
+      }
+    }
+    if(!viewport)fail('ego_viewport_unavailable','No observed positive task viewport; restore the Ego window.');
+    if(info.w===viewport.width&&info.h===viewport.height){state.viewport=viewport;await save();return;}
+    // Newly created background Pages were observed at 0x0. Focus/bringToFront do
+    // not repair them. Keep the task's measured viewport fixed across Pages and
+    // window resizes so virtual SKU rows do not change between baseline/readback.
+    await page.cdp('Emulation.setDeviceMetricsOverride',{...viewport,
+      screenWidth:viewport.width,screenHeight:viewport.height,deviceScaleFactor:1,mobile:false});
+    info=await page.info();
+    if(info.w<=0||info.h<=0)fail('ego_viewport_unavailable','Background Page still has no actionable viewport.');
+    state.viewport=viewport;await save();
+  };
   if(action==='list_tabs'||action==='list_browser_tabs') {
     const tabs=await task.tabs();
     return {tabs:tabs.filter(t=>t.label).map(t=>({tabId:t.label,url:t.url,owned:t.openedBy==='agent'}))};
@@ -43,6 +66,7 @@ export async function runEgo(request) {
     if(state.pages[key]) page=task.page(state.pages[key]);
     else if(Object.keys(state.pages).length) page=await task.newPage();
     state.pages[key]=page.label;state.active=page.label;await save();
+    await ensureViewport(page);
     await page.goto(args.url);
     return {success:true,tabId:page.label,url:await page.url()};
   }
@@ -59,6 +83,7 @@ export async function runEgo(request) {
     if(args.cmd==='detail')return state.requests[args.requestId]??{};
     fail('ego_network_command','Unsupported network observation.');
   }
+  await ensureViewport(page);
   if(action==='evaluate')return {value:await page.evaluate(args.code)};
   if(action==='snapshot') {
     // DOM text avoids Ego's snapshot-ref file-lock failure. No fabricated refs.
@@ -93,9 +118,9 @@ export async function runEgo(request) {
           const r=el.getBoundingClientRect();return r.width>0&&r.height>0;
         });
         if(nodes.length!==1)return {count:nodes.length};
-        const el=nodes[0];el.scrollIntoView({block:'center',inline:'center'});
+        const el=nodes[0];el.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
         const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);
-        return {count:1,x,y,actionable:!!hit&&(hit===el||el.contains(hit)),disabled:!!el.disabled};
+        return {count:1,x,y,actionable:!!hit&&(hit===el||el.contains(hit)),disabled:!!el.disabled,fieldName:el.name||null};
       },args.selector);
       if(target.count!==1||!target.actionable||target.disabled)fail('ego_target_not_unique','No unique actionable current DOM target.');
       await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
@@ -103,8 +128,22 @@ export async function runEgo(request) {
         result=await page.mouse.click(target.x,target.y,{label:action==='fill'?'enter verified product content':'activate verified page control'});
         if(action==='fill'){
           await page.keyboard.press('ControlOrMeta+A');await page.keyboard.insertText(String(args.value??''));
-          const actual=await page.evaluate(s=>document.querySelector(s)?.value,args.selector);
-          if(actual!==String(args.value??''))fail('ego_fill_unconfirmed','Rendered input value differs after native typing.');
+          // Miaoshou replaces the product-ID input with a textarea on focus. The
+          // native typing target must keep the same observed logical field name.
+          const field={selector:args.selector,name:target.fieldName,value:String(args.value??'')};
+          const typed=await page.evaluate(p=>{
+            const el=document.querySelector(p.selector),active=document.activeElement;
+            return el?.value===p.value||!!p.name&&active?.name===p.name&&active.value===p.value;
+          },field);
+          if(typed!==true)fail('ego_fill_unconfirmed','Rendered input value differs after native typing.');
+          await page.keyboard.press('Tab');
+          const confirmed=await page.evaluate(p=>{
+            const exact=document.querySelector(p.selector);
+            if(exact?.value===p.value)return true;
+            const fields=[...document.querySelectorAll('input,textarea')].filter(x=>x.name===p.name&&x.offsetParent!==null);
+            return !!p.name&&fields.length===1&&fields[0].value===p.value;
+          },field);
+          if(confirmed!==true)fail('ego_fill_unconfirmed','Input did not retain the expected value after blur.');
         }
       } finally { await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:false}); }
     }

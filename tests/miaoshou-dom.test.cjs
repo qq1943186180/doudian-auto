@@ -14,7 +14,7 @@ function fixture(extra='') {
     const top = Number(this.closest('[data-y]')?.dataset.y || 20);
     return {left:10,right:110,top,bottom:top+30,width:100,height:30};
   };
-  w.document.elementFromPoint = (x,y) => [...w.document.querySelectorAll('button,input,.product-edit-dialog')].find(el => {
+  w.document.elementFromPoint = (x,y) => [...w.document.querySelectorAll('button,input')].find(el => {
     const r = el.getBoundingClientRect(); return y >= r.top && y <= r.bottom;
   });
   return {w,call:(op,p={})=>JSON.parse(JSON.stringify(w.eval(script+'('+JSON.stringify(op)+','+JSON.stringify({product_id:pid,shop:'销霁百货',marker:'test',...p})+')')))};
@@ -34,4 +34,8 @@ test('hidden ancestors and another shop cannot supply an action', () => {
   w.document.querySelector('#live').parentElement.style.display='none';
   assert.equal(call('edit_button').count,0);
   assert.equal(call('edit_button',{shop:'另一店'}).error,'wrong_shop');
+});
+test('title ignores the keyword selector inside the same labelled form item', () => {
+  const {call}=fixture(`<div class="product-edit-dialog" data-y="20">ID：${pid}<div class="el-form-item"><label class="el-form-item__label">商品标题：</label><input name="name" class="el-input__inner" value="当前商品标题"><input class="el-input__inner" value="算法热词"></div></div>`);
+  assert.deepEqual(call('dialog'),{count:1,identity:true,title:'当前商品标题'});
 });

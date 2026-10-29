@@ -13,7 +13,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .errors import DoudianError
 from .materials import verify_material_content
@@ -45,10 +45,11 @@ def _batch_page_ready(snapshot, shop):
     if not isinstance(snapshot, dict):
         return False
     parsed = urlparse(str(snapshot.get('url') or ''))
-    if parsed.hostname != MIAOSHOU_HOST or parsed.path != '/product/batch/edit':
+    if (parsed.hostname != MIAOSHOU_HOST or parsed.path != '/product/batch/edit' or
+            parse_qs(parsed.query).get('batchType') != ['multi_field']):
         return False
     text = str(snapshot.get('tree_text') or '')
-    return (f'您好【{shop}】' in text and '请输入商品ID' in text and
+    return (f'您好【{shop}】' in text and ('按商品ID修改' in text or '请输入商品ID' in text) and
             ('修改范围' in text or '综合修改(多字段修改)' in text))
 
 
@@ -57,7 +58,8 @@ def validate_batch_form_state(state, *, product_id, shop, title, baseline, asset
     if not isinstance(state, dict):
         raise DoudianError('miaoshou_batch_state_invalid', '妙手批量编辑页没有返回结构化状态。')
     parsed = urlparse(str(state.get('url') or ''))
-    if parsed.hostname != MIAOSHOU_HOST or parsed.path != '/product/batch/edit':
+    if (parsed.hostname != MIAOSHOU_HOST or parsed.path != '/product/batch/edit' or
+            parse_qs(parsed.query).get('batchType') != ['multi_field']):
         raise DoudianError('miaoshou_batch_wrong_page', '当前页不是妙手“综合修改(多字段修改)”页面。')
     if state.get('shop') != shop:
         raise DoudianError('wrong_shop', '妙手批量编辑页的店铺与任务不一致。')
@@ -104,12 +106,13 @@ def validate_batch_form_state(state, *, product_id, shop, title, baseline, asset
         raise DoudianError('miaoshou_batch_preview_title_mismatch', '修改前后标题预览与商品基线或目标不一致。')
     if [resource_key(x) for x in modal.get('old_mains', [])] != before_mains:
         raise DoudianError('miaoshou_batch_preview_main_source_mismatch', '主图预览的原图顺序与实时基线不一致。')
-    if [resource_key(x) for x in modal.get('old_details', [])] != before_details[:4]:
+    if [resource_key(x) for x in modal.get('old_details', [])] != before_details:
         raise DoudianError('miaoshou_batch_preview_detail_source_mismatch', '详情图预览来源与实时基线不一致。')
     if [resource_key(x) for x in modal.get('new_mains', [])] != [resource_key(x) for x in mains]:
         raise DoudianError('miaoshou_batch_preview_main_target_mismatch', '5张主图的修改后预览与目标槽位不一致。')
-    if [resource_key(x) for x in modal.get('new_details', [])] != [resource_key(x) for x in target_urls[5:]]:
-        raise DoudianError('miaoshou_batch_preview_detail_target_mismatch', '4张详情图的修改后预览与目标槽位不一致。')
+    expected_details = [resource_key(x) for x in target_urls[5:]] + before_details[4:]
+    if [resource_key(x) for x in modal.get('new_details', [])] != expected_details:
+        raise DoudianError('miaoshou_batch_preview_detail_target_mismatch', '详情图预览未完整保留4张替换图和其余原图顺序。')
     if modal.get('labels') != ['商品标题', '详情图', '主图']:
         raise DoudianError('miaoshou_batch_preview_layout_changed', '妙手修改前后预览结构发生变化。')
 
@@ -132,7 +135,8 @@ def validate_submission_ready_state(state, *, product_id, shop, title, mappings)
     if not isinstance(state, dict):
         raise DoudianError('miaoshou_batch_submit_state_invalid', '妙手提交预览状态不可读。')
     parsed = urlparse(str(state.get('url') or ''))
-    if parsed.hostname != MIAOSHOU_HOST or parsed.path != '/product/batch/edit':
+    if (parsed.hostname != MIAOSHOU_HOST or parsed.path != '/product/batch/edit' or
+            parse_qs(parsed.query).get('batchType') != ['multi_field']):
         raise DoudianError('miaoshou_batch_wrong_page', '当前页不是妙手多字段编辑页面。')
     if (state.get('shop') != shop or state.get('product_ids') != [str(product_id)] or
             state.get('result_product_ids') != [str(product_id)] or state.get('result_count') != 1):
@@ -224,7 +228,8 @@ class MiaoshouBatchEditor:
             tabs = self.bridge.command('list_tabs') or {}
             matches = [tab for tab in tabs.get('tabs', [])
                        if urlparse(tab.get('url', '')).hostname == MIAOSHOU_HOST and
-                       urlparse(tab.get('url', '')).path == '/product/batch/edit']
+                       urlparse(tab.get('url', '')).path == '/product/batch/edit' and
+                       parse_qs(urlparse(tab.get('url', '')).query).get('batchType') == ['multi_field']]
             if len(matches) > 1:
                 raise DoudianError('miaoshou_batch_tab_ambiguous', '妙手批量编辑标签不唯一，拒绝选择。')
             if matches:
@@ -236,7 +241,8 @@ class MiaoshouBatchEditor:
             browser_tabs = self.bridge.command('list_browser_tabs') or {}
             matches = [tab for tab in browser_tabs.get('tabs', [])
                        if urlparse(tab.get('url', '')).hostname == MIAOSHOU_HOST and
-                       urlparse(tab.get('url', '')).path == '/product/batch/edit']
+                       urlparse(tab.get('url', '')).path == '/product/batch/edit' and
+                       parse_qs(urlparse(tab.get('url', '')).query).get('batchType') == ['multi_field']]
             if len(matches) > 1:
                 raise DoudianError('miaoshou_batch_tab_ambiguous', 'Edge中妙手批量编辑标签不唯一，拒绝选择。')
             if matches:
@@ -287,6 +293,10 @@ class MiaoshouBatchEditor:
                 "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"]')"
                 ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
 
+        self._wait_eval("(()=>{const xs=[...document.querySelectorAll('input[type=checkbox]')].filter(x=>x.offsetParent!==null&&x.value===" +
+            quoted + ");return xs.length===1&&xs[0].checked===" + ('true' if checked else 'false') + "})()",
+            lambda confirmed: confirmed is True, '妙手勾选状态未生效，未继续填写。', seconds=3)
+
     def _ensure_radio(self, name, value):
         marker = 'miao-batch-' + uuid.uuid4().hex
         name_q, value_q = json.dumps(name), json.dumps(value)
@@ -321,14 +331,17 @@ class MiaoshouBatchEditor:
                 raise DoudianError('miaoshou_batch_timeout', message) from exc
             raise
 
-    def _wait_image_dialog(self):
+    def _wait_image_dialog(self, *, detail=False):
+        selector = '.select-product-filter-dialog' if detail else '.replace-image-dialog'
         return self._wait_eval(
-            "(()=>[...document.querySelectorAll('.replace-image-dialog')].filter(x=>x.offsetParent!==null).length)()",
+            "(()=>[...document.querySelectorAll('" + selector + "')].filter(x=>x.offsetParent!==null).length)()",
             lambda count: count == 1, '妙手本地图片窗口没有打开。', seconds=10)
 
     def _upload_slot_image(self, selector, index, path, expected_count, reuse=None):
         before = self._read_target_slot('mains', index)
-        if reuse and before == reuse:
+        if before:
+            # An upload may have reached the slot immediately before a crash,
+            # before its mapping was persisted. Reconcile bytes without clicking.
             return self._checked_content(before, path)
         self._click_indexed(selector, index, expected_count=expected_count,
                             error_code='miaoshou_batch_slot_count_changed')
@@ -342,12 +355,15 @@ class MiaoshouBatchEditor:
             code = "const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>x.offsetParent!==null&&x.querySelectorAll('.add-img-box').length===2);const box=xs.length===4?xs[%d].querySelectorAll('.add-img-box')[1]:null;" % index
         return self.bridge.evaluate("(()=>{" + code + "const i=box&&box.querySelector('img');return i?(i.currentSrc||i.src):null})()")
 
-    def _upload_open_image_dialog(self, path, read_slot, before_url=None, reuse=None):
+    def _upload_open_image_dialog(self, path, read_slot, before_url=None, reuse=None, *, detail=False):
+        selector = '.select-product-filter-dialog' if detail else '.replace-image-dialog'
+        if detail:
+            self._click_exact_text(selector + ' .el-tabs__item', '输入图片链接' if reuse else '本地上传')
         probe = self.bridge.evaluate(
-            "(()=>{const ds=[...document.querySelectorAll('.replace-image-dialog')].filter(x=>x.offsetParent!==null);"
+            "(()=>{const ds=[...document.querySelectorAll('" + selector + "')].filter(x=>x.offsetParent!==null);"
             "const f=ds.length===1?[...ds[0].querySelectorAll('input[type=file]')].filter(x=>!x.disabled):[];"
             "return {dialogs:ds.length,files:f.length}})()")
-        if probe != {'dialogs': 1, 'files': 1}:
+        if probe != {'dialogs': 1, 'files': 0 if detail and reuse else 1}:
             raise DoudianError('miaoshou_batch_upload_layout', '妙手批量图片窗口的本地上传控件不唯一。')
         focused = False
         try:
@@ -356,10 +372,14 @@ class MiaoshouBatchEditor:
             self.bridge.command('network', {'cmd': 'start'})
             if reuse:
                 self._checked_content(reuse, path)
-                self._fill_visible('.replace-image-dialog input[placeholder="请输入图片链接地址"]', reuse)
-                self._click_exact_text('.replace-image-dialog button', '确定')
+                if detail:
+                    self._fill_visible(selector + ' textarea[placeholder*="过滤的图片链接"]', reuse)
+                    self._click_exact_text(selector + ' button', '添加要过滤的图片')
+                else:
+                    self._fill_visible(selector + ' input[placeholder="请输入图片链接地址"]', reuse)
+                    self._click_exact_text(selector + ' button', '确定')
             else:
-                self.bridge.command('upload', {'selector': '.replace-image-dialog input[type="file"]',
+                self.bridge.command('upload', {'selector': selector + ' input[type="file"]',
                                               'files': [str(Path(path).resolve())]})
             # The picker may remain open after a successful upload. Prove the exact
             # target slot received this file instead of waiting for a modal animation.
@@ -367,8 +387,18 @@ class MiaoshouBatchEditor:
                 lambda value: value != before_url and (is_temporary_upload_url(value) or is_permanent_material_url(value)),
                 '目标槽位未读回本次上传图片；不重复上传。', seconds=60)
             check = self._checked_content(url, path)
-            from .miaoshou_editor import MiaoshouEditor
-            MiaoshouEditor(self.bridge, self.shop, session=self.session)._close_replace_popup()
+            if detail:
+                dialog_count = "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()"
+                count = self.bridge.evaluate(dialog_count)
+                if count == 1:
+                    self._click_exact_text(selector + ' button', '关闭')
+                    self._wait_eval(dialog_count, lambda count: count == 0,
+                                    '详情图片选择窗口关闭后仍然可见。', seconds=5)
+                elif count != 0:
+                    raise DoudianError('miaoshou_batch_upload_layout', '详情图片选择窗口数量无法确认。')
+            else:
+                from .miaoshou_editor import MiaoshouEditor
+                MiaoshouEditor(self.bridge, self.shop, session=self.session)._close_replace_popup()
             return check
         finally:
             if focused:
@@ -376,7 +406,7 @@ class MiaoshouBatchEditor:
 
     def _upload_detail_target(self, index, path, reuse=None):
         before = self._read_target_slot('details', index)
-        if reuse and before == reuse:
+        if before:
             return self._checked_content(before, path)
         marker = 'miao-batch-' + uuid.uuid4().hex
         probe = ("(()=>{const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>"
@@ -392,8 +422,9 @@ class MiaoshouBatchEditor:
             self.bridge.evaluate(
                 "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"]')"
                 ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
-        self._wait_image_dialog()
-        return self._upload_open_image_dialog(path, lambda: self._read_target_slot('details', index), before, reuse)
+        self._wait_image_dialog(detail=True)
+        return self._upload_open_image_dialog(path, lambda: self._read_target_slot('details', index), before, reuse,
+                                              detail=True)
 
     def _detail_lists(self):
         return self.bridge.evaluate(
@@ -420,6 +451,17 @@ class MiaoshouBatchEditor:
             raise DoudianError('miaoshou_batch_detail_rows', '详情替换行数不是4，拒绝继续。')
 
     def _select_detail_source(self, index, url):
+        current = self.bridge.evaluate(
+            "(()=>{const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>"
+            "x.offsetParent!==null&&x.querySelectorAll('.add-img-box').length===2);"
+            "const i=xs.length===4?xs[" + str(index) + "].querySelector('.add-img-box img'):null;"
+            "return i?(i.currentSrc||i.src):null})()")
+        if isinstance(current, str) and current:
+            if resource_key(current) == resource_key(url):
+                return
+            # A populated box is not an upload button. Clicking it bubbles to the
+            # wrapping checkbox and disables the entire detail replacement mode.
+            raise DoudianError('miaoshou_batch_source_mismatch', '已有详情来源与本次基线不同，需重新核对表单。')
         # Mark and click the first image box in the exact source/target row.
         marker = 'miao-batch-' + uuid.uuid4().hex
         qurl = json.dumps(url, ensure_ascii=True)
