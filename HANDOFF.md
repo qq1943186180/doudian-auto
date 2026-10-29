@@ -1,28 +1,32 @@
 # 抖店本地上传
 
-更新：2026-10-29（Asia/Shanghai）；Agent：codex-miaoshou-batch。
-源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；main；私有 origin https://github.com/qq1943186180/doudian-auto。
+更新：2026-10-29（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
+
+## 给人的说明
+
+### T-20261029-001 · 194-76 · 浏览器可靠性与素材身份检查修复
+
+- 状态：in_progress；Agent：codex-miaoshou-reliability；分支 `codex/miaoshou-reliability-20261029`，从干净 main=6143197 接手。Linear 已公告本次交接更新。
+- 已实现当前可见精确ID行定位、排除旧读取响应、保存响应绑定商品/接口、有限只读复查；复用并审查 afcc388 的素材字节/像素核验及限定3品验收实现。
+- 上一轮单件商品3850072653520044313已保存新标题并上架；妙手显示上架/审核通过，抖店官方页重载状态为上架。5张主图和14张详情沿用原图；不能记为新图或三品批量验收。
+- 已备份并对账任务2/3/4/7/8的历史证据，隔离待重建基线；队列活体47 needs_agent / 11 blocked / 3 verified，未重存任何商品，20/24/29不动。
+- 新素材须绑定源图、事实、提示词、目标版本及逐图五项检查；失败单槽最多重做一次，第二次失败隔离。程序检查证据与哈希，视觉判断仍由agent完成。
+- 新增 `--endpoint ego` 原生TaskSpace通道、独立轮次文件、同轮网络捕获、不重放超时/EPERM动作；页面按路由复用，结束只关自己的页。桌面“抖店全仓优化”已安装并指向当前目录。
+- 验证：Python全量267项通过；随后快捷保存/标题异步结果修正的31项专项通过（含新增1例，不能与267相加）；JS31项、GUI冒烟及skill校验通过。当前 writer=v3，通用写入仍关闭。
+- 现场：Ego原生连接探测通过，但妙手重新授权点击后未跳回；TaskSpace8/p1已handOff，等待用户回复授权恢复后takeOver同一空间，不新建来绕过问题。状态脚本在 `work/ego/reliability-20261029/`，该授权页是当前需用户继续的唯一项目页。
+- 后续：先用本轮原生适配器实测当前商品读取及保存；合格全套新图与3件连续完整保存/双端逐字段验收仍未完成。技术结论及数据对账证据入口见 [docs/miaoshou-reliability-20261029.md](docs/miaoshou-reliability-20261029.md)。
 
 ### T-20261026-002 · 194-76 · 妙手全仓优化程序与页面验收
 
-- 状态：in_progress。标题补救修复 `505c5e1` 已推送 `origin/main`；两件旧标题问题已解决，三件目标内容均完整读回通过。通用新上传/保存路径尚待验收，保持 `writer_ready=false`。
-- 用户于2026-10-29明确暂停商品优化，先比较ego(lite)与Edge。未验收代码已推送到 `codex/miaoshou-upload-acceptance-20261029`（`afcc388`），主目录已切回main，尚未合并；本轮没有新商品保存。分阶段验证为70项批次Python、16项素材/适配专项、25项DOM通过，不能相加冒充全量测试。
-- 已实现持久化 SQLite 队列、最多3个 agent 原子领取、妙手 UI 适配器、单写入器、上传槽位映射、一次保存与双端读回、只读恢复、标题补救命令、GUI 进度/异常/续办入口；标题及图片校验和素材哈希复验沿用既有工具。
-- 61件队列当前为52件 `needs_agent`、6件旧任务 `blocked`、3件 `verified`。商品20/24/29均为 `verified_by_readback`，尝试计数分别1/3/2；不要重复保存。52件中还含旧现场记录未对账：任务2/3/8已有历史保存完成记录，4/7为旧上传未知且未保存，恢复后先核查并隔离，不能把needs_agent当从未操作。
-- 商品24（`3848322422084337743`）新标题：`厨房水槽挂式沥水篮不锈钢过滤篮地漏网多款`；商品29（`3848319372858884337`）新标题：`羊毛衫毛衣平铺晾晒网挂式单层双层多规格咖啡色可选`。两端新标题、9张目标图、原详情尾图、SKU/价格库存及商业字段匹配，均保持仓库状态。
-- 妙手标题任务 `26884873` 已活体读取为完成、成功1、失败0，明细商品ID为24；本机证据在 `~/.doudian-auto/title-repair-preflight/history-24.json`。商品数据、图片及页面响应不进Git。
-- 新增标题专用页适配：单商品ID、使用新内容、超长失败、不修AI尺码、不定时、不调整上下架；仅用可见控件，核对新旧标题与实时字数，预检唯一最终批量按钮后才记录一次提交意图。不重传已有合格图片。
-- `saveTempBatchTask` 是异步链路的中间响应，不能证明商品成功，也不能证明未提交；暂时仍是旧标题时仅只读复核。未知提交永不重新放行。仅有明确且已完成的快速编辑拒绝响应，才允许一次标题专用路径切换，并绑定失败事件哈希及总次数上限3。
-- `startSaleType` 表示审核后去向，仓库状态保持1且最终去向1可按 `preserve_warehouse_v1` 核验；原始0→1仍记录，在售或未知状态不得套用。完整语义、标题路径与异步恢复限制见 [docs/miaoshou-shelf-policy.md](docs/miaoshou-shelf-policy.md)。
-- ego 原生浏览器单品上传/预览已验收：9/9 原图上传远端 SHA-256 一致；预览新标题、5主图、4新详情正确，原14张详情尾10张保留；妙手复读和抖店重载的保护字段基线一致，保存尝试数0。实测数据与通道结论见 [docs/ego-browser-evaluation-20261029.md](docs/ego-browser-evaluation-20261029.md)。
-- ego 子步骤耗时：妙手单品查询2.264秒、完整基线2.274秒、复读2.140秒、预览1.388秒；9张上传加远端核验约26.5秒。未与Edge跑同步骤计时，不能据此声称端到端更快；Ego 本轮会话稳定，没有 Kimi 扩展在Edge/Ego之间切换的问题。任务完成后已结束自己的TaskSpace并关闭p1/p2。
-- 抖店保护字段核验须识别表示差异：CDN的p3/p9主机名按商品对象路径规范化；运费模板名“非偏远”对应妙手 `freightId=414163746`；仅当区块字段和内容均空时，将官方页 `empty_block/ready` 视为同一空状态。其余基线字段严格一致。
-- 旧候选图仍不合格（女童裤腰印字漏失、宠物球孔位变化），本次用原图仅测上传/预览；没有点商品保存。完整保存受理、保存后双端核验及三品验收尚未完成，通用 writer 保持关闭。
-- 旧AI图本地材料在 `work/acceptance-20261029/`（忽略目录）；测试临时证据在用户目录 `~/.doudian-auto/ego-evaluation/20261029/`，不进Git。暂停分支 `codex/miaoshou-upload-acceptance-20261029`（afcc388）仍未合并。
-- 原Kimi连接切换问题保留为历史记录。本轮结束后Ego TaskSpace的p1/p2已关闭；Windows窗口盘点显示Edge未运行且没有抖店/妙手窗口，因此上一轮待核对的Edge项目页已不在打开窗口中。用户其他应用与页面未操作。
-- 下一步：继续前先对账任务2/3/8已保存及任务4/7上传未知记录；修复缺失AI商品细节的候选素材；按已验证Ego通道完成单件正式保存与双端核验，再跑3件完整验收；完成后审查并选择性合入工作分支，生产writer继续保持关闭。
-
-## 给人的说明
+- 状态：in_progress；以下是修复前阶段记录，当前队列与浏览器入口以 T-20261029-001 为准。完整旧块已归档到 [docs/handoff-history/T-20261026-002-before-reliability.md](docs/handoff-history/T-20261026-002-before-reliability.md)。
+- 队列、最多3个agent领取、单写入器、逐槽上传、一次保存、双端读回及GUI已实现；生产writer仍关闭，原图测试不算全套新图验收。
+- 商品20/24/29是 verified_by_readback，保存尝试1/3/2次；不重复保存。商品24/29旧标题已修复，9张目标图、详情尾图和商业字段双端核验，均在仓库。
+- 旧版标题修复505c5e1在main；当时暂存的新上传实现afcc388已在本轮选择性接入并继续修订，不能继续按“尚未接入”处理。
+- 标题任务26884873当时显示完成/成功1/失败0；原始证据在 ~/.doudian-auto/title-repair-preflight/history-24.json。商品数据和图片不进Git。
+- startSaleType是审核后去向，仓库0→1仅按 preserve_warehouse_v1 明确策略比较；详见 [docs/miaoshou-shelf-policy.md](docs/miaoshou-shelf-policy.md)。未知保存、saveTempBatchTask不能重放。
+- Ego原图5主+4详情上传9/9字节一致，预览尾10张详情保留，复读基线一致，保存0次；耗时与通道边界见 [docs/ego-browser-evaluation-20261029.md](docs/ego-browser-evaluation-20261029.md)。
+- 女童裤缺腰头印字、宠物球孔位等旧AI候选不合格；三品当前写入器全链路验收仍待完成。旧素材在 work/acceptance-20261029/，原测试在 ~/.doudian-auto/ego-evaluation/20261029/。
 
 ### T-20261026-001 · 194-52 · 交付后审查：补两处断档（WorkBuddy，Codex 复检通过）
 
