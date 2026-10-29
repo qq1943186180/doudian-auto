@@ -19,7 +19,7 @@ doudian-auto = "doudian_auto.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-doudian_auto = ["*.js"]
+doudian_auto = ["*.js", "*.mjs"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

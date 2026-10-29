@@ -28,5 +28,13 @@ $shortcut.Arguments = '-X utf8 -m doudian_auto.cli gui'
 $shortcut.WorkingDirectory = $repoRoot
 $shortcut.Description = 'Douyin Shop local product uploader'
 $shortcut.Save()
+$batchLinkName = [string]::Concat([char[]]@(0x6296,0x5e97,0x5168,0x4ed3,0x4f18,0x5316)) + '.lnk'
+$batchShortcut = $shell.CreateShortcut((Join-Path $desktop $batchLinkName))
+$batchShortcut.TargetPath = Join-Path $repoRoot '.venv/Scripts/pythonw.exe'
+$batchShortcut.Arguments = '-X utf8 -m doudian_auto.cli --endpoint ego gui'
+$batchShortcut.WorkingDirectory = $repoRoot
+$batchShortcut.Description = 'Douyin Shop batch optimization - native Ego browser'
+$batchShortcut.Save()
 Write-Output ('Installed command: '+(Join-Path $localBin 'doudian-auto.cmd'))
 Write-Output ('Desktop shortcut: '+(Join-Path $desktop $linkName))
+Write-Output ('Batch shortcut: '+(Join-Path $desktop $batchLinkName))

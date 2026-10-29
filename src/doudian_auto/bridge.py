@@ -10,6 +10,12 @@ from .errors import DoudianError, WaitingHuman
 
 
 class Bridge:
+    def __new__(cls, endpoint='http://127.0.0.1:10086', *args, **kwargs):
+        if cls is Bridge and endpoint == 'ego':
+            from .ego_bridge import EgoBridge
+            return object.__new__(EgoBridge)
+        return object.__new__(cls)
+
     def __init__(self, endpoint='http://127.0.0.1:10086', session='doudian-auto', timeout=25):
         parsed = urlparse(endpoint)
         if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or parsed.username or parsed.password:
