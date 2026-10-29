@@ -2,7 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
-| T-20261026-002 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 标题补救505c5e1已推送；238 Python + 24 DOM通过。商品24/29新标题及9图/详情尾图/商业字段双端核验通过，保持仓库状态；24任务26884873完成、成功1。三件目标20/24/29均verified_by_readback，尝试1/3/2；当前52待素材、6旧任务阻塞、3verified。新增标题专用UI与异步只读恢复，未知提交不可重发；明确完成的快速编辑拒绝仅允许一次路径切换。通用新上传/保存流程仍待完整验收，writer保持关闭。 |
+| T-20261026-002 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 2026-10-29用户暂停并比较ego与Edge。未验收代码afcc388已推至codex/miaoshou-upload-acceptance-20261029，主目录返回main，未合并；本轮没有商品保存。发现Kimi服务的Edge/ego连接抢占、上传成功弹窗不关闭、服装空尺码占位重复；分阶段70项Python、16专项、25 DOM通过。原20/24/29保持完整双端verified；通用writer仍关。52 needs_agent含历史已保存及上传未知记录，恢复后先对账，详见HANDOFF。 |
 | T-20261026-001 | [194-52](https://linear.app/1943186180/issue/194-52) | done | 194-52 交付后审查（WorkBuddy）：9/9 声明校验独立复现（4 素材 assets + 3 compare + 2 负例）、141 测试全过、git/推送/备份/桌面快捷方式齐全。修两处断档——① `~/.workbuddy/skills` 副本同步 canonical（此前=194-52 当天 zip 原样，含标题下限 15 的旧 bug，已随 canonical 修为 16 并委托 `doudian_auto` 包）；② 补本映射行 + Codex 会话证据归档 `docs/agent-workflow/history/194-52/` |
 | T-20261021-003 | [194-52](https://linear.app/1943186180/issue/194-52) | done | 封装个人 skill `doudian-product-workflow` + 离线校验 `doudian_check.py`（Codex 2026-10-21）：官方 quick_validate 通过；4 款素材 + 3 款读回比对 + 改价/错标题 2 负例共 9 项全过；skill.zip 与 HANDOFF 归档于 `docs/agent-workflow/history/194-52/`；独立上传适配器当时未实现（后在 194-54 落地） |
 | T-20261022-014 | [194-54](https://linear.app/1943186180/issue/194-54) | done | 按 Codex 结论重做保护字段采集：撤掉「子集容忍」（实测非虚拟列表，且交换两行价格即可绕过）；新增 `_wait_sections_mounted` 分区级等待（半挂载 88/3/0 → 稳定 98/7/11，两帧一致不足以判定）；修 abandon P1（拒绝 abandoned 阶段重入、未核验结案需 `--confirm-unverified`、uploaded 白名单接受 None）。141 Python + 24 jsdom 全过；真机端到端验证被 bridge 阻塞未完成（commit cb5abd2） |
