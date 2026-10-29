@@ -5,6 +5,14 @@
 
 ## 给人的说明
 
+### T-20261029-002 · 194-76 · 全量SKU核对与三品新版本验收
+
+- 状态：in_progress；Agent：codex-miaoshou-reliability；接续5db66f5，开工工作区干净，Linear已公告。
+- 范围：补齐官方全部SKU的读取/比对；准备合格全套新图；通过当前版本三品连续保存/双端读回，验收完成才开放通用写入。
+- 复用现有47 needs_agent / 11 blocked / 3 verified，不重存历史verified，不把原图测试计为新图优化。
+- 本轮浏览器session：miaoshou-completion-20261029；旧TaskSpace8已结束，本轮创建后固定同一空间。结束前持久化进度并关闭用完的项目标签。
+- 现场证据：work/completion-20261029/；下一步探索真实抖店读取响应或可见SKU表格的完整覆盖，缺字段仍拒绝确认。
+
 ### T-20261029-001 · 194-76 · 浏览器可靠性与素材身份检查修复
 
 - 状态：in_progress；Agent：codex-miaoshou-reliability；分支 `codex/miaoshou-reliability-20261029`，从干净 main=6143197 接手。Linear 已公告本次交接更新。
