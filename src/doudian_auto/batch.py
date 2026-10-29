@@ -909,12 +909,13 @@ def begin_submission(task_id, owner, token, *, db_path=None):
 def restore_proven_preclick_failure(task_id, owner, token, proof, *, db_path=None):
     """Return to uploaded only when an intent was persisted but its save click was not sent.
 
-    This narrow recovery is for the observed control-lookup failure that is raised
-    before Bridge.click is called. It requires a fresh dual-page baseline readback,
+    This narrow recovery is for an observed control-lookup failure raised before
+    native input. Legacy Ego records also need an audited round certificate and
+    complete fresh snapshots. It requires a fresh dual-page baseline readback,
     and keeps an audit event for the discarded intent. Unknown results after a click
     remain permanently readback-only.
     """
-    allowed_codes = {'miaoshou_batch_control_not_unique'}
+    allowed_codes = {'miaoshou_batch_control_not_unique', 'ego_target_not_unique'}
     if (not isinstance(proof, dict) or proof.get('click_issued') is not False or
             proof.get('failure_code') not in allowed_codes or proof.get('read_only') is not True or
             proof.get('miaoshou_matches_baseline') is not True or
@@ -955,11 +956,36 @@ def restore_proven_preclick_failure(task_id, owner, token, proof, *, db_path=Non
                 proof.get('miaoshou_title') != baseline.get('title') or
                 proof.get('doudian_title') != (baseline.get('doudian_baseline') or {}).get('title')):
             raise DoudianError('preclick_recovery_state_changed', '任务、提交意图或读回证据与当前记录不一致。')
+        native_trace = None
+        if proof['failure_code'] == 'ego_target_not_unique':
+            from .preclick_evidence import verify_native_preclick_trace
+            snapshots = proof.get('baseline_snapshots')
+            if (not isinstance(snapshots, dict) or
+                    not _matches_saved_baseline(snapshots.get('miaoshou') or {},
+                                                snapshots.get('doudian') or {}, baseline)):
+                raise DoudianError('preclick_recovery_not_proven', '双端完整图片和保留字段未等于原基线，保持隔离。')
+            outcomes = conn.execute('SELECT occurred_at,detail FROM product_events WHERE task_id=? '
+                                    'AND occurred_at>=? ORDER BY occurred_at',
+                                    (task_id, intent['created_at'])).fetchall()
+            matching = []
+            for event in outcomes:
+                try:
+                    detail = json.loads(event['detail'] or 'null')
+                except ValueError:
+                    continue
+                if detail == {'state': 'unknown', 'error': 'ego_target_not_unique'}:
+                    matching.append(dict(event))
+            if len(matching) != 1:
+                raise DoudianError('preclick_recovery_not_proven', '原生失败事件不唯一，保持隔离。')
+            native_trace = verify_native_preclick_trace(proof.get('native_trace'), intent,
+                                                       matching[0], data_root=DATA_ROOT)
         now = time.time()
         detail = {'event': 'submission_preclick_aborted', 'click_issued': False,
                   'failure_code': proof['failure_code'], 'submission_intent_sha256': intent_hash,
                   'baseline_sha256': row['baseline_hash'], 'read_only': True,
                   'miaoshou_matches_baseline': True, 'doudian_matches_baseline': True}
+        if native_trace:
+            detail['native_trace'] = native_trace
         conn.execute('''UPDATE products SET state='uploaded',submission_state='not_attempted',
                         submission_attempts=0,submission_intent_json=NULL,last_error=?,updated_at=?
                         WHERE id=?''', ('save_button_precheck_failed', now, task_id))
@@ -1922,7 +1948,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 batch_editor = MiaoshouBatchEditor(bridge, item['shop'], session=session, submission_scope=scope)
                 preparation = json.loads(claim.get('writer_preparation_json') or '{}')
                 try:
-                    if claim['state'] == 'ready' or not preparation:
+                    if claim['state'] == 'ready' or not preparation or preparation.get('writer_revision') != WRITER_REVISION:
                         raise DoudianError('fresh_upload_required', '新商品需要从空表单逐槽上传。')
                     mappings = batch_editor.verify_prepared(
                         product_id=item['product_id'], title=manifest['title'],

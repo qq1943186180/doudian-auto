@@ -627,6 +627,17 @@ def test_preclick_recovery_rejects_any_possible_click_or_missing_dual_readback(t
     assert row['submission_attempts'] == 1
 
 
+def test_native_preclick_recovery_requires_the_durable_round_certificate(tmp_path):
+    db, task, claim, proof = _preclick_unknown_task(tmp_path)
+    proof['failure_code'] = 'ego_target_not_unique'
+    with pytest.raises(DoudianError) as rejected:
+        batch.restore_proven_preclick_failure(task['id'], 'writer', claim['execution_token'], proof, db_path=db)
+    assert rejected.value.code == 'preclick_recovery_not_proven'
+    row = batch.batch_status(task['batch_id'], db_path=db)['products'][0]
+    assert row['submission_state'] == 'unknown'
+    assert row['submission_attempts'] == 1
+
+
 def test_execution_claim_is_exclusive_and_expired_claim_survives_restart(tmp_path):
     db, task, claim = _writer_task(tmp_path)
     assert batch.claim_execution(task['id'], 'writer-b', db_path=db) is None

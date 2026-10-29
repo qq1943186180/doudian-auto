@@ -16,6 +16,35 @@ export function redactOfficialSchema(body) {
     sku_detail:{value:model.sku_detail?.value},spec_detail:{value:model.spec_detail?.value}}}});
 }
 
+export function inspectBatchSave(expected) {
+  const visible=el=>{
+    if(!el||el.offsetParent===null)return false;
+    for(let node=el;node;node=node.parentElement){const s=getComputedStyle(node);if(s.display==='none'||s.visibility==='hidden'||node.inert)return false;}
+    return true;
+  };
+  const buttons=[...document.querySelectorAll('button.J_batchEditProduct')].filter(visible);
+  const refusal=reason=>({valid:false,count:buttons.length,reason});
+  const url=new URL(location.href);
+  if(url.hostname!=='v2-dd.chengji-inc.com'||url.pathname!=='/product/batch/edit'||url.searchParams.get('batchType')!=='multi_field')return refusal('route');
+  if(buttons.length!==1||buttons[0].disabled||buttons[0].getAttribute('aria-disabled')==='true'||buttons[0].innerText.replace(/\s+/g,' ').trim()!=='开始批量修改')return refusal('button');
+  if([...document.querySelectorAll('.replace-image-dialog,.select-product-filter-dialog,.preview-detail-dialog')].some(visible))return refusal('modal');
+  const shop=(document.body.innerText.match(/您好【([^】]+)】/)||[])[1];
+  const ids=[...document.querySelectorAll('textarea')].filter(x=>visible(x)&&(x.placeholder||'').includes('请输入商品ID'));
+  const titles=[...document.querySelectorAll('textarea[name=inputNewContent]')].filter(visible);
+  if(shop!==expected.shop||ids.length!==1||ids[0].value.trim()!==expected.product_id||titles.length!==1||titles[0].value!==expected.title)return refusal('identity');
+  const checks=[...document.querySelectorAll('input[type=checkbox]')].filter(x=>visible(x)&&!x.disabled&&x.checked).map(x=>x.value);
+  const same=(a,b)=>JSON.stringify([...a].sort())===JSON.stringify([...b].sort());
+  if(!same(checks.filter(x=>expected.top_fields.includes(x)),expected.required_fields)||!same(checks.filter(x=>!expected.top_fields.includes(x)),expected.options))return refusal('fields');
+  const radios=[...document.querySelectorAll('input[type=radio]:checked')].filter(visible);
+  if(!radios.some(x=>x.name==='contentType'&&x.value==='replaceImgByIndex')||!radios.some(x=>x.name==='overlengthType'&&x.value==='fail'))return refusal('method');
+  const key=value=>{try{const u=new URL(value);return u.pathname.includes('ecom-shop-material/')?'material:'+u.pathname.split('ecom-shop-material/')[1].split(/[~?]/)[0]:u.origin+u.pathname;}catch{return null;}};
+  const read=box=>{const img=box?.querySelector('img');return img?key(img.currentSrc||img.src):null;};
+  const mains=[...document.querySelectorAll('.replace-img-item .add-img-box')].filter(visible).map(read);
+  const pairs=[...document.querySelectorAll('.base-edit-list')].filter(x=>visible(x)&&x.querySelectorAll('.add-img-box').length===2).map(x=>[...x.querySelectorAll('.add-img-box')].map(read));
+  if(mains.length!==5||pairs.length!==4||JSON.stringify(mains)!==JSON.stringify(expected.mains.map(key))||JSON.stringify(pairs)!==JSON.stringify(expected.pairs.map(p=>p.map(key))))return refusal('assets');
+  return {valid:true,count:1};
+}
+
 export async function runEgo(request) {
   const fs = await import('node:fs/promises');
   const {action,args={},statePath,session,runId} = request;
@@ -100,6 +129,7 @@ export async function runEgo(request) {
     fail('ego_network_command','Unsupported network observation.');
   }
   await ensureViewport(page);
+  if(action==='batch_save_probe')return await page.evaluate(inspectBatchSave,args.guard);
   if(action==='checkbox') {
     const current=await page.evaluate(selector=>{
       const xs=[...document.querySelectorAll(selector)].filter(x=>{
@@ -167,7 +197,7 @@ export async function runEgo(request) {
         .filter(x=>x.offsetParent!==null).map(x=>x.getAttribute('placeholder')||'').join('\n')).slice(0,max)}),args.max_chars??26000);
   }
   if(action==='screenshot')return {path:await page.screenshot({path:args.path})};
-  const supported=['click','fill','upload','cdp'];
+  const supported=['click','fill','upload','cdp','activate_batch_save'];
   if(!supported.includes(action))fail('ego_command_unsupported','Unsupported native command: '+action);
   // Capture and consume events in the same Node round as the action. Ego event
   // buffers cannot survive a subprocess boundary. Headers/cookies are never kept.
@@ -183,6 +213,22 @@ export async function runEgo(request) {
       if(!/^(Input\.(dispatchMouseEvent|dispatchKeyEvent|insertText)|Emulation\.setFocusEmulationEnabled)$/.test(args.method))
         fail('ego_cdp_scope','Unsupported browser input protocol.');
       result=await page.cdp(args.method,args.params??{});
+    } else if(action==='activate_batch_save') {
+      const observed=await page.evaluate(inspectBatchSave,args.guard);
+      const precheck=message=>{const e=new Error(message);e.code='ego_save_precheck_failed';e.inputDispatched=false;throw e;};
+      if(!observed.valid)precheck('Batch save control or bound product content changed: '+observed.reason);
+      await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
+      try {
+        const doc=await page.cdp('DOM.getDocument',{depth:0});
+        const node=await page.cdp('DOM.querySelector',{nodeId:doc.root.nodeId,selector:'button.J_batchEditProduct'});
+        if(!node.nodeId)precheck('Batch save button disappeared before focus.');
+        await page.cdp('DOM.focus',{nodeId:node.nodeId});
+        const focused=await page.evaluate(()=>document.activeElement?.matches('button.J_batchEditProduct'));
+        const current=await page.evaluate(inspectBatchSave,args.guard);
+        if(!focused||!current.valid)precheck('Batch save focus or bound content was not confirmed.');
+        // Exactly one ordinary keyboard activation; errors after this point stay unknown.
+        result=await page.keyboard.press('Enter');
+      }finally{await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:false});}
     } else if(action==='upload') {
       result=await page.setInputFiles(args.selector,args.files??args.paths);
     } else {

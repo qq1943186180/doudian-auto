@@ -40,7 +40,7 @@ class EgoBridge(Bridge):
             'await fs.writeFile(' + json.dumps(str(output)) + ',JSON.stringify({ok:true,data:result}),"utf8");\n'
             '} catch(e) { await fs.writeFile(' + json.dumps(str(output)) +
             ',JSON.stringify({ok:false,error:{code:e.code||"ego_error",message:String(e.message),'
-            'executionStopped:e.executionStopped,mayHaveLateEffects:e.mayHaveLateEffects}}),"utf8"); }', encoding='utf-8')
+            'executionStopped:e.executionStopped,mayHaveLateEffects:e.mayHaveLateEffects,inputDispatched:e.inputDispatched}}),"utf8"); }', encoding='utf-8')
         # No shell interpolation of product text, selectors or code. Never replay this
         # subprocess after timeout: even a failed command may have dispatched a save.
         with Lock(root / 'transport.lock'):

@@ -22,7 +22,7 @@ from .workflow import is_permanent_material_url, is_temporary_upload_url, resour
 
 MIAOSHOU_HOST = 'v2-dd.chengji-inc.com'
 BATCH_EDIT_URL = 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field'
-WRITER_REVISION = 'multi-field-20261029-v4'
+WRITER_REVISION = 'multi-field-20261030-v5'
 _TOP_FIELDS = {
     'title', 'short_product_name', 'brand_id', 'item_num', 'product_format',
     'fabric_material', 'price', 'size_temp', 'transport_id', '7day_return',
@@ -398,14 +398,7 @@ class MiaoshouBatchEditor:
                 '目标槽位未读回本次上传图片；不重复上传。', seconds=60)
             check = self._checked_content(url, path)
             if detail:
-                dialog_count = "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()"
-                count = self.bridge.evaluate(dialog_count)
-                if count == 1:
-                    self._click_exact_text(selector + ' button', '关闭')
-                    self._wait_eval(dialog_count, lambda count: count == 0,
-                                    '详情图片选择窗口关闭后仍然可见。', seconds=5)
-                elif count != 0:
-                    raise DoudianError('miaoshou_batch_upload_layout', '详情图片选择窗口数量无法确认。')
+                self._close_detail_picker()
             else:
                 from .miaoshou_editor import MiaoshouEditor
                 MiaoshouEditor(self.bridge, self.shop, session=self.session)._close_replace_popup()
@@ -441,6 +434,25 @@ class MiaoshouBatchEditor:
             "(()=>[...document.querySelectorAll('.base-edit-list')].filter(x=>"
             "x.querySelectorAll('.add-img-box').length===2).length)()")
 
+    def _close_detail_picker(self):
+        probe = "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()"
+        count = self.bridge.evaluate(probe)
+        if count == 0:
+            return
+        if count != 1:
+            raise DoudianError('miaoshou_batch_upload_layout', '详情图片选择窗口数量无法确认。')
+        try:
+            self._click_exact_text('.select-product-filter-dialog button', '关闭')
+        except DoudianError:
+            # Adding a source or finishing an upload may dismiss this picker
+            # between the count and the close-button lookup. Confirm closure;
+            # never replay the missing click or repeat the upload.
+            if self.bridge.evaluate(probe) == 0:
+                return
+            raise
+        self._wait_eval(probe, lambda actual: actual == 0,
+                        '详情图片选择窗口关闭后仍然可见。', seconds=5)
+
     def _ensure_detail_rows(self, count=4):
         current = self._detail_lists()
         while current < count:
@@ -470,10 +482,7 @@ class MiaoshouBatchEditor:
             from .miaoshou_editor import MiaoshouEditor
             MiaoshouEditor(self.bridge, self.shop, session=self.session)._close_replace_popup()
         elif state['detail']:
-            self._click_exact_text('.select-product-filter-dialog button', '关闭')
-            self._wait_eval(
-                "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()",
-                lambda count: count == 0, '中断后的图片窗口未关闭。', seconds=5)
+            self._close_detail_picker()
         return bool(state['main'] or state['detail'])
 
     def _select_detail_source(self, index, url):
@@ -515,12 +524,7 @@ class MiaoshouBatchEditor:
             "?.querySelector('.add-img-box img');return i?(i.currentSrc||i.src):null})()",
             lambda value: isinstance(value, str) and resource_key(value) == resource_key(url),
             '详情来源地址添加后没有读回到指定槽位。', seconds=15)
-        visible_dialogs = self.bridge.evaluate(
-            "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()")
-        if visible_dialogs == 1:
-            self._click_exact_text('.select-product-filter-dialog button', '关闭')
-        elif visible_dialogs != 0:
-            raise DoudianError('miaoshou_batch_upload_layout', '详情来源选择窗口数量无法确认。')
+        self._close_detail_picker()
 
     def prepare(self, *, product_id, title, baseline, main_paths, detail_paths, fresh_form=False,
                 on_upload=None, reuse_mappings=None):
@@ -685,6 +689,9 @@ class MiaoshouBatchEditor:
         self.bridge.evaluate(
             "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"preview-close\"]')"
             ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
+        self._wait_eval(
+            "(()=>[...document.querySelectorAll('.preview-detail-dialog')].filter(x=>x.offsetParent!==null).length)()",
+            lambda count: count == 0, '详情预览关闭动画尚未结束，未保存。', seconds=15)
         return True
 
     def prepare_submission(self, *, product_id, shop, title, mappings):
@@ -755,7 +762,24 @@ class MiaoshouBatchEditor:
             "return {count:1}})()")
         if armed != {'count': 1}:
             raise DoudianError('miaoshou_batch_submit_button_unavailable', '最终提交按钮状态变化，尚未保存。')
+        if getattr(self.bridge, 'endpoint', None) == 'ego':
+            guard = self._save_guard(product_id, title, mappings)
+            observed = self.bridge.command('batch_save_probe', {'guard': guard})
+            if not isinstance(observed, dict) or observed.get('valid') is not True:
+                reason = observed.get('reason') if isinstance(observed, dict) else 'unreadable'
+                raise DoudianError('miaoshou_batch_submit_button_unavailable',
+                                   f'最终保存按钮或本商品内容尚未就绪（{reason}），未发出保存。')
         return {'marker': arm, 'product_id': str(product_id), 'title': title}
+
+    def _save_guard(self, product_id, title, mappings):
+        by_slot = {item['slot']: item['remote_url'] for item in mappings}
+        state = self.observe()
+        return {'product_id': str(product_id), 'shop': self.shop, 'title': title,
+                'top_fields': sorted(_TOP_FIELDS), 'required_fields': sorted(_REQUIRED_FIELDS),
+                'options': sorted(_REQUIRED_OPTIONS),
+                'mains': [by_slot[f'mains:{i}'] for i in range(1, 6)],
+                'pairs': [[pair['source'], by_slot[f'details:{i}']]
+                          for i, pair in enumerate(state['detail_pairs'], 1)]}
 
     def click_start_once(self, *, product_id, title, baseline, asset_paths,
                          validated_mappings=None, prepared_submission=None, wait_seconds=60):
@@ -776,7 +800,10 @@ class MiaoshouBatchEditor:
         before_ids = {item.get('requestId') for item in before.get('requests', [])}
         self.bridge.command('network', {'cmd': 'start'})
         # This exact page-level button is distinct from each row's "保存修改" action.
-        self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
+        if getattr(self.bridge, 'endpoint', None) == 'ego':
+            self.bridge.command('activate_batch_save', {'guard': self._save_guard(product_id, title, mappings)})
+        else:
+            self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
         self.bridge.evaluate(
             "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"]')"
             ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")

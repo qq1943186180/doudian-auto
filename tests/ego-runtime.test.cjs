@@ -6,6 +6,25 @@ const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const runtime = import(pathToFileURL(path.join(__dirname,'../src/doudian_auto/ego_runtime.mjs')).href);
 
+function savePage() {
+  const {JSDOM}=require('jsdom');
+  const expected={shop:'销霁百货',product_id:'3848317832962113825',title:'目标商品标题',
+    top_fields:['title','image_change','desc','price'],required_fields:['title','image_change','desc'],
+    options:['new','onlyPreview','replaceImgsByImgUrls'],
+    mains:Array.from({length:5},(_,i)=>`https://p3-aio.ecombdimg.com/obj/ecom-shop-material/main${i}`),
+    pairs:Array.from({length:4},(_,i)=>[`https://p3-aio.ecombdimg.com/obj/ecom-shop-material/source${i}`,`https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-30/detail${i}.png?dy`])};
+  const dom=new JSDOM(`<header>您好【${expected.shop}】</header><textarea placeholder="请输入商品ID">${expected.product_id}</textarea><textarea name="inputNewContent">${expected.title}</textarea>
+    ${expected.required_fields.concat(expected.options).map(v=>`<input type="checkbox" value="${v}" checked>`).join('')}<input id="price" type="checkbox" value="price">
+    <input type="radio" name="contentType" value="replaceImgByIndex" checked><input type="radio" name="overlengthType" value="fail" checked>
+    ${expected.mains.map(u=>`<div class="replace-img-item"><div class="add-img-box"><img src="${u}"></div></div>`).join('')}
+    ${expected.pairs.map(pair=>`<div class="base-edit-list">${pair.map(u=>`<div class="add-img-box"><img src="${u}"></div>`).join('')}</div>`).join('')}
+    <button id="save" class="J_batchEditProduct">开始批量修改</button>`,{url:'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field',runScripts:'outside-only'});
+  const w=dom.window;
+  Object.defineProperty(w.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
+  Object.defineProperty(w.HTMLElement.prototype,'offsetParent',{get(){return this.closest('[hidden]')?null:w.document.body;}});
+  return {dom,w,expected,evaluate:async(fn,arg)=>typeof fn==='function'?w.eval('('+fn.toString()+')')(arg):w.eval(fn)};
+}
+
 async function fixture(t) {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'ego-transport-'));
   t.after(()=>fs.rm(root,{recursive:true,force:true}));
@@ -60,6 +79,55 @@ test('official SKU evidence comes from one UI reload and drops context tokens an
 test('official schema redaction refuses unsafe numeric product IDs',async()=>{
   const {redactOfficialSchema}=await runtime;
   assert.throws(()=>redactOfficialSchema('{"data":{"context":{"product_id":3850072653520044313},"model":{}}}'),/Unsafe numeric ID/);
+});
+
+test('final native save guard requires exact shop, product, title, fields and all nine image slots',async()=>{
+  const {inspectBatchSave}=await runtime;const p=savePage();
+  const read=()=>p.evaluate(inspectBatchSave,p.expected);
+  assert.equal((await read()).valid,true);
+  p.w.document.querySelector('#price').checked=true;assert.equal((await read()).reason,'fields');
+  p.w.document.querySelector('#price').checked=false;
+  p.w.document.querySelector('textarea[name=inputNewContent]').value='another';assert.equal((await read()).reason,'identity');
+  p.w.document.querySelector('textarea[name=inputNewContent]').value=p.expected.title;
+  const image=p.w.document.querySelector('.base-edit-list .add-img-box img');const old=image.src;
+  image.src='https://p3-aio.ecombdimg.com/obj/ecom-shop-material/changed';assert.equal((await read()).reason,'assets');image.src=old;
+  p.w.document.body.insertAdjacentHTML('beforeend','<div class="select-product-filter-dialog">open picker</div>');
+  assert.equal((await read()).reason,'modal');p.dom.window.close();
+});
+
+for(const mode of ['success','changed_on_focus','lost_after_enter'])test(`one native final-button Enter with ${mode}`,async t=>{
+  const f=await fixture(t),p=savePage(),events=[];let inputs=0;
+  f.page.evaluate=p.evaluate;f.page.events=async()=>events.splice(0);
+  f.page.cdp=async(method,args)=>{
+    if(method==='DOM.getDocument')return {root:{nodeId:1}};
+    if(method==='DOM.querySelector')return {nodeId:2};
+    if(method==='DOM.focus'){
+      p.w.document.querySelector('#save').focus();
+      if(mode==='changed_on_focus')p.w.document.querySelector('textarea[name=inputNewContent]').value='changed';
+    }
+    if(method==='Network.getResponseBody')return {body:'{"result":"success"}',base64Encoded:false};
+    return {};
+  };
+  f.page.keyboard={press:async key=>{
+    assert.equal(key,'Enter');inputs++;
+    events.push({method:'Network.requestWillBeSent',params:{requestId:'save-one',request:{url:'https://v2-dd.chengji-inc.com/api/v2/product/product/saveProduct',method:'POST',postData:'productId='+p.expected.product_id}}},
+      {method:'Network.responseReceived',params:{requestId:'save-one',response:{status:200}}},
+      {method:'Network.loadingFinished',params:{requestId:'save-one'}});
+    if(mode==='lost_after_enter')throw Error('receipt lost');
+    return {};
+  }};
+  await f.run('network',{cmd:'start'});
+  const action=()=>f.run('activate_batch_save',{guard:p.expected});
+  if(mode==='changed_on_focus'){
+    await assert.rejects(action(),e=>e.code==='ego_save_precheck_failed'&&e.inputDispatched===false);
+    assert.equal(inputs,0);
+  }else if(mode==='lost_after_enter'){
+    await assert.rejects(action(),e=>e.message==='receipt lost'&&e.inputDispatched!==false);
+    assert.equal(inputs,1);
+  }else{await action();assert.equal(inputs,1);}
+  const records=await f.run('network',{cmd:'list'});
+  assert.equal(records.requests.length,mode==='changed_on_focus'?0:1);
+  assert.equal(f.calls.includes('click'),false);p.dom.window.close();
 });
 
 test('repairs a zero-sized background Page from an observed peer viewport',async t=>{

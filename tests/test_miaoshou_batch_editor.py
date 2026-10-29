@@ -205,6 +205,29 @@ def test_default_adapter_cannot_submit_or_submit_outside_its_three_product_scope
         assert rejected.value.code == 'writer_not_accepted'
 
 
+def test_native_final_save_uses_one_bound_keyboard_action_and_never_falls_back_after_unknown(tmp_path,monkeypatch):
+    from doudian_auto.miaoshou_batch_editor import WRITER_REVISION
+    pid,title,baseline,paths,state=_form(tmp_path);actions=[]
+    class Bridge:
+        endpoint='ego'
+        def command(self,action,args=None):
+            actions.append((action,args))
+            return {'requests':[]} if action=='network' else {}
+        def evaluate(self,code):return True
+    e=MiaoshouBatchEditor(Bridge(),'销霁百货',submission_scope={'kind':'verified',
+        'writer_revision':WRITER_REVISION,'product_ids':[pid],'acceptance_sha256':'a'*64})
+    monkeypatch.setattr(e,'observe',lambda:state)
+    mappings=[{'slot':f'mains:{i+1}','remote_url':url} for i,url in enumerate(state['main_images'])]
+    mappings += [{'slot':f'details:{i+1}','remote_url':pair['target']} for i,pair in enumerate(state['detail_pairs'])]
+    result=e.click_start_once(product_id=pid,title=title,baseline=baseline,asset_paths=paths,
+        validated_mappings=mappings,prepared_submission={'marker':'one','product_id':pid,'title':title},wait_seconds=0)
+    assert result['state']=='unknown'
+    calls=[args for action,args in actions if action=='activate_batch_save']
+    assert len(calls)==1 and calls[0]['guard']['product_id']==pid
+    assert len(calls[0]['guard']['mains'])==5 and len(calls[0]['guard']['pairs'])==4
+    assert not any(action=='click' for action,_ in actions)
+
+
 @pytest.mark.parametrize('reuse', [False, True])
 def test_successful_upload_is_confirmed_by_the_exact_slot_even_when_picker_stays_open(tmp_path, monkeypatch, reuse):
     url = 'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-29/x/asset.png?dy'
@@ -407,6 +430,7 @@ def test_only_one_known_interrupted_picker_may_be_closed(counts, monkeypatch):
     actions = []
     monkeypatch.setattr('doudian_auto.miaoshou_editor.MiaoshouEditor._close_replace_popup',
                         lambda self: actions.append('main'))
+    monkeypatch.setattr(editor, '_close_detail_picker', lambda: actions.append('detail'))
     monkeypatch.setattr(editor, '_click_exact_text', lambda *args: actions.append('detail'))
     monkeypatch.setattr(editor, '_wait_eval', lambda *args, **kwargs: 0)
     if sum(counts.values()) > 1:
@@ -415,6 +439,43 @@ def test_only_one_known_interrupted_picker_may_be_closed(counts, monkeypatch):
     else:
         assert editor.close_image_picker_if_open() == bool(sum(counts.values()))
         assert actions == ([next(k for k,v in counts.items() if v)] if sum(counts.values()) else [])
+
+
+@pytest.mark.parametrize('counts,click_fails,expected_clicks,raises', [
+    ([0], False, 0, False), ([1, 0], True, 1, False),
+    ([1, 1], True, 1, True), ([2], False, 0, True)])
+def test_detail_picker_dismissal_race_is_read_back_without_a_second_click(monkeypatch,counts,click_fails,expected_clicks,raises):
+    values=iter(counts);clicks=[]
+    class Bridge:
+        def evaluate(self,code):return next(values)
+    editor=MiaoshouBatchEditor(Bridge(),'销霁百货')
+    def click(*args):
+        clicks.append(args)
+        if click_fails:raise DoudianError('miaoshou_batch_control_not_unique','button disappeared')
+    monkeypatch.setattr(editor,'_click_exact_text',click)
+    if raises:
+        with pytest.raises(DoudianError):editor._close_detail_picker()
+    else:editor._close_detail_picker()
+    assert len(clicks)==expected_clicks
+
+
+def test_preview_close_waits_for_the_overlay_to_disappear_without_another_click(monkeypatch):
+    actions=[];checks=[]
+    class Bridge:
+        def evaluate(self,code):
+            return {'dialogs':1,'buttons':1} if 'return {dialogs:' in code else True
+        def command(self,action,args):actions.append(action)
+    editor=MiaoshouBatchEditor(Bridge(),'销霁百货')
+    def wait(code,predicate,message,**kwargs):
+        checks.append(code)
+        assert predicate(1) is False
+        assert predicate(0) is True
+        assert kwargs['seconds'] <= 30
+        return 0
+    monkeypatch.setattr(editor,'_wait_eval',wait)
+    assert editor.close_preview_if_open() is True
+    assert actions == ['click']
+    assert len(checks) == 1 and '.preview-detail-dialog' in checks[0]
 
 
 @pytest.mark.parametrize('same', [True, False])
