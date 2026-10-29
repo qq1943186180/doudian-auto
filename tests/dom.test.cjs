@@ -283,6 +283,22 @@ test('every protected block is enumerated even when hidden',()=>{
   page.window.close();
 });
 
+test('a populated size table is read once beside its positively empty hideModule placeholder',()=>{
+  const {page,call} = realistic();
+  blocks(page, {'尺码表': {html:'<div attr-field-id="尺码信息"><input value="155/70(M)"></div>'}});
+  const empty = page.window.document.createElement('div');
+  empty.id = 'goodsEditScrollContainer-尺码表';
+  empty.className = 'style_formBlockNewUI__x style_hideModule__x';
+  empty.innerHTML = '<div></div>';
+  page.window.document.body.appendChild(empty);
+  const sections = call('snapshot').protected.filter(s=>s.section.endsWith('-尺码表'));
+  assert.equal(sections.length,1);
+  assert.equal(sections[0].inputs[0].value,'155/70(M)');
+  empty.innerHTML = '<input value="XL">';
+  assert.equal(call('snapshot').protected.filter(s=>s.section.endsWith('-尺码表')).length,2);
+  page.window.close();
+});
+
 // --- publish outcome classification -----------------------------------------
 // The window right after "发布商品" is clicked passes through frames where the editor is
 // gone but the outcome is not rendered yet. `publish_state` must classify those frames

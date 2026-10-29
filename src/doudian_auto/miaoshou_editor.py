@@ -25,6 +25,7 @@ QUICK_EDIT_URL = f'https://{MIAOSHOU_HOST}/product/quick_edit'
 BASE_EDIT_ENDPOINT = '/api/v2/product/product/getProductBaseEditInfo'
 SAVE_ENDPOINT = '/api/v2/product/product/saveEditProductInfo'
 UPLOAD_ENDPOINT = '/api/v2/move/batch/uploadImage'
+VISIBLE_DOM = Path(__file__).with_name('miaoshou_dom.js').read_text(encoding='utf-8')
 
 
 def _json_body(value):
@@ -117,6 +118,19 @@ class MiaoshouEditor:
         self.bridge = bridge
         self.shop = str(shop).strip()
         self.bridge.session = session
+        self._prior_edit_ids = set()
+
+    def _visible_dom(self, op, product_id=None, marker=None):
+        params = {'shop': self.shop, 'product_id': str(product_id or ''),
+                  'marker': marker or uuid.uuid4().hex}
+        return self.bridge.evaluate(VISIBLE_DOM + '(' + json.dumps(op) + ',' +
+                                    json.dumps(params, ensure_ascii=True) + ')')
+
+    def _mark_control(self, op, product_id=None):
+        state = self.bridge.wait(lambda: self._visible_dom(op, product_id),
+            lambda value: isinstance(value, dict) and value.get('count') == 1,
+            '妙手当前可见控件或商品行未唯一定位；未点击。', seconds=30)
+        return state['selector']
 
     def _snapshot(self, max_chars=26000):
         snap = self.bridge.command('snapshot', {'format': 'aria', 'max_chars': max_chars})
@@ -177,23 +191,21 @@ class MiaoshouEditor:
                                          'group_title': '妙手批量商品优化'})
         self._wait_tree(lambda snap: f'您好【{self.shop}】' in snap['tree_text'],
                         '妙手店铺页或登录态未就绪。', seconds=30)
-        snap = self._snapshot()
-        input_ref, query_ref = self._search_refs(snap['tree_text'])
-        self.bridge.command('fill', {'selector': input_ref, 'value': str(product_id)})
-        self.bridge.command('click', {'selector': query_ref})
-        result = self._wait_tree(lambda page: str(product_id) in page['tree_text'] and
-                                 '共 1 条' in page['tree_text'],
-                                 '商品ID精确查询没有收敛到唯一结果。', seconds=30)
+        self.bridge.command('fill', {'selector': self._mark_control('search_input'),
+                                     'value': str(product_id)})
+        self.bridge.command('click', {'selector': self._mark_control('query_button')})
+        button = self._mark_control('edit_button', product_id)
         self.bridge.command('network', {'cmd': 'start'})
-        button_ref = self._edit_ref(result['tree_text'], str(product_id))
-        self.bridge.command('click', {'selector': button_ref})
+        prior = self.bridge.command('network', {'cmd': 'list', 'filter': BASE_EDIT_ENDPOINT}) or {}
+        self._prior_edit_ids = {item.get('requestId') for item in prior.get('requests', [])}
+        self.bridge.command('click', {'selector': button})
         page = self._wait_tree(lambda snap: f'ID：{product_id}' in snap['tree_text'] and
                                '商品标题：' in snap['tree_text'],
                                '妙手商品信息窗没有加载目标商品。', seconds=30)
         # One-row search must produce one editing item. This prevents the left-side
         # multi-product navigator from silently switching to a neighbouring listing.
-        dialog = self.bridge.evaluate("(()=>{const d=document.querySelector('.product-edit-dialog');return d?{text:(d.innerText||'').replace(/\\s+/g,' ').slice(0,500),items:d.querySelectorAll('[class*=product-item]').length}:null})()")
-        if not isinstance(dialog, dict) or str(product_id) not in dialog.get('text', ''):
+        dialog = self._visible_dom('dialog', product_id)
+        if not isinstance(dialog, dict) or dialog.get('count') != 1 or not dialog.get('identity'):
             raise DoudianError('wrong_identity', '妙手编辑窗未包含精确目标商品ID。')
         return page
 
@@ -204,20 +216,22 @@ class MiaoshouEditor:
             capture = self.bridge.command('network', {'cmd': 'list', 'filter': BASE_EDIT_ENDPOINT})
             requests = capture.get('requests', []) if isinstance(capture, dict) else []
             matches = [item for item in requests if BASE_EDIT_ENDPOINT in item.get('url', '')
+                       and item.get('requestId') not in self._prior_edit_ids
                        and item.get('method') == 'POST' and item.get('completed') and item.get('status') == 200]
             for item in reversed(matches):
                 detail = self.bridge.command('network', {'cmd': 'detail', 'requestId': item['requestId']})
-                request_body = str(detail.get('requestBody') or '')
-                if str(product_id) in request_body:
-                    if 'isDraft=0' not in request_body and 'isDraft%3D0' not in request_body:
+                from .submission_evidence import request_fields, request_product_ids
+                fields = request_fields(detail.get('requestBody'))
+                if request_product_ids(detail.get('requestBody')) == {str(product_id)}:
+                    if str(fields.get('isDraft')) != '0':
                         raise DoudianError('draft_source_unconfirmed', '读取请求没有证明读取的是非草稿数据。')
                     return detail
             time.sleep(0.35)
         raise DoudianError('miaoshou_read_timeout', '未捕获到妙手页面自身发出的商品基线读取。')
 
     def read_product(self, product_id):
-        dom = self.bridge.evaluate("(()=>{const d=document.querySelector('.product-edit-dialog');const f=d&&[...d.querySelectorAll('.el-form-item__label')].find(x=>(x.innerText||'').trim()==='商品标题：');const v=f&&f.parentElement.querySelector('input.el-input__inner');return {shop:(document.body.innerText.match(/您好【([^】]+)】/)||[])[1]||'',title:v?v.value:null,dialog:!!d,dialogs:[...document.querySelectorAll('.el-dialog')].filter(x=>x.offsetParent!==null).length}})()")
-        if not isinstance(dom, dict) or dom.get('shop') != self.shop or dom.get('dialog') is not True:
+        dom = self._visible_dom('dialog', product_id)
+        if not isinstance(dom, dict) or dom.get('count') != 1 or dom.get('identity') is not True:
             raise DoudianError('wrong_identity', '妙手店铺或商品信息窗未能确认。')
         detail = self._observed_edit_response(str(product_id))
         baseline = parse_edit_response(detail, expected_product_id=str(product_id), shop=self.shop)
@@ -358,19 +372,19 @@ class MiaoshouEditor:
             "title:i?i.value:null,rendered_units:m?Number(m[1]):null}})()")
         return result if isinstance(result, dict) else {}
 
-    def prepare_save(self, product_id, title):
+    def prepare_save(self, product_id, title, *, marker=None):
         from .title import title_units
 
         state = self.title_form_state(product_id)
         if (state.get('identity') is not True or state.get('title') != title or
                 state.get('rendered_units') != title_units(title)):
             raise DoudianError('miaoshou_title_model_unconfirmed', '保存前标题和实时字数未同时匹配。')
-        snap = self._snapshot()
-        refs = [ref for line in snap['tree_text'].splitlines()
-                if 'button "保存到抖店(F)"' in line and (ref := _ref(line))]
-        if len(refs) != 1:
+        marker = marker or uuid.uuid4().hex
+        control = self._visible_dom('save_button', product_id, marker=marker)
+        if not isinstance(control, dict) or control.get('count') != 1:
             raise DoudianError('miaoshou_save_not_unique', '保存到抖店按钮未唯一定位。')
-        return {'selector': refs[0], 'product_id': str(product_id), 'title': title,
+        return {'selector': control['selector'], 'marker': marker,
+                'product_id': str(product_id), 'title': title,
                 'rendered_units': state['rendered_units']}
 
     @staticmethod
@@ -659,21 +673,16 @@ class MiaoshouEditor:
                 'import_response': imported}
 
     def click_save_once(self, *, prepared_save=None):
-        if prepared_save is not None:
-            current = self.prepare_save(prepared_save['product_id'], prepared_save['title'])
-            if current != prepared_save:
-                raise DoudianError('miaoshou_save_preflight_changed', '保存前控件或标题状态已变化。')
-        else:
-            current = None
-        snap = self._snapshot()
-        lines = snap['tree_text'].splitlines()
-        refs = [ref for line in lines if 'button "保存到抖店(F)"' in line and (ref := _ref(line))]
-        if len(refs) != 1:
-            raise DoudianError('miaoshou_save_not_unique', '保存到抖店按钮未唯一定位。')
+        if not prepared_save or not prepared_save.get('marker'):
+            raise DoudianError('miaoshou_save_preflight_missing', '保存缺少当前商品的预览与唯一控件校验。')
+        current = self.prepare_save(prepared_save['product_id'], prepared_save['title'],
+                                    marker=prepared_save['marker'])
+        if current != prepared_save:
+            raise DoudianError('miaoshou_save_preflight_changed', '保存前控件或标题状态已变化。')
         prior = self.bridge.command('network', {'cmd': 'list', 'filter': SAVE_ENDPOINT}) or {}
         prior_ids = {request.get('requestId') for request in prior.get('requests', [])}
         self.bridge.command('network', {'cmd': 'start'})
-        self.bridge.command('click', {'selector': current['selector'] if current else refs[0]})
+        self.bridge.command('click', {'selector': current['selector']})
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             capture = self.bridge.command('network', {'cmd': 'list', 'filter': SAVE_ENDPOINT})
@@ -682,18 +691,12 @@ class MiaoshouEditor:
             if requests:
                 latest = requests[-1]
                 detail = self.bridge.command('network', {'cmd': 'detail', 'requestId': latest['requestId']})
-                body = _json_body(detail.get('body'))
-                if latest.get('status') == 200 and isinstance(body, dict) and body.get('result') == 'success':
-                    return {'state': 'accepted', 'request_id': latest['requestId'], 'http_status': 200,
-                            'response_result': 'success'}
-                if latest.get('status') and latest.get('status') >= 400:
-                    return {'state': 'failed', 'request_id': latest['requestId'],
-                            'http_status': latest.get('status'), 'error': 'http_error'}
-                if isinstance(body, dict) and body.get('result') not in ('success', 'SUCCESS'):
+                from .submission_evidence import classify_product_submission
+                decision = classify_product_submission(latest, detail, prepared_save['product_id'])
+                if decision:
                     from .miaoshou_title_editor import rejection_details
-                    return {'state': 'failed', 'request_id': latest['requestId'],
-                            'http_status': latest.get('status'), 'error': 'explicit_platform_rejection',
-                            'platform_details': rejection_details(body)}
+                    return {**decision, **decision['evidence'],
+                            'platform_details': rejection_details(_json_body(detail.get('body')))}
             time.sleep(0.35)
         return {'state': 'unknown', 'error': 'save_response_timeout'}
 

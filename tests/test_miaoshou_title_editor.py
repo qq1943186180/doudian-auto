@@ -39,6 +39,7 @@ def test_observed_request_must_contain_the_exact_product_and_title():
     assert request_matches_title(body, PID, TITLE)
     assert not request_matches_title(body, '3848319372858884337', TITLE)
     assert not request_matches_title(body, PID, 'old title')
+    assert not request_matches_title(urlencode({'productId': '1' + PID, 'title': TITLE}), PID, TITLE)
 
 
 @pytest.mark.parametrize('response_result', ['fail', 'success'])
@@ -50,7 +51,7 @@ def test_title_only_save_records_new_response_and_requires_readback(response_res
                 self.clicks += 1
                 return {}
             if args.get('cmd') == 'list':
-                old = {'requestId': 'old', 'url': 'https://v2-dd.chengji-inc.com/api/observed-test',
+                old = {'requestId': 'old', 'url': 'https://v2-dd.chengji-inc.com/api/v2/product/product/saveEditProductInfo',
                        'method': 'POST', 'completed': True, 'status': 200}
                 temp = {**old, 'requestId': 'temp', 'url': 'https://v2-dd.chengji-inc.com/api/v2/product/batch/saveTempBatchTask'}
                 return {'requests': [old, temp, {**old, 'requestId': 'new'}] if self.clicks else [old]}
@@ -69,3 +70,24 @@ def test_title_only_save_records_new_response_and_requires_readback(response_res
     assert result['request_id'] == 'new'
     assert result['platform_details'] == {'message': '平台消息'}
     assert bridge.clicks == 1
+
+
+def test_failed_intermediate_task_response_cannot_authorize_resaving(monkeypatch):
+    ticks = iter([0, 1, 61])
+    monkeypatch.setattr('doudian_auto.miaoshou_title_editor.time.monotonic', lambda: next(ticks))
+    monkeypatch.setattr('doudian_auto.miaoshou_title_editor.time.sleep', lambda seconds: None)
+    class Bridge:
+        clicked = False
+        def command(self, action, args):
+            if action == 'click':
+                self.clicked = True
+            if args.get('cmd') == 'list':
+                return {'requests': [{'requestId': 'temp', 'url': 'https://v2-dd.chengji-inc.com/api/v2/product/batch/saveTempBatchTask',
+                    'method': 'POST', 'completed': True, 'status': 200}] if self.clicked else []}
+            if args.get('cmd') == 'detail':
+                return {'requestBody': json.dumps({'productId': PID, 'title': TITLE}), 'body': {'result': 'fail'}}
+            return {}
+    editor = MiaoshouTitleEditor(Bridge(), '销霁百货')
+    editor.observe_title = preview
+    result = editor.click_save_once({'product_id': PID, 'old_title': 'old title', 'title': TITLE, 'marker': 'one'})
+    assert result['state'] == 'unknown'

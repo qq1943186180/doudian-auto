@@ -35,7 +35,7 @@ def validate_title_preview(state, product_id, shop, old_title, title):
 def request_matches_title(request_body, product_id, title):
     text = unquote_plus(str(request_body or ''))
     text = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m[1], 16)), text)
-    return str(product_id) in text and title in text
+    return bool(re.search(r'(?<!\d)' + re.escape(str(product_id)) + r'(?!\d)', text)) and title in text
 
 
 def rejection_details(body):
@@ -142,6 +142,8 @@ class MiaoshouTitleEditor(MiaoshouBatchEditor):
                             'observed_endpoint': parsed.path, 'request_title_matches': True,
                             'platform_details': rejection_details(body), 'clicked_control': 'J_batchEditProduct'}
                 observed.append({'endpoint': parsed.path, 'result': body.get('result') if isinstance(body, dict) else None})
+                if parsed.path == '/api/v2/product/batch/saveTempBatchTask':
+                    continue
                 if request.get('status') == 200 and isinstance(body, dict):
                     if body.get('result') in ('success', 'SUCCESS'):
                         if parsed.path == '/api/v2/product/batch/saveTempBatchTask':
@@ -151,7 +153,8 @@ class MiaoshouTitleEditor(MiaoshouBatchEditor):
                         # publication; only the independent readbacks close it.
                         return {**evidence, 'state': 'unknown', 'response_result': body['result'],
                                 'error': 'title_batch_success_requires_readback'}
-                    if body.get('result') in ('fail', 'FAIL', 'error', 'ERROR'):
+                    if (parsed.path == '/api/v2/product/product/saveEditProductInfo' and
+                            body.get('result') in ('fail', 'FAIL', 'error', 'ERROR')):
                         return {**evidence, 'state': 'failed', 'error': 'explicit_platform_rejection'}
             time.sleep(0.35)
         return {'state': 'unknown', 'error': 'title_batch_response_unknown',

@@ -243,17 +243,19 @@ def test_save_ignores_previous_success_and_classifies_only_the_new_request():
                 self.clicks += 1
                 return {'success': True}
             if args.get('cmd') == 'list':
-                old = {'requestId': 'old-success', 'method': 'POST', 'completed': True, 'status': 200}
-                fresh = {'requestId': 'new-failure', 'method': 'POST', 'completed': True, 'status': 400}
+                url = 'https://v2-dd.chengji-inc.com/api/v2/product/product/saveEditProductInfo'
+                old = {'requestId': 'old-success', 'url': url, 'method': 'POST', 'completed': True, 'status': 200}
+                fresh = {'requestId': 'new-failure', 'url': url, 'method': 'POST', 'completed': True, 'status': 200}
                 return {'requests': [old, fresh] if self.clicks else [old]}
             if args.get('cmd') == 'detail':
                 self.details.append(args['requestId'])
-                return {'body': {'result': 'fail'}}
+                return {'requestBody': 'productId=3850072653520044313', 'body': {'result': 'fail'}}
             return {}
     bridge = SaveBridge()
     editor = MiaoshouEditor(bridge, '销霁百货')
-    editor._snapshot = lambda: {'tree_text': '- button "保存到抖店(F)" [ref=e1]'}
-    result = editor.click_save_once()
+    prepared = {'product_id': '3850072653520044313', 'title': 'target', 'marker': 'save1', 'selector': '[data-save="save1"]'}
+    editor.prepare_save = lambda *args, **kwargs: prepared
+    result = editor.click_save_once(prepared_save=prepared)
     assert result['state'] == 'failed'
     assert result['request_id'] == 'new-failure'
     assert bridge.clicks == 1

@@ -84,11 +84,14 @@ class Editor:
         if not isinstance(payload, str) or not payload.strip():
             raise DoudianError('protected_incomplete', '页面未返回分区统计（{0}）。'.format(payload))
         counts = {}
+        occurrences = {}
         for row in payload.split(';'):
             parts = row.split('|')
             if len(parts) != 4:
                 raise DoudianError('protected_incomplete', '分区统计格式异常：{0}'.format(row[:80]))
-            counts[parts[0]] = {'inputs': int(parts[1]), 'text': int(parts[2]),
+            occurrences[parts[0]] = occurrences.get(parts[0], 0) + 1
+            key = parts[0] if occurrences[parts[0]] == 1 else f'{parts[0]}#{occurrences[parts[0]]}'
+            counts[key] = {'inputs': int(parts[1]), 'text': int(parts[2]),
                                 'visible': parts[3] == '1'}
         if not counts:
             raise DoudianError('protected_sections_missing', '商品页未找到任何保护分区。')

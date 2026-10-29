@@ -22,7 +22,7 @@ def parser():
     root = Parser(prog='doudian-auto', description='抖店本地上传：校验素材 → 上传预览 → 发布并重开核验。')
     root.add_argument('--json', action='store_true', help='输出稳定JSON结果')
     root.add_argument('--version', action='version', version=__version__)
-    root.add_argument('--endpoint', default=os.environ.get('DOUDIAN_BRIDGE_URL', 'http://127.0.0.1:10086'), help='本机Kimi连接地址')
+    root.add_argument('--endpoint', default=os.environ.get('DOUDIAN_BRIDGE_URL', 'http://127.0.0.1:10086'), help='本机Kimi连接地址，或ego使用Ego原生通道')
     sub = root.add_subparsers(dest='command', required=True)
     sub.add_parser('doctor', help='检查本地服务、扩展与安装；不操作商品')
     resolve = sub.add_parser('resolve', help='编辑链接或商品ID转稳定标识')
@@ -99,6 +99,9 @@ def parser():
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
+    batch_reconcile = batch_sub.add_parser('reconcile', help='导入已有操作证据并隔离，防止重复写入')
+    batch_reconcile.add_argument('--evidence', required=True)
+    batch_reconcile.add_argument('--shop')
     batch_resume = batch_sub.add_parser('resume', help='检查可续办任务；加--apply后继续未提交或只读核查任务')
     batch_resume.add_argument('--batch-id')
     batch_resume.add_argument('--limit', type=int, default=1)
@@ -691,6 +694,8 @@ def run(args):
                 return batch_queue.batch_status(args.batch_id)
             if args.batch_command == 'quarantine':
                 return batch_queue.quarantine_product(args.product_id, args.reason)
+            if args.batch_command == 'reconcile':
+                return batch_queue.reconcile_observation(args.evidence, shop=args.shop)
             if args.batch_command == 'repair-title':
                 if not 1 <= len(set(args.product_ids)) <= 10:
                     raise DoudianError('title_repair_scope', '标题补救必须指定1至10个不同商品ID。')
@@ -756,12 +761,12 @@ def run(args):
             result = batch_queue.run_batch(args.endpoint, batch_id=args.batch_id,
                                            product_ids=args.product_ids,
                                            limit=max(args.limit, 3) if args.acceptance else args.limit,
-                                           owner=args.owner, session=args.session)
+                                           owner=args.owner, session=args.session,
+                                           acceptance_product_ids=args.product_ids if args.acceptance else None)
             verified = batch_queue.verified_acceptance_results(args.product_ids)
             if args.acceptance and len(verified) >= 3:
                 result['writer_acceptance'] = batch_queue.mark_writer_acceptance(verified)
-            return {**result, 'writer_ready': bool(args.acceptance and len(verified) >= 3) or
-                    readiness.get('writer_ready', False), 'browser_ready': readiness.get('browser_ready', False)}
+            return {**result, **batch_queue.execution_readiness(args.endpoint)}
         if args.agent_command == 'next':
             if not 60 <= args.lease_seconds <= 7200:
                 raise DoudianError('invalid_lease', '租约必须为60至7200秒。')

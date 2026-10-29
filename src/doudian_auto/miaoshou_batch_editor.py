@@ -16,11 +16,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .errors import DoudianError
+from .materials import verify_material_content
 from .workflow import is_permanent_material_url, is_temporary_upload_url, resource_key
 
 
 MIAOSHOU_HOST = 'v2-dd.chengji-inc.com'
 BATCH_EDIT_URL = 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field'
+WRITER_REVISION = 'multi-field-20261029-v3'
 _TOP_FIELDS = {
     'title', 'short_product_name', 'brand_id', 'item_num', 'product_format',
     'fabric_material', 'price', 'size_temp', 'transport_id', '7day_return',
@@ -73,6 +75,8 @@ def validate_batch_form_state(state, *, product_id, shop, title, baseline, asset
         raise DoudianError('miaoshou_batch_target_mismatch', '标题内容或主图替换方式与目标版本不一致。')
     if state.get('timer_checked') is not False:
         raise DoudianError('miaoshou_batch_timer_enabled', '批量修改页启用了定时执行，拒绝提交。')
+    if state.get('overlength') != 'fail':
+        raise DoudianError('miaoshou_batch_title_truncation', '标题超长必须按失败处理，不能自动删字。')
 
     before_mains = [resource_key(x) for x in baseline.get('mains', [])]
     before_details = [resource_key(x) for x in baseline.get('details', [])]
@@ -136,7 +140,7 @@ def validate_submission_ready_state(state, *, product_id, shop, title, mappings)
     if (set(state.get('selected_top_fields') or []) != _REQUIRED_FIELDS or
             set(state.get('selected_enabled_options') or []) != _REQUIRED_OPTIONS or
             state.get('title') != title or state.get('main_mode') != 'replaceImgByIndex' or
-            state.get('timer_checked') is not False):
+            state.get('timer_checked') is not False or state.get('overlength') != 'fail'):
         raise DoudianError('miaoshou_batch_submit_form_changed', '提交预览中的字段、标题或定时选项发生变化。')
     by_slot = {item.get('slot'): item for item in mappings if isinstance(item, dict)}
     expected_slots = {*(f'mains:{slot}' for slot in range(1, 6)),
@@ -161,10 +165,42 @@ def validate_submission_ready_state(state, *, product_id, shop, title, mappings)
 class MiaoshouBatchEditor:
     """Drive the observed batch-edit form using visible page controls only."""
 
-    def __init__(self, bridge, shop, *, session='miaoshou-auto-batch-20261028'):
+    def __init__(self, bridge, shop, *, session='miaoshou-auto-batch-20261028', submission_scope=None):
         self.bridge = bridge
         self.shop = shop
         self.session = session
+        self.submission_scope = submission_scope
+        self._content_checks = {}
+
+    def _require_submission_scope(self, product_id):
+        scope = self.submission_scope or {}
+        ids = scope.get('product_ids') or []
+        if (scope.get('writer_revision') != WRITER_REVISION or
+                scope.get('kind') not in ('acceptance', 'verified') or
+                str(product_id) not in ids or
+                (scope.get('kind') == 'acceptance' and len(set(ids)) != 3) or
+                (scope.get('kind') == 'verified' and not scope.get('acceptance_sha256'))):
+            raise DoudianError('writer_not_accepted', '本商品未取得三件验收范围或已验证写入器范围，未保存。')
+
+    def _checked_content(self, url, path):
+        source_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        key = (url, source_hash)
+        if key not in self._content_checks:
+            self._content_checks[key] = verify_material_content(url, path)
+        return self._content_checks[key]
+
+    def _fill_visible(self, selector, value):
+        marker = uuid.uuid4().hex
+        count = self.bridge.evaluate("(()=>{const xs=[...document.querySelectorAll(" + json.dumps(selector) +
+            ")].filter(x=>x.offsetParent!==null&&!x.disabled);if(xs.length===1)xs[0].setAttribute('data-codex-miao-batch'," +
+            json.dumps(marker) + ");return xs.length})()")
+        if count != 1:
+            raise DoudianError('miaoshou_batch_input_ambiguous', '妙手输入控件不唯一，已停止。')
+        try:
+            self.bridge.command('fill', {'selector': '[data-codex-miao-batch="' + marker + '"]', 'value': value})
+        finally:
+            self.bridge.evaluate("(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker +
+                "\"]').forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
 
     def _visible(self, seconds=30):
         def probe():
@@ -290,31 +326,58 @@ class MiaoshouBatchEditor:
             "(()=>[...document.querySelectorAll('.replace-image-dialog')].filter(x=>x.offsetParent!==null).length)()",
             lambda count: count == 1, '妙手本地图片窗口没有打开。', seconds=10)
 
-    def _upload_slot_image(self, selector, index, path, expected_count):
+    def _upload_slot_image(self, selector, index, path, expected_count, reuse=None):
+        before = self._read_target_slot('mains', index)
+        if reuse and before == reuse:
+            return self._checked_content(before, path)
         self._click_indexed(selector, index, expected_count=expected_count,
                             error_code='miaoshou_batch_slot_count_changed')
         self._wait_image_dialog()
-        self._upload_open_image_dialog(path)
+        return self._upload_open_image_dialog(path, lambda: self._read_target_slot('mains', index), before, reuse)
 
-    def _upload_open_image_dialog(self, path):
+    def _read_target_slot(self, kind, index):
+        if kind == 'mains':
+            code = "const xs=[...document.querySelectorAll('.replace-img-item .add-img-box')].filter(x=>x.offsetParent!==null);const box=xs.length===5?xs[%d]:null;" % index
+        else:
+            code = "const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>x.offsetParent!==null&&x.querySelectorAll('.add-img-box').length===2);const box=xs.length===4?xs[%d].querySelectorAll('.add-img-box')[1]:null;" % index
+        return self.bridge.evaluate("(()=>{" + code + "const i=box&&box.querySelector('img');return i?(i.currentSrc||i.src):null})()")
+
+    def _upload_open_image_dialog(self, path, read_slot, before_url=None, reuse=None):
         probe = self.bridge.evaluate(
             "(()=>{const ds=[...document.querySelectorAll('.replace-image-dialog')].filter(x=>x.offsetParent!==null);"
             "const f=ds.length===1?[...ds[0].querySelectorAll('input[type=file]')].filter(x=>!x.disabled):[];"
             "return {dialogs:ds.length,files:f.length}})()")
         if probe != {'dialogs': 1, 'files': 1}:
             raise DoudianError('miaoshou_batch_upload_layout', '妙手批量图片窗口的本地上传控件不唯一。')
-        prior = self.bridge.command('network', {'cmd': 'list'}) or {}
-        prior_ids = {item.get('requestId') for item in prior.get('requests', [])}
-        self.bridge.command('network', {'cmd': 'start'})
-        self.bridge.command('upload', {'selector': '.replace-image-dialog input[type="file"]',
-                                      'files': [str(Path(path).resolve())]})
-        # The site closes this picker after choosing one file and writes a temp URL
-        # into the exact selected slot. The local path hash is independently checked.
-        self._wait_eval(
-            "(()=>[...document.querySelectorAll('.replace-image-dialog')].filter(x=>x.offsetParent!==null).length)()",
-            lambda count: count == 0, '本地图片上传窗口没有完成。', seconds=60)
+        focused = False
+        try:
+            self.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled', 'params': {'enabled': True}})
+            focused = True
+            self.bridge.command('network', {'cmd': 'start'})
+            if reuse:
+                self._checked_content(reuse, path)
+                self._fill_visible('.replace-image-dialog input[placeholder="请输入图片链接地址"]', reuse)
+                self._click_exact_text('.replace-image-dialog button', '确定')
+            else:
+                self.bridge.command('upload', {'selector': '.replace-image-dialog input[type="file"]',
+                                              'files': [str(Path(path).resolve())]})
+            # The picker may remain open after a successful upload. Prove the exact
+            # target slot received this file instead of waiting for a modal animation.
+            url = self.bridge.wait(read_slot,
+                lambda value: value != before_url and (is_temporary_upload_url(value) or is_permanent_material_url(value)),
+                '目标槽位未读回本次上传图片；不重复上传。', seconds=60)
+            check = self._checked_content(url, path)
+            from .miaoshou_editor import MiaoshouEditor
+            MiaoshouEditor(self.bridge, self.shop, session=self.session)._close_replace_popup()
+            return check
+        finally:
+            if focused:
+                self.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled', 'params': {'enabled': False}})
 
-    def _upload_detail_target(self, index, path):
+    def _upload_detail_target(self, index, path, reuse=None):
+        before = self._read_target_slot('details', index)
+        if reuse and before == reuse:
+            return self._checked_content(before, path)
         marker = 'miao-batch-' + uuid.uuid4().hex
         probe = ("(()=>{const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>"
                  "x.querySelectorAll('.add-img-box').length===2);if(xs.length!==4)return {count:xs.length};"
@@ -330,7 +393,7 @@ class MiaoshouBatchEditor:
                 "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"]')"
                 ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
         self._wait_image_dialog()
-        self._upload_open_image_dialog(path)
+        return self._upload_open_image_dialog(path, lambda: self._read_target_slot('details', index), before, reuse)
 
     def _detail_lists(self):
         return self.bridge.evaluate(
@@ -386,28 +449,47 @@ class MiaoshouBatchEditor:
             '详情来源地址添加后没有读回到指定槽位。', seconds=15)
         self._click_exact_text('.select-product-filter-dialog button', '关闭')
 
-    def prepare(self, *, product_id, title, baseline, main_paths, detail_paths):
+    def prepare(self, *, product_id, title, baseline, main_paths, detail_paths, fresh_form=False,
+                on_upload=None, reuse_mappings=None):
         """Populate the visible batch form from one fresh server baseline."""
         if len(main_paths) != 5 or len(detail_paths) != 4:
             raise DoudianError('asset_manifest_incomplete', '妙手批量编辑需要5张主图和4张详情图。')
         self.open(reuse_existing=True)
+        if fresh_form:
+            self.bridge.command('navigate', {'url': BATCH_EDIT_URL, 'newTab': False})
+            self._visible()
         self.close_preview_if_open()
         self._click_exact_text('[role=tab]', '按商品ID修改')
-        self.bridge.command('fill', {'selector': 'textarea[placeholder*="请输入商品ID"]',
-                                     'value': str(product_id)})
+        self._fill_visible('textarea[placeholder*="请输入商品ID"]', str(product_id))
         for value in sorted(_TOP_FIELDS):
             self._ensure_checkbox(value, value in _REQUIRED_FIELDS)
         self._ensure_checkbox('new', True)
-        self.bridge.command('fill', {'selector': 'textarea[name="inputNewContent"]', 'value': title})
+        self._ensure_radio('overlengthType', 'fail')
+        self._fill_visible('textarea[name="inputNewContent"]', title)
         self._ensure_radio('contentType', 'replaceImgByIndex')
         self._ensure_checkbox('onlyPreview', True)
         self._ensure_checkbox('replaceImgsByImgUrls', True)
         self._ensure_detail_rows(4)
+        reuse_by_slot = {item.get('slot'): item for item in reuse_mappings or []}
+        reused = []
+        def previous(kind, slot, path):
+            item = reuse_by_slot.get(f'{kind}:{slot}') or {}
+            if (not fresh_form and item.get('confirmed') is True and
+                    item.get('source_sha256') == hashlib.sha256(Path(path).read_bytes()).hexdigest() and
+                    (is_temporary_upload_url(item.get('remote_url')) or is_permanent_material_url(item.get('remote_url')))):
+                reused.append(f'{kind}:{slot}')
+                return item['remote_url']
+            return None
         for index, path in enumerate(main_paths):
-            self._upload_slot_image('.replace-img-item .add-img-box', index, path, 5)
+            check = self._upload_slot_image('.replace-img-item .add-img-box', index, path, 5,
+                                            previous('mains', index + 1, path))
+            if on_upload:
+                on_upload('mains', index + 1, self._mapping('mains', index + 1, check))
         for index, path in enumerate(detail_paths):
             self._select_detail_source(index, baseline['details'][index])
-            self._upload_detail_target(index, path)
+            check = self._upload_detail_target(index, path, previous('details', index + 1, path))
+            if on_upload:
+                on_upload('details', index + 1, self._mapping('details', index + 1, check))
         self._click_exact_text('button', '预览修改效果')
         self._wait_eval(
             "(()=>({ids:[...document.body.innerText.matchAll(/商品ID[：:]\\s*(\\d+)/g)].map(x=>x[1]),"
@@ -415,6 +497,18 @@ class MiaoshouBatchEditor:
             lambda value: isinstance(value, dict) and value.get('ids') == [str(product_id)] and
                           value.get('count') == '1',
             '修改预览没有精确收敛到目标商品。', seconds=30)
+        return {'writer_revision': WRITER_REVISION, 'fresh_form': fresh_form,
+                'reused_slots': reused,
+                'uploaded_slots': [*(f'mains:{i}' for i in range(1, 6)), *(f'details:{i}' for i in range(1, 5))]}
+
+    @staticmethod
+    def _mapping(kind, slot, check):
+        url = check['remote_url']
+        permanent = is_permanent_material_url(url)
+        return {'slot': f'{kind}:{slot}', 'source_sha256': check['source_sha256'],
+                'remote_url': url, 'remote_key': resource_key(url) if permanent else url,
+                'asset_state': 'permanent' if permanent else 'staged', 'confirmed': True,
+                'content_verification': check}
 
     def observe(self):
         code = r"""(()=>{
@@ -423,8 +517,8 @@ class MiaoshouBatchEditor:
           const checks=[...document.querySelectorAll('input[type=checkbox]')].filter(x=>visible(x)&&!x.disabled&&x.checked);
           const selectedTop=checks.filter(x=>top.has(x.value)).map(x=>x.value).sort();
           const selectedExtra=checks.filter(x=>!top.has(x.value)).map(x=>x.value).sort();
-          const id=[...document.querySelectorAll('textarea')].find(x=>(x.placeholder||'').includes('请输入商品ID'));
-          const title=document.querySelector('textarea[name=inputNewContent]');
+          const id=[...document.querySelectorAll('textarea')].find(x=>visible(x)&&(x.placeholder||'').includes('请输入商品ID'));
+          const title=[...document.querySelectorAll('textarea[name=inputNewContent]')].find(visible);
           const main=[...document.querySelectorAll('.replace-img-item .add-img-box')].map(x=>{const i=x.querySelector('img');return i?(i.currentSrc||i.src):null});
           const lists=[...document.querySelectorAll('.base-edit-list')].filter(x=>x.querySelectorAll('.add-img-box').length===2);
           const pairs=lists.map(x=>[...x.querySelectorAll('.add-img-box')].map(y=>{const i=y.querySelector('img');return i?(i.currentSrc||i.src):null}));
@@ -433,6 +527,7 @@ class MiaoshouBatchEditor:
           const count=(body.match(/共找到\s*(\d+)\s*个商品/)||[])[1];
           const radios=[...document.querySelectorAll('input[type=radio]:checked')].filter(visible);
           const mainMode=radios.find(x=>x.name==='contentType')?.value||null;
+          const overlength=radios.find(x=>x.name==='overlengthType')?.value||null;
           const timer=[...document.querySelectorAll('input[type=checkbox]')].find(x=>visible(x)&&
             (x.parentElement?.parentElement?.innerText||'').includes('定时执行'));
           const shop=(body.match(/您好【([^】]+)】/)||[])[1]||null;
@@ -450,7 +545,7 @@ class MiaoshouBatchEditor:
           }
           return {url:location.href,shop,product_ids:id?(id.value||'').split(/[,，\s]+/).filter(Boolean):[],
             result_product_ids:ids,result_count:count?Number(count):null,selected_top_fields:selectedTop,
-            selected_enabled_options:selectedExtra,title:title?.value||null,main_mode:mainMode,
+            selected_enabled_options:selectedExtra,title:title?.value||null,main_mode:mainMode,overlength,
             main_images:main,detail_pairs:pairs.map(x=>({source:x[0],target:x[1]})),
             timer_checked:timer?Boolean(timer.checked):false,preview_detail:detail};
         })()""" % json.dumps(sorted(_TOP_FIELDS))
@@ -468,8 +563,11 @@ class MiaoshouBatchEditor:
             self._wait_eval(
                 "(()=>[...document.querySelectorAll('.preview-detail-dialog')].filter(x=>x.offsetParent!==null).length)()",
                 lambda value: value == 1, '商品修改前后详情预览没有打开。', seconds=10)
-        return validate_batch_form_state(self.observe(), product_id=product_id, shop=self.shop,
-                                         title=title, baseline=baseline, asset_paths=asset_paths)
+        mappings = validate_batch_form_state(self.observe(), product_id=product_id, shop=self.shop,
+                                             title=title, baseline=baseline, asset_paths=asset_paths)
+        for mapping, path in zip(mappings, asset_paths):
+            mapping['content_verification'] = self._checked_content(mapping['remote_url'], path)
+        return mappings
 
     def close_preview_if_open(self):
         state = self.bridge.evaluate(
@@ -494,8 +592,7 @@ class MiaoshouBatchEditor:
         non-mutating, and any missing/ambiguous button therefore remains a
         resumable pre-commit error instead of a false unknown save.
         """
-        if not SHELF_MODE_PRESERVATION_VERIFIED:
-            raise DoudianError('shelf_mode_unpreservable', SHELF_MODE_BLOCK_MESSAGE)
+        self._require_submission_scope(product_id)
         self.close_preview_if_open()
         initial = self.bridge.evaluate(
             "(()=>({dialogs:[...document.querySelectorAll('.replace-image-dialog,.select-product-filter-dialog')]."
@@ -519,7 +616,6 @@ class MiaoshouBatchEditor:
                     "if(xs.length!==1||xs[0].disabled)return {count:0};"
                     "xs[0].setAttribute('data-codex-miao-batch','__MARKER__');return {count:1}})()",
                     marker, 'miaoshou_batch_preview_button', '“预览修改效果”按钮不唯一或不可用。')
-                self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
             except DoudianError:
                 # Some extension builds report an error after dispatching the
                 # non-mutating preview click. Continue only if the exact final
@@ -562,8 +658,7 @@ class MiaoshouBatchEditor:
     def click_start_once(self, *, product_id, title, baseline, asset_paths,
                          validated_mappings=None, prepared_submission=None, wait_seconds=60):
         """Click the page-level batch action once and classify only observed evidence."""
-        if not SHELF_MODE_PRESERVATION_VERIFIED:
-            raise DoudianError('shelf_mode_unpreservable', SHELF_MODE_BLOCK_MESSAGE)
+        self._require_submission_scope(product_id)
         mappings = validated_mappings
         if mappings is None:
             mappings = self.verify_prepared(product_id=product_id, title=title,
@@ -584,37 +679,23 @@ class MiaoshouBatchEditor:
             "(()=>{document.querySelectorAll('[data-codex-miao-batch=\"" + marker + "\"]')"
             ".forEach(x=>x.removeAttribute('data-codex-miao-batch'));return true})()")
         deadline = time.monotonic() + wait_seconds
+        inspected = set()
         while time.monotonic() < deadline:
             capture = self.bridge.command('network', {'cmd': 'list'}) or {}
             fresh = [item for item in capture.get('requests', [])
-                     if item.get('requestId') not in before_ids and item.get('completed') and
+                     if item.get('requestId') not in before_ids | inspected and item.get('completed') and
                      item.get('method') == 'POST' and item.get('status') is not None]
             for request in reversed(fresh):
+                inspected.add(request['requestId'])
+                from .submission_evidence import SAVE_PATH, classify_product_submission
+                parsed = urlparse(request.get('url', ''))
+                if parsed.hostname != 'v2-dd.chengji-inc.com' or parsed.path != SAVE_PATH:
+                    continue
                 detail = self.bridge.command('network', {'cmd': 'detail',
                                                          'requestId': request['requestId']})
-                body = detail.get('body')
-                if request.get('status', 0) >= 500:
-                    continue
-                try:
-                    payload = json.loads(body) if isinstance(body, str) else body
-                except (TypeError, ValueError):
-                    payload = None
-                if isinstance(payload, dict):
-                    code = payload.get('code', payload.get('status'))
-                    success = payload.get('success') is True or code in (0, '0', 200, '200')
-                    failed = payload.get('success') is False or (code not in (None, 0, '0', 200, '200'))
-                    if success:
-                        return {'state': 'accepted', 'error': None,
-                                'evidence': {'http_status': request.get('status'),
-                                             'request_id': request.get('requestId'),
-                                             'url_path': urlparse(request.get('url', '')).path,
-                                             'response_code': code}}
-                    if failed:
-                        return {'state': 'failed', 'error': str(payload.get('message') or code or 'business_error'),
-                                'evidence': {'http_status': request.get('status'),
-                                             'request_id': request.get('requestId'),
-                                             'url_path': urlparse(request.get('url', '')).path,
-                                             'response_code': code}}
+                decision = classify_product_submission(request, detail, product_id)
+                if decision:
+                    return decision
             time.sleep(0.4)
         return {'state': 'unknown', 'error': 'batch_apply_response_unknown',
                 'evidence': {'product_id': str(product_id), 'clicks': 1,
