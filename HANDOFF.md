@@ -1,7 +1,7 @@
 # 抖店本地上传
 
 更新：2026-10-28（Asia/Shanghai）；Agent：codex-miaoshou-batch。
-源码：C:/Users/19431/code/clis/doudian-auto；main；私有 origin https://github.com/qq1943186180/doudian-auto。
+源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；main；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ### T-20261026-002 · 194-76 · 妙手全仓优化程序与页面验收
 
