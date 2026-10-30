@@ -96,6 +96,14 @@ def parser():
     batch_create.add_argument('--shop', help='清单缺少店铺名时统一指定')
     batch_status = batch_sub.add_parser('status', help='查看批次进度与卡点')
     batch_status.add_argument('batch_id', nargs='?')
+    batch_preflight = batch_sub.add_parser('preflight', help='生成素材前只读检查官方必填属性，不上传或保存')
+    batch_preflight.add_argument('--product-id', action='append', dest='product_ids', required=True,
+                                 help='明确指定待预检商品，可重复提供，最多20件')
+    batch_preflight.add_argument('--batch-id')
+    batch_preflight.add_argument('--limit', type=int, default=20)
+    batch_preflight.add_argument('--session', default='miaoshou-auto-batch-20261028',
+                                 help='沿用当前任务浏览器会话，不另建替代空间')
+    batch_preflight.add_argument('--report-dir', help='保存本次只读报告和脱敏快照的目录')
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
@@ -692,6 +700,10 @@ def run(args):
                 return batch_queue.create_batch(args.input, shop=args.shop)
             if args.batch_command == 'status':
                 return batch_queue.batch_status(args.batch_id)
+            if args.batch_command == 'preflight':
+                from .preflight import preflight_products
+                return preflight_products(args.endpoint, product_ids=args.product_ids, batch_id=args.batch_id,
+                                          limit=args.limit, session=args.session, report_dir=args.report_dir)
             if args.batch_command == 'quarantine':
                 return batch_queue.quarantine_product(args.product_id, args.reason)
             if args.batch_command == 'reconcile':
