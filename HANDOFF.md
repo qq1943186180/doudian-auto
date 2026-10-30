@@ -1,6 +1,6 @@
 # 抖店本地上传
 
-更新：2026-10-29（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+更新：2026-10-30（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
@@ -9,9 +9,15 @@
 
 - 状态：in_progress；Agent：codex-miaoshou-reliability；接续5db66f5，开工工作区干净，Linear已公告。
 - 范围：补齐官方全部SKU的读取/比对；准备合格全套新图；通过当前版本三品连续保存/双端读回，验收完成才开放通用写入。
-- 复用现有47 needs_agent / 11 blocked / 3 verified，不重存历史verified，不把原图测试计为新图优化。
-- 本轮浏览器session：miaoshou-completion-20261029；旧TaskSpace8已结束，本轮创建后固定同一空间。结束前持久化进度并关闭用完的项目标签。
-- 现场证据：work/completion-20261029/；下一步探索真实抖店读取响应或可见SKU表格的完整覆盖，缺字段仍拒绝确认。
+- 官方正常编辑页重载的getSchema已完整读取65个SKU，与妙手逐ID/规格/价格/库存核验；只存身份与SKU值，不存context令牌。当前writer=v5，完整SKU证据接入前后与验收。
+- session=miaoshou-completion-20261029。10月30日空间10再次丢失且列表为空，沿用用户“新建空间并继续”授权备份后恢复为空间1；不重放保存。目前仅p1为平台手机验证页，已handOff给用户，收到“已恢复”再接回；不得再建替代空间。
+- 历史28份state对账另发现11件旧编辑遗漏，已备份后隔离；旧20/24/29不重存。活体计数必须重新查SQLite，不能沿用旧文档数字。
+- 挂钩19、地刮32、缝隙刷42的27张新图已校验；地刮2张及缝隙刷1张重做一次通过。洗脚垫34重做后印字仍不合格，隔离。所有清单在work/completion-20261029/<商品ID>/。
+- ff71815修复跨品表单、原生勾选、详情自动关闭竞态与预览动画，单次Enter保存；73674ca补官方必填属性上传前检查、缺失字段持久化及桌面原因显示，单品缺资料继续队列。334 Python/55 JS通过；推送及Linear回写收尾核验。
+- 地刮32经证据和新鲜完整双端基线恢复点击前失败；v5一次保存后双端verified，5张新主图/4张新详情及原尾14张核验通过，全部5个SKU和其他字段保持。网页本次245.05秒；证据acceptance-11-result.json。
+- 地刮另执行一次独立上架，妙手status=0与官方商品状态radio=0均确认；标题图片及全SKU保持，32-listing-state.json=listed_verified。平台审核原始值7→3，未确认消费者端生效，绝不再点上架。
+- 挂钩19任务27418021、缝隙刷42任务27418017均查到完成/失败1：分别缺安装方式、硬度；官方挂钩另缺承重/适配基面。原图未给承重kg或硬度，两件保持blocked/unknown/各1次保存，不得重存。授权恢复后查精确ID行真实货源链接核实事实。
+- 本轮当前验收1/3，通用writer仍关闭。SQLite活体32 needs_agent/25 blocked/4 verified（含旧3件，非4件全套新图）。不动历史20/24/29；技术与恢复路径见docs/miaoshou-reliability-20261029.md。
 
 ### T-20261029-001 · 194-76 · 浏览器可靠性与素材身份检查修复
 
@@ -82,7 +88,7 @@ doudian-auto --json verify '<返回的job_dir>'
 
 - JSON成功：`{"ok":true,"data":{...}}`；失败：`{"ok":false,"error":{"code":"...","message":"...","waiting_human":false}}`。成功退出0、一般错误1、需用户连接/验证3。JSON只写stdout；帮助使用标准argparse输出。
 - upload/submit省略--apply或指定--dry-run只返回计划，不连接或写商品；prepare只读本地图片。read/products会打开页签，但不改商品字段。
-- 素材命名main_01～05各一张，detail_01起连续编号1～50张，按数字排序。JPEG/PNG小于5MB；方主图至少600px；详情宽620～1290px；SHA256禁止重复图片，标题15～60平台字符（汉字计2）。
+- 素材命名main_01～05各一张，detail_01起连续编号1～50张，按数字排序。JPEG/PNG小于5MB；方主图至少600px；详情宽620～1290px；SHA256禁止重复图片，标题16～60平台字符（汉字计2）。
 - ~/.doudian-auto/jobs/<商品ID>-<内容哈希前12位>/保存manifest/state、before/ uploaded/readback JSON及成功截图。manifest绑定绝对路径、文件哈希、商品、店铺、标题；文件改动后须重新准备任务。
 - 每次操作串行持有browser.lock及job.lock；取得锁后重读状态，防止旧进程状态导致重复发布。每个不可变任务使用独立、固定的Kimi session，按商品ID重新选取重定向后的真实编辑页，保留未保存预览。
 - 状态：prepared → editing → uploaded → submitting → submitted → saved。上传中断时跳过已有远程URL记录且页面相符的部分；来源不明的部分先清空，再按原素材重传。
@@ -95,18 +101,19 @@ doudian-auto --json verify '<返回的job_dir>'
 
 ## 给下一个AI
 
-WorkBuddy接手：先读Linear 194-54与共享协议，按本机真实目录检查Git，读AGENTS.md及本交接，以workbuddy-doudian-verify报到。全局doudian-auto与桌面入口可直接使用，不依赖Codex会话；工具说明可直接读本仓skills/doudian-product-workflow/SKILL.md，无需重建项目或重装Codex skill。先doctor与只读read联调，必要时修复本仓适配器；保持34项离线测试通过。在用户具体商品任务范围内完成上传/发布/重开核验后才记真实验收，收尾commit/push并回写194-54读回。具体步骤和验收以Issue最新描述为准。
+当前接续Linear 194-76与T-20261029-002，读共享协议、真实Git状态及本文最上任务块；稳定Agent名codex-miaoshou-reliability。全仓入口是本仓skills/miaoshou-auto-batch/SKILL.md和桌面“抖店全仓优化”，原单品CLI仍保留。先恢复空间1的手机验证并核实两件缺失事实；地刮已图文核验及独立上架，不能再保存。当前三品验收1/3、通用writer关闭，完成三件当前版本独立核验才开放；收尾commit/push、回写194-76并读回。
 
-- 恢复入口：AGENTS.md → 本文 → git status --porcelain → Linear 194-54；映射见docs/agent-workflow/T-ID-MAPPING.md。
-- 实现是离线验证过的适配器，尚无本程序真实上传证据；先doctor/read，逐一核对店铺、URL、主图/详情删除计数、上传input和保留字段采集，页面改版则修适配，不盲点。
-- 店铺身份要求页头可见店铺名精确匹配；页头折叠或结构不符会先停止。只覆盖DOM已加载字段，虚拟SKU列表未逐行遍历，不可宣称全部SKU已完整验证。
-- 初次联调不得默认重传此前已完成的4款；需要对应的实际新任务/用户范围。程序没有跨商品自动发布或自动改类目功能。
-- 新打开的商品页签组名「抖店本地上传」，只有用户要求时关闭，不重载有未保存内容的编辑页。服务可安全start；stop/restart/upgrade由用户决定。
-- GUI启动检查验证了控件创建，未进行真实浏览器上传或完整视觉验收。未保存编辑不自动回滚；before.json可供人工恢复参考。
+- 恢复入口：AGENTS.md → 本文 → git status --porcelain → Linear 194-76；映射见docs/agent-workflow/T-ID-MAPPING.md。194-54为旧单品历史。
+- 原生v5已完成地刮全套新图保存与双端核验；页面改版仍须核对店铺、精确ID、槽位和字段，不把这一件推广为全仓已验收。
+- 官方SKU从正常UI重载响应取全量证据，与妙手逐行核对；DOM字段覆盖说明仍只适用于DOM。缺SKU响应、草稿或缺保护字段不能判一致。
+- 不重传或重存历史verified20/24/29、当前32。19/42虽查到失败历史，仍保留unknown；不可手改状态绕过证据恢复。图文任务不自动补类目属性，不猜承重/硬度。
+- 每轮结束先持久化续办状态，再关闭本轮用完的项目标签；用户手机验证页尚未完成，已交给用户并保留。只关自己任务页，不动其他用途标签，不重载未保存编辑。
+- GUI冒烟仅证明入口与控件；实页保存/上架证据来自原生程序，未做GUI端到端验收。未保存编辑不自动回滚；before.json可供人工恢复参考。
 - 运行测试：`.venv/Scripts/python.exe -X utf8 -m pytest -q`；`npm ci --ignore-scripts --no-audit --no-fund`后`npm test`。测试依赖用`.venv/Scripts/python.exe -m pip install -e '.[test]'`安装。
-- 已测环境：Python3.11.17、Pillow13.0.0、pytest9.1.1、Node22.22.2、jsdom26.1.0；34项测试均通过，另有GUI/CLI及4款真实素材离线校验。
+- 2026-10-30全量验证：334 Python通过，55 JS通过。现有浏览器/任务/图片数据均保留于忽略目录，不提交Git。
 - 本次产物报告：C:/Users/19431/Documents/Codex/2026-10-21/wo-x/outputs/抖店本地程序校验/结果汇总.json；其中4个任务仅prepared，不在默认jobs目录，勿当线上任务自动提交。
 - 个人skill已同步 ~/.codex/skills/doudian-product-workflow，官方quick_validate通过；本仓skills/保存源文件。修改后同步安装版并重新校验。
+- 2026-10-30：miaoshou-auto-batch canonical及Codex/WorkBuddy两安装副本SHA256一致，三处quick_validate通过；GUI隐藏冒烟通过。短信验证页未用完，保留给用户，其余旧任务页随空间10丢失已不在当前清单。
 - 2026-10-21：实现提交后仓库干净，在194-54公告再建立本交接；实现已完成，用户延后真实扩展连接，保留review验证门槛。
 - 2026-10-21：用户指定WorkBuddy接手；仓库干净时先在194-54公告，再同步本交接与映射，待办状态改todo。
 - 2026-10-22：WorkBuddy 完成真实联调（T-20261022-001/003/004），含一次改类目后重新提交；新增 `title` 离线校验命令与跨任务提交保护（commit d1c3590 之后的提交）。
