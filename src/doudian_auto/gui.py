@@ -193,7 +193,7 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
                 for item in progress.get('products', []):
                     if item.get('state') in ('editing', 'uploaded', 'submitting', 'submitted', 'blocked'):
                         batch_log.insert('end', f"{item['product_id']}  {item['state']}  "
-                                         f"提交:{item['submission_state']}  {item.get('last_error') or ''}\n")
+                                         f"提交:{item['submission_state']}  {item.get('last_error_message') or item.get('last_error') or ''}\n")
             except (DoudianError, OSError, ValueError, KeyError):
                 pass
         try:
@@ -221,7 +221,7 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
                             data['phase_timing'], ensure_ascii=False) + '\n')
                     for item in data.get('products', []):
                         batch_log.insert('end', f"{item['product_id']}  {item['state']}  "
-                                         f"提交:{item['submission_state']}  {item.get('last_error') or ''}\n")
+                                         f"提交:{item['submission_state']}  {item.get('last_error_message') or item.get('last_error') or ''}\n")
                 else:
                     batch_summary.set(result['message'])
                 root.after(150, poll)

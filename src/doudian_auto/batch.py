@@ -434,6 +434,18 @@ def batch_status(batch_id=None, *, db_path=None):
             f'''SELECT id,batch_id,shop,product_id,target_version,state,submission_state,
                        submission_attempts,last_error,updated_at
                 FROM products {where} ORDER BY id''', args)]
+        for item in rows:
+            if not item['last_error']:
+                continue
+            event = conn.execute('SELECT detail FROM product_events WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                 (item['id'],)).fetchone()
+            try:
+                detail = json.loads(event['detail']) if event else None
+            except (TypeError, ValueError):
+                detail = None
+            if isinstance(detail, dict) and detail.get('code') == item['last_error']:
+                item['last_error_details'] = detail
+                item['last_error_message'] = detail.get('message') or item['last_error']
         elapsed = conn.execute(f'''SELECT to_state,COUNT(*) samples,AVG(elapsed_seconds) avg_seconds
                                    FROM product_events e JOIN products p ON p.id=e.task_id
                                    {where} AND elapsed_seconds IS NOT NULL GROUP BY to_state'''
@@ -1533,6 +1545,33 @@ def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings,
     return finalized
 
 
+def require_official_attributes(snapshot):
+    """Reject missing platform-required facts before uploading any new image."""
+    observed = snapshot.get('required_attributes')
+    if (not isinstance(observed, dict) or observed.get('observed') is not True or
+            not isinstance(observed.get('fields'), list) or not observed['fields']):
+        raise DoudianError('required_attributes_unobserved', '未完整读取官方类目属性，未上传或保存。')
+    names = []
+    missing = []
+    for field in observed['fields']:
+        if (not isinstance(field, dict) or not isinstance(field.get('name'), str) or
+                not field['name'].strip() or type(field.get('required')) is not bool or
+                not isinstance(field.get('values'), list) or
+                any(not isinstance(value, str) or not value.strip() for value in field['values'])):
+            raise DoudianError('required_attributes_unobserved', '官方类目属性的读取结构不完整，未上传或保存。')
+        names.append(field['name'])
+        if field['required'] and not field['values']:
+            missing.append(field['name'])
+    if len(names) != len(set(names)) or observed.get('missing') != missing:
+        raise DoudianError('required_attributes_unobserved', '官方必填属性的读取结果不一致，未上传或保存。')
+    if missing:
+        raise DoudianError('required_attributes_missing',
+                           '平台必填类目属性缺失：' + '、'.join(missing) + '；需真实资料补齐后续办，未上传或保存。')
+    if type(observed.get('completion_percent')) is not int or observed['completion_percent'] != 100:
+        raise DoudianError('required_attributes_unobserved', '官方必填项进度未确认100%，可能仍有折叠或未读取的必填项，未上传或保存。')
+    return observed
+
+
 def _matches_saved_baseline(miaoshou, doudian, baseline):
     """A pre-save continuation is safe only while both server pages still equal baseline."""
     from .workflow import compare_protected
@@ -1895,6 +1934,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 official_before = _stable_doudian_snapshot(official, doudian_identity)
                 if official_before.get('draft_loaded') or official_before.get('rejected'):
                     raise DoudianError('doudian_draft_or_rejected', '抖店页面存在草稿或驳回，未开始改版。')
+                require_official_attributes(official_before)
                 miao = MiaoshouEditor(bridge, item['shop'], session=session)
                 miao.open_product(item['product_id'], fresh=True)
                 miao_before = miao.read_product(item['product_id'])
@@ -2094,9 +2134,14 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                          'visual_review_slots', 'original_asset_not_revision', 'image_provenance_missing',
                                          'protected_incomplete', 'baseline_incomplete',
                                          'official_sku_incomplete', 'sku_sources_disagree',
+                                         'required_attributes_missing', 'required_attributes_unobserved',
                                          'shelf_mode_unpreservable'}
                         if fatal:
-                            set_execution_state(task_id, 'blocked', error=code, db_path=db_path)
+                            error_detail = None
+                            if code in {'required_attributes_missing', 'required_attributes_unobserved'}:
+                                error_detail = {'code': code, 'message': str(exc),
+                                                'required_attributes': official_before.get('required_attributes')}
+                            set_execution_state(task_id, 'blocked', error=code, error_detail=error_detail, db_path=db_path)
                         else:
                             record_execution_error(task_id, owner, claim['execution_token'], code, db_path=db_path)
                     except DoudianError:
@@ -2108,7 +2153,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                     conn.close()
                 results.append({'task_id': task_id, 'product_id': item['product_id'],
                                 'state': updated['state'] if updated else 'blocked',
-                                'reason': code, 'resumable': bool(current and current['state'] in ('ready','editing','uploaded')),
+                                'reason': code, 'resumable': bool(updated and updated['state'] in ('ready','editing','uploaded')),
                                 'message': str(exc) if isinstance(exc, DoudianError) else '浏览器操作异常，需按任务状态只读核查。'})
             finally:
                 try:
@@ -2364,7 +2409,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
             'completed': sum(1 for item in results if item.get('state') == 'verified')}
 
 
-def set_execution_state(task_id, state, *, submission_state=None, error=None, db_path=None):
+def set_execution_state(task_id, state, *, submission_state=None, error=None, error_detail=None, db_path=None):
     """Guarded state update for the browser executor; never changes unknown to retryable."""
     transitions = {
         'ready': {'editing', 'blocked'},
@@ -2381,6 +2426,8 @@ def set_execution_state(task_id, state, *, submission_state=None, error=None, db
         raise DoudianError('invalid_state', '不支持的批次执行状态。')
     if state in ('submitting', 'submitted', 'verified', 'rejected'):
         raise DoudianError('evidence_required', '提交、受理、核验和驳回状态必须通过有证据的专用方法记录。')
+    if error_detail is not None and (not isinstance(error_detail, dict) or error_detail.get('code') != error):
+        raise DoudianError('invalid_error_detail', '异常详情必须绑定同一个错误代码。')
     conn = _db(db_path)
     try:
         conn.execute('BEGIN IMMEDIATE')
@@ -2402,7 +2449,9 @@ def set_execution_state(task_id, state, *, submission_state=None, error=None, db
                      (state, sub, error, now, task_id))
         conn.execute('''INSERT INTO product_events(task_id,from_state,to_state,occurred_at,elapsed_seconds,detail)
                         VALUES(?,?,?,?,?,?)''', (task_id, row['state'], state, now,
-                                                 max(0, now-row['updated_at']), error))
+                                                 max(0, now-row['updated_at']),
+                                                 json.dumps(error_detail, ensure_ascii=False, sort_keys=True)
+                                                 if error_detail is not None else error))
         conn.commit()
         return {'task_id': task_id, 'state': state, 'submission_state': sub}
     except Exception:

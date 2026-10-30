@@ -230,9 +230,30 @@
         : (!hasFields && !hasControl && !hasImage && contentless ? 'empty_block' : 'unobserved');
       return {section: section.id, observation, ...fields};
     });
+    const categoryFields = all('[attr-field-id]').filter(e => visible(e) &&
+      e.closest('[class*="categoryPropertiesItem"]') && !e.querySelector('[attr-field-id]'));
+    const categoryAttributes = categoryFields.map(e => {
+      const required = all('[class*="required"]', e).some(x => text(x) === '*');
+      const values = all('[class*="select-selection-item"],[class*="Select_value"]', e)
+        .filter(visible).map(text).filter(value => value && !/^(请选择|请输入)/.test(value));
+      for (const input of all('input,textarea,select', e).filter(visible)) {
+        if (['file','search','hidden','password','button','submit'].includes(input.type)) continue;
+        if (input.tagName === 'INPUT' && !input.readOnly &&
+            (input.getAttribute('role') === 'combobox' || ['list','both'].includes(input.getAttribute('aria-autocomplete')))) continue;
+        if (['checkbox','radio'].includes(input.type) && !input.checked) continue;
+        const value = String(input.value ?? '').trim();
+        if (value && !/^(请选择|请输入)/.test(value)) values.push(value);
+      }
+      return {name:e.getAttribute('attr-field-id'), required, values:[...new Set(values)]};
+    });
+    const attributeProgress = body.match(/必填项进度\s*(\d+)\s*%/);
+    const requiredAttributes = {observed:categoryFields.length > 0,
+      completion_percent:attributeProgress ? Number(attributeProgress[1]) : null, fields:categoryAttributes,
+      missing:categoryAttributes.filter(x => x.required && !x.values.length).map(x => x.name)};
     return {...identity, shop_confirmed:!!shopFound, title:document.querySelector('#pg-title-input').value,
       mains:images(main), ...detailImages(), main_delete_count:deletes('mains').length, detail_delete_count:deletes('details').length,
-      protected:protectedFields, coverage:'仅DOM实际加载字段；虚拟SKU列表未逐行遍历。程序只写标题、方主图及标准详情。',
+      protected:protectedFields, required_attributes:requiredAttributes,
+      coverage:'仅DOM实际加载字段；虚拟SKU列表未逐行遍历。程序只写标题、方主图及标准详情。',
       errors:errorsSeen};
   }
   if (op === 'scroll') { (p.kind === 'mains' ? main : detail).scrollIntoView({block:'center'}); return {ok:true}; }

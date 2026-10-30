@@ -1030,7 +1030,8 @@ def test_agent_preparation_parallelism_is_capped_at_three(tmp_path):
 
 
 @pytest.mark.parametrize('keep_session', [False, True])
-def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, keep_session):
+@pytest.mark.parametrize('required_missing', [False, True])
+def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, keep_session, required_missing):
     ids = ['3850072900438720563', '3850072900438720564']
     source = tmp_path / 'products.json'
     source.write_text(json.dumps({'products': [
@@ -1064,6 +1065,9 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, k
         'title': 'original', 'mains': [f'main-{i}' for i in range(5)],
         'details': [f'detail-{i}' for i in range(4)], 'protected': protected_sections,
         'draft_loaded': False, 'rejected': False, 'sku_evidence': sku_evidence(pid),
+        'required_attributes': {'observed': True, 'completion_percent':0 if required_missing and pid == ids[0] else 100, 'fields': [{'name': '硬度', 'required': True,
+            'values': [] if required_missing and pid == ids[0] else ['中硬']}],
+            'missing': ['硬度'] if required_missing and pid == ids[0] else []},
     }
 
     class FakeBridge:
@@ -1086,6 +1090,8 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, k
         def __init__(self, bridge, shop, **kwargs):
             self.product_id = None
         def open_product(self, product_id, *, fresh=True):
+            if required_missing:
+                assert product_id != ids[0], 'missing required fields must stop before any Miaoshou editing'
             self.product_id = product_id
         def read_product(self, product_id):
                 return {**baseline(product_id), 'protected': {'specPrices': [{'price': '10', 'skuId': 1,
@@ -1144,12 +1150,18 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, k
     result = batch.run_batch('http://127.0.0.1:10086', batch_id=batch_id, product_ids=ids,
                              limit=2, owner='test-writer', db_path=db, keep_browser_session=keep_session)
     assert [item['product_id'] for item in result['run']] == ids
-    assert result['run'][0]['state'] == 'editing' and result['run'][0]['resumable'] is True
+    assert result['run'][0]['state'] == ('blocked' if required_missing else 'editing')
+    assert result['run'][0]['resumable'] is not required_missing
+    if required_missing:
+        assert result['run'][0]['reason'] == 'required_attributes_missing'
+        first=batch.batch_status(batch_id,db_path=db)['products'][0]
+        assert first['submission_attempts'] == 0
+        assert first['last_error_details']['required_attributes']['missing'] == ['硬度']
     assert result['run'][1]['state'] == 'uploaded' and result['run'][1]['submission_state'] == 'failed'
     assert FakeBridge.instances[0].commands.count('close_session') == (0 if keep_session else 1)
     assert result['browser_session_cleanup'] == ({'attempted': False, 'reason': 'same_goal_continues'}
                                                 if keep_session else {'attempted': True, 'closed': 0})
-    assert batch.batch_status(batch_id, db_path=db)['counts'] == {'editing': 1, 'uploaded': 1}
+    assert batch.batch_status(batch_id, db_path=db)['counts'] == {('blocked' if required_missing else 'editing'): 1, 'uploaded': 1}
 
 
 def test_old_readback_success_cannot_accept_a_new_upload_path(tmp_path):

@@ -28,11 +28,17 @@
   if (op === 'query_button') return mark(all('button.J_filterFormSearch'));
   if (op === 'save_button') return mark(all('button.J_editProductSaveXhsProduct')
     .filter(button => text(button) === '保存到抖店(F)'));
-  if (op === 'edit_button') {
+  if (op === 'edit_button' || op === 'listing_button' || op === 'supplier_link') {
     const rows = [...document.querySelectorAll('.pro-table-custom-body-row')]
       .filter(row => (text(row).match(/\d{16,22}/g) || []).includes(String(p.product_id)));
+    if (op === 'supplier_link') {
+      const links = rows.filter(visible).flatMap(row => [...row.querySelectorAll('a[href]')]
+        .filter(a => {try {const u=new URL(a.href);return u.hostname==='detail.1688.com'&&/^\/offer\/\d+\.html$/.test(u.pathname);}catch{return false;}}));
+      return {count:links.length,url:links.length===1?links[0].href:null};
+    }
+    const action = op === 'listing_button' ? '上架' : '编辑商品';
     const buttons = rows.filter(visible).flatMap(row => [...row.querySelectorAll('button')]
-      .filter(button => text(button) === '编辑商品' && !button.disabled));
+      .filter(button => text(button) === action && !button.disabled));
     // On narrow windows the real row is visible while its action column is to
     // the right of the viewport. Scroll only the unique button of the visible
     // exact-ID row; cached rows at y=-9000 are never candidates.

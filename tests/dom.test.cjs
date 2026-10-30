@@ -37,6 +37,31 @@ function fixture() {
   return boot(page);
 }
 
+test('reads required category fields and does not mistake typed search text for a selected fact',()=>{
+  const {page,call}=fixture();
+  page.window.document.querySelector('[id="goodsEditScrollContainer-基础信息"]').insertAdjacentHTML('beforeend',`
+    <div>必填项进度 33%</div>
+    <div class="style_categoryPropertiesItemNew__current"><div attr-field-id="品牌"><span class="styles_required__current">*</span><span class="ecom-g-select-selection-item">原品牌</span></div></div>
+    <div class="style_categoryPropertiesItemNew__current"><div attr-field-id="安装方式"><span class="styles_required__current">*</span><input type="search" role="combobox" value="粘贴式"><span class="ecom-g-select-selection-placeholder">请选择</span></div></div>
+    <div class="style_categoryPropertiesItemNew__current"><div attr-field-id="承重"><span class="styles_required__current">*</span><span>请选择</span></div></div>
+    <div class="style_categoryPropertiesItemNew__current"><div attr-field-id="可选备注"><input value=""></div></div>`);
+  const proof=call('snapshot').required_attributes;
+  assert.equal(proof.observed,true);
+  assert.equal(proof.completion_percent,33);
+  assert.deepEqual(proof.missing,['安装方式','承重']);
+  assert.deepEqual(proof.fields[0].values,['原品牌']);
+  assert.equal(proof.fields[3].required,false);
+  const search=page.window.document.querySelector('[attr-field-id="安装方式"] input');
+  search.type='text';
+  assert.deepEqual(call('snapshot').required_attributes.missing,['安装方式','承重']);
+  page.window.document.querySelector('[attr-field-id="安装方式"]').insertAdjacentHTML('beforeend','<span class="ecom-g-select-selection-item">粘贴式</span>');
+  assert.deepEqual(call('snapshot').required_attributes.missing,['承重']);
+});
+
+test('a page without observed category attribute controls never reports an observed empty list',()=>{
+  assert.deepEqual(fixture().call('snapshot').required_attributes,{observed:false,completion_percent:null,fields:[],missing:[]});
+});
+
 // Current real page shape: the visible strip keeps permanent 1x1 placeholders, the
 // hidden decorate canvas is a page-load snapshot that never syncs with edits, and the
 // right-hand phone preview panel is the only live-synced mirror of the detail field.

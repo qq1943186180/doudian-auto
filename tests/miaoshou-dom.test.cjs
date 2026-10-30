@@ -36,6 +36,30 @@ test('hidden ancestors and another shop cannot supply an action', () => {
   assert.equal(call('edit_button',{shop:'另一店'}).error,'wrong_shop');
 });
 
+test('listing targets only the exact visible product and never its edit or delist button',()=>{
+  const {w,call}=fixture();
+  const rows=w.document.querySelectorAll('.pro-table-custom-body-row');
+  for(const row of rows)row.insertAdjacentHTML('beforeend','<button class="list">上架</button>');
+  const live=rows[1].querySelector('button.list');live.id='listing';
+  w.document.elementFromPoint=()=>live;
+  assert.equal(call('listing_button').count,1);
+  assert.equal(w.document.querySelector('[data-codex-miao-target]').id,'listing');
+  assert.equal(call('listing_button',{product_id:'3850072653520044314'}).count,0);
+  live.textContent='下架';
+  assert.equal(call('listing_button').count,0);
+});
+
+test('supplier provenance comes from the exact current row, excluding cached rows and other domains',()=>{
+  const {w,call}=fixture();
+  const rows=w.document.querySelectorAll('.pro-table-custom-body-row');
+  rows[0].insertAdjacentHTML('beforeend','<a href="https://detail.1688.com/offer/111.html">旧货源</a>');
+  rows[1].insertAdjacentHTML('beforeend','<a href="https://detail.1688.com/offer/222.html?source=own">阿里巴巴</a>');
+  assert.deepEqual(call('supplier_link'),{count:1,url:'https://detail.1688.com/offer/222.html?source=own'});
+  rows[1].querySelector('a').href='https://unrelated.example/offer/222.html';
+  assert.deepEqual(call('supplier_link'),{count:0,url:null});
+  assert.equal(call('supplier_link',{shop:'另一店'}).error,'wrong_shop');
+});
+
 test('scrolls an offscreen action column of the one visible exact-ID row', () => {
   const {w,call}=fixture();
   const live=w.document.getElementById('live');
