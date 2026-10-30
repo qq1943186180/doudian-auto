@@ -1,16 +1,29 @@
 # 抖店本地上传
 
-更新：2026-10-30（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+更新：2026-10-31（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261031-001 · 194-76 · 午夜自动下架根因与素材前预检
+
+- 状态：in_progress；Agent：codex-miaoshou-reliability；从干净5b0856f接续，Linear已公告；用户已恢复妙手并确认没有手动下架。
+- 同一session=miaoshou-completion-20261029、空间1已takeOver恢复，授权正常。当前任务继续，不另建空间；用完的来源页已关闭，最终持久化后仅清理本任务页。
+- 官方商品列表记录地刮于2026-10-31 00:00:02被“开放平台妙手三方服务商操作下架”；妙手自动清理历史精确列出该商品及之前多件优化品，非图片丢失或本次程序重存。
+- 根因是开启了“每天00:00、销量少于1、在售商品、全量下架”，没有跳过新建/新改商品。已通过实际确认弹窗关闭该开关，重开后disabled_verified，其余表单字段逐项保持。证据auto-down-disable-state-20261031.json；开关确认会直接保存，无需再点保存设置。
+- 地刮在修复规则后单独上架1次，新鲜妙手status=0/官方状态radio=0、标题/全部图片/5SKU及其他字段均通过；32-relist-state-20261031.json=relisted_verified。审核值3，未宣称消费者端生效；不得再上架或重存。
+- 挂钩19、缝隙刷42已查原1688货源，参数仍未给承重kg/硬度；保持blocked/unknown/各1次旧保存，新图及上传映射保留，不能猜填或重存。
+- 新增batch preflight只读预检：显式ID绑定现有shop/target_version、只读SQLite、不领任务、不改状态、复用空间、完整SKU/属性/原图槽位校验、单品异常继续；人工接管即停止，余下ID保留。专项/CLI67项、全量401项通过（171.46秒）；skill三处哈希一致且校验通过。
+- 首轮5件37.703秒：分装瓶47官方通过；手套36完整SKU证据不足；未知19/已完成32直接跳过；门档61原4主图/4详情，收集妙手基线前拒绝生图，现已隔离，并补预检4主/3详情负例。
+- 分装瓶47已原子领取给codex-miaoshou-bottle、租约7200秒，原5主/6详情与完整19SKU已落next-bottle-20261031，子agent按内置imagegen准备9张，尚未上传/保存。第二轮4件41.391秒，2件仅2张原详情、2件SKU证据不足，均未生成/改商品；继续筛选并诊断SKU读取。
+- 当前v5仅1件完整新版本成功，三品门槛及通用writer=false不变。工作文件均在work/completion-20261029；技术结论见docs/miaoshou-reliability-20261029.md。
 
 ### T-20261029-002 · 194-76 · 全量SKU核对与三品新版本验收
 
 - 状态：in_progress；Agent：codex-miaoshou-reliability；接续5db66f5，开工工作区干净，Linear已公告。
 - 范围：补齐官方全部SKU的读取/比对；准备合格全套新图；通过当前版本三品连续保存/双端读回，验收完成才开放通用写入。
 - 官方正常编辑页重载的getSchema已完整读取65个SKU，与妙手逐ID/规格/价格/库存核验；只存身份与SKU值，不存context令牌。当前writer=v5，完整SKU证据接入前后与验收。
-- session=miaoshou-completion-20261029。10月30日空间10再次丢失且列表为空，沿用用户“新建空间并继续”授权备份后恢复为空间1；不重放保存。目前仅p1为平台手机验证页，已handOff给用户，收到“已恢复”再接回；不得再建替代空间。
+- session=miaoshou-completion-20261029。10月30日空间10丢失后备份恢复为空间1；当时手机验证已handOff，10月31日用户恢复后已接回；最新入口见T-20261031-001，不再建替代空间。
 - 历史28份state对账另发现11件旧编辑遗漏，已备份后隔离；旧20/24/29不重存。活体计数必须重新查SQLite，不能沿用旧文档数字。
 - 挂钩19、地刮32、缝隙刷42的27张新图已校验；地刮2张及缝隙刷1张重做一次通过。洗脚垫34重做后印字仍不合格，隔离。所有清单在work/completion-20261029/<商品ID>/。
 - ff71815修复跨品表单、原生勾选、详情自动关闭竞态与预览动画，单次Enter保存；73674ca补官方必填属性上传前检查、缺失字段持久化及桌面原因显示，单品缺资料继续队列。334 Python/55 JS通过；推送及Linear回写收尾核验。
@@ -101,7 +114,7 @@ doudian-auto --json verify '<返回的job_dir>'
 
 ## 给下一个AI
 
-当前接续Linear 194-76与T-20261029-002，读共享协议、真实Git状态及本文最上任务块；稳定Agent名codex-miaoshou-reliability。全仓入口是本仓skills/miaoshou-auto-batch/SKILL.md和桌面“抖店全仓优化”，原单品CLI仍保留。先恢复空间1的手机验证并核实两件缺失事实；地刮已图文核验及独立上架，不能再保存。当前三品验收1/3、通用writer关闭，完成三件当前版本独立核验才开放；收尾commit/push、回写194-76并读回。
+当前接续Linear 194-76与T-20261031-001，读共享协议、真实Git状态及本文最上任务块；稳定Agent名codex-miaoshou-reliability。全仓入口是本仓skills/miaoshou-auto-batch/SKILL.md和桌面“抖店全仓优化”，原单品CLI仍保留。空间1授权已恢复，午夜自动下架已关闭且地刮重新上架核验；先用batch preflight筛选原5主/至少4详情及完整真实属性的候选，再原子领取生成9图。分装瓶47正在准备，不要重复领取。当前三品验收1/3、通用writer关闭；收尾commit/push、回写194-76并读回。
 
 - 恢复入口：AGENTS.md → 本文 → git status --porcelain → Linear 194-76；映射见docs/agent-workflow/T-ID-MAPPING.md。194-54为旧单品历史。
 - 原生v5已完成地刮全套新图保存与双端核验；页面改版仍须核对店铺、精确ID、槽位和字段，不把这一件推广为全仓已验收。
