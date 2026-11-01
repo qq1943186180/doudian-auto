@@ -246,7 +246,10 @@ export async function runEgo(request) {
       if(target.count!==1||!target.actionable||target.disabled)fail('ego_target_not_unique','No unique actionable current DOM target.');
       await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
       try {
-        result=await page.mouse.click(target.x,target.y,{label:action==='fill'?'enter verified product content':'activate verified page control'});
+        // Resolve the observed selector again through Ego's native action layer.
+        // Its scroll/layout mapping can change after the precheck (notably under
+        // a fixed viewport); dispatching the earlier DOM coordinates can miss.
+        result=await page.click(args.selector,{label:action==='fill'?'enter verified product content':'activate verified page control'});
         if(action==='fill'){
           await page.keyboard.press('ControlOrMeta+A');await page.keyboard.insertText(String(args.value??''));
           // Miaoshou replaces the product-ID input with a textarea on focus. The

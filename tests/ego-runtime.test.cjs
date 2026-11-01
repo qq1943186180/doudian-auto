@@ -42,6 +42,7 @@ async function fixture(t) {
       return {};
     }},
     goto:async url=>{calls.push(url);}, url:async()=> 'https://v2-dd.chengji-inc.com/product/quick_edit'};
+  page.click=async selector=>{calls.push(['selector-click',selector]);return page.mouse.click();};
   const task={spaceId:8,page:()=>page,tabs:async()=>[{label:'p1',url:await page.url(),openedBy:'agent'}],
     finish:async()=>calls.push('finish'),pages:async()=>[page],newPage:async()=>{throw Error('should reuse page');}};
   global.taskSpace=async id=>{calls.push(['space',id]);return task;};
@@ -50,6 +51,19 @@ async function fixture(t) {
   const statePath=path.join(root,'state.json');
   return {run:(action,args={})=>runEgo({action,args,statePath,session:'test'}),calls,statePath,page};
 }
+
+test('ordinary controls use the observed selector rather than a precomputed coordinate',async t=>{
+  const f=await fixture(t);
+  f.page.evaluate=async()=>({count:1,x:9999,y:9999,actionable:true,disabled:false});
+  f.page.mouse.click=async()=>{throw Error('stale coordinate dispatch');};
+  let activated=0;
+  f.page.click=async selector=>{assert.equal(selector,'button[data-observed]');activated++;return {};};
+  await f.run('click',{selector:'button[data-observed]'});
+  assert.equal(activated,1);
+  f.page.evaluate=async()=>({count:2,actionable:true});
+  await assert.rejects(()=>f.run('click',{selector:'button[data-observed]'}),e=>e.code==='ego_target_not_unique');
+  assert.equal(activated,1);
+});
 
 test('official SKU evidence comes from one UI reload and drops context tokens and actions',async t=>{
   const f=await fixture(t);
