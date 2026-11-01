@@ -1,9 +1,21 @@
 # 抖店本地上传
 
-更新：2026-11-01（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+更新：2026-11-02（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261102-001 · 194-76 · Ego续办、挂篮改版上架及点击修复
+
+- 状态：in_progress；Agent：codex-miaoshou-reliability；从干净b41989b接续，1a5b4a0提交后工作区干净且Linear已公告，再维护本交接。
+- 旧妙手空间缺失；依据用户已有新建授权创建空间3并确认销霁百货，旧session完整备份后绑定。其他H5空间2未动；本轮结束已finish空间3、关闭3个自有页，state.finished=true。
+- 1a5b4a0：普通控件保留唯一/命中检查，改用Ego原生page.click(selector)重新定位；输入仍读回确认，最终保存仍单次Enter。解决实页坐标点击未打开预览、输入未确认；15项transport测试通过。
+- 挂篮18（3848331817417572422）9槽上传后两次点击前中断，保存始终0次；修复后保存1次，166.83秒续办，双端完整内容核验verified_by_readback。5新主/4新详及原尾图、9SKU和保留字段通过。
+- 挂篮另单次独立上架，18-listing-state.json=listed_verified；妙手status=0/官方状态radio=0，内容/SKU保持，审核原始值3，未宣称消费者端生效。不要再上架或重存18。
+- 分装瓶47只读核查：标题/新图双端对齐、妙手保护字段通过，19SKU哈希不变；官方DOM价格库存输入89→95，多渲染1行导致严格比较拒绝。其他分区无差异；保持blocked/unknown/保存1次，不重存，不改基线。
+- 现场计数5 verified、29 needs_agent、27 blocked，总61；当前writer内容验收2/3（地刮32/挂篮18），通用writer仍关闭。旧20/24/29和当前32不动；19/42仍unknown。
+- 证据：work/ego/continuation-20261102/{basket-native-result,18-listing-state,bottle-protected-diff,cleanup}.json；上架截图basket-listed-full.png。技术结论见docs/miaoshou-reliability-20261029.md。
+- 下一步：用新browser session继续，先修官方虚拟SKU表的采集稳定性并对47只读核验；完整SKU相等不能直接豁免DOM差异。旧空间3已正常结束，不能按ID再接；素材和队列保留。
 
 ### T-20261101-001 · 194-76 · SKU编码补读、挂篮素材完成与分装瓶异常
 
@@ -127,13 +139,13 @@ doudian-auto --json verify '<返回的job_dir>'
 
 ## 给下一个AI
 
-当前接续Linear 194-76与T-20261031-001，读共享协议、真实Git状态及本文最上任务块；稳定Agent名codex-miaoshou-reliability。全仓入口是本仓skills/miaoshou-auto-batch/SKILL.md和桌面“抖店全仓优化”，原单品CLI仍保留。空间1授权已恢复，午夜自动下架已关闭且地刮重新上架核验；先用batch preflight筛选原5主/至少4详情及完整真实属性的候选，再原子领取生成9图。分装瓶47正在准备，不要重复领取。当前三品验收1/3、通用writer关闭；收尾commit/push、回写194-76并读回。
+当前接续Linear 194-76与T-20261102-001，读共享协议、真实Git状态及本文最上任务块；稳定Agent名codex-miaoshou-reliability。入口是skills/miaoshou-auto-batch/SKILL.md和桌面“抖店全仓优化”。地刮32/挂篮18已完整改版并独立上架；分装瓶47仅允许只读核查，官方虚拟SKU表DOM采样仍不一致，不能再领取或重存。当前验收2/3、通用writer关闭；空间3已正常finish，续办使用新的browser session；收尾commit/push、回写194-76并读回。
 
 - 恢复入口：AGENTS.md → 本文 → git status --porcelain → Linear 194-76；映射见docs/agent-workflow/T-ID-MAPPING.md。194-54为旧单品历史。
 - 原生v5已完成地刮全套新图保存与双端核验；页面改版仍须核对店铺、精确ID、槽位和字段，不把这一件推广为全仓已验收。
 - 官方SKU从正常UI重载响应取全量证据，与妙手逐行核对；DOM字段覆盖说明仍只适用于DOM。缺SKU响应、草稿或缺保护字段不能判一致。
-- 不重传或重存历史verified20/24/29、当前32。19/42虽查到失败历史，仍保留unknown；不可手改状态绕过证据恢复。图文任务不自动补类目属性，不猜承重/硬度。
-- 每轮结束先持久化续办状态，再关闭本轮用完的项目标签；用户手机验证页尚未完成，已交给用户并保留。只关自己任务页，不动其他用途标签，不重载未保存编辑。
+- 不重传或重存历史verified20/24/29、当前32/18。19/42/47保留unknown；不可手改状态绕过证据恢复。图文任务不自动补类目属性，不猜承重/硬度。
+- 每轮结束先持久化续办状态，再关闭本轮用完的项目标签；本轮3页已关，没有未完成验证页。只关自己任务页，不动其他用途标签，不重载未保存编辑。
 - GUI冒烟仅证明入口与控件；实页保存/上架证据来自原生程序，未做GUI端到端验收。未保存编辑不自动回滚；before.json可供人工恢复参考。
 - 运行测试：`.venv/Scripts/python.exe -X utf8 -m pytest -q`；`npm ci --ignore-scripts --no-audit --no-fund`后`npm test`。测试依赖用`.venv/Scripts/python.exe -m pip install -e '.[test]'`安装。
 - 2026-10-30全量验证：334 Python通过，55 JS通过。现有浏览器/任务/图片数据均保留于忽略目录，不提交Git。
