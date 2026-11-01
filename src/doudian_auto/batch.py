@@ -407,14 +407,15 @@ def renew_agent_task(task_id, owner, token, *, db_path=None, lease_seconds=LEASE
     try:
         conn.execute('BEGIN IMMEDIATE')
         now = time.time()
-        cursor = conn.execute('''UPDATE products SET lease_until=?,updated_at=?
+        cursor = conn.execute('''UPDATE products SET lease_until=MAX(lease_until,?),updated_at=?
                                  WHERE id=? AND state='agent_claimed' AND lease_owner=?
                                  AND lease_token=? AND lease_until>=?''',
                               (now + lease_seconds, now, task_id, owner, token, now))
         if cursor.rowcount != 1:
             raise DoudianError('stale_agent_lease', '领取已过期或属于另一个 agent，无法续租。')
+        until = conn.execute('SELECT lease_until FROM products WHERE id=?', (task_id,)).fetchone()['lease_until']
         conn.commit()
-        return {'task_id': task_id, 'lease_until': now + lease_seconds}
+        return {'task_id': task_id, 'lease_until': until}
     except Exception:
         conn.rollback()
         raise
@@ -1254,8 +1255,8 @@ def renew_execution(task_id, owner, token, *, db_path=None, lease_seconds=LEASE_
     conn = _db(db_path)
     try:
         conn.execute('BEGIN IMMEDIATE')
-        _execution_row(conn, task_id, owner, token)
-        until = time.time() + lease_seconds
+        row = _execution_row(conn, task_id, owner, token)
+        until = max(row['execution_until'], time.time() + lease_seconds)
         conn.execute('UPDATE products SET execution_until=?,updated_at=? WHERE id=?',
                      (until, time.time(), task_id))
         conn.commit()
