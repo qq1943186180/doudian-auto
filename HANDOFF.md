@@ -1,9 +1,22 @@
 # 抖店本地上传
 
-更新：2026-10-31（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+更新：2026-11-01（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261101-001 · 194-76 · SKU编码补读、挂篮素材完成与分装瓶异常
+
+- 状态：in_progress；Agent：codex-miaoshou-reliability；从推送后的干净28597b8接续，已在194-76公告后维护本交接。
+- 代码28597b8已推送。官方getSchema省略`code`时，按真实SKU ID只读滚动“商家编码”列并绑定新鲜响应/页面/店铺；缺失控件、骨架行、重复SKU或未覆盖全量均拒绝。完整code API路径不变。
+- 真实页面36号商品12/12编码空值已逐ID观察；新增编辑器集成尚未实页执行。全量422 Python/67 JS通过；技术说明见docs/miaoshou-reliability-20261029.md。
+- 挂篮18的9张素材已校验入队ready，未上传。主图5首版颜色/件数并列造成组合歧义，失败记录保留；唯一一次重做通过。素材与9项审核记录在work/completion-20261029/next-basket-20261031/。
+- 分装瓶47只保存一次：抖店读回标题等于目标、19 SKU哈希未变；妙手仍为旧标题，列表status 1→0、draftStatus 0→2、checkStatus 1→2。语义未猜，队列blocked/unknown、attempts=1；禁止重存/上架。
+- 先前妙手每日00:00无销量全量下架规则已关闭并读回确认；地刮32之后独立上架已verified。不要再改规则、重存或重上架32。
+- SQLite活体：29 needs_agent、27 blocked（24未尝试、3 unknown）、1 ready、4 verified；总计61。三品当前writer验收仍1/3，通用writer关闭。
+- 挂钩19/缝隙刷42保持unknown、各1次旧尝试；安装/承重资料与硬度缺项未确认，不猜属性、不重存。
+- 当前Ego `listTaskSpaces()`返回空，旧空间1无法访问。不能创建替代空间；实时妙手核查、继续上传和本轮标签清理待原空间恢复。不得重放分装瓶保存脚本。
+- 续办：恢复原Ego空间后先只读查47妙手历史/标题/状态；挂篮18须重新读当前双端基线后才可上传保存；随后续做三品连续实页验收、writer门槛与关本轮自有页。
 
 ### T-20261031-001 · 194-76 · 午夜自动下架根因与素材前预检
 
