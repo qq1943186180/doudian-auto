@@ -4,7 +4,9 @@ import json
 import pytest
 
 from doudian_auto.errors import DoudianError
-from doudian_auto.official_skus import parse_official_skus, verify_miaoshou_skus, compare_official_skus
+from doudian_auto.official_skus import (parse_official_skus, verify_miaoshou_skus,
+                                        compare_official_skus, sku_code_ui_reference)
+from doudian_auto.official_sku_codes import SOURCE, code_rows_sha256
 from doudian_auto.workflow import compare_protected
 
 PID = '3850072653520044313'
@@ -82,4 +84,74 @@ def test_new_readback_requires_same_complete_official_evidence_and_detects_last_
     observed['body'] = json.dumps(data)
     with pytest.raises(DoudianError) as rejected:
         compare_official_skus(before, parse_official_skus(observed, product_id=PID))
+    assert rejected.value.code == 'commercial_changed'
+
+
+def _missing_code_response(request_id='p1:123:request'):
+    observed = response(count=3)
+    data = json.loads(observed['body'])
+    for row in data['data']['model']['sku_detail']['value']:
+        row.pop('code')
+    observed.update(requestId=request_id, body=json.dumps(data, ensure_ascii=False))
+    return observed
+
+
+def _ui_code_proof(observed, product_id=PID, shop='销霁百货'):
+    reference = sku_code_ui_reference(observed, product_id=product_id, shop=shop)
+    rows = [{'sku_id': sku, 'code': f'actual-{index}', 'observed': True, 'input_count': 1}
+            for index, sku in enumerate(reference['expected_sku_ids'])]
+    return {**{key: reference[key] for key in ('product_id', 'shop', 'api_request_id',
+                                                'api_body_sha256', 'page_url')},
+            'schema_version': 1, 'source': SOURCE, 'shop_confirmed': True,
+            'code_column': '商家编码', 'navigation_id': 100.0, 'observed_at': 1_800_000_000.0,
+            'rounds': 2, 'elapsed_seconds': 0.1, 'complete': True, 'rows': rows,
+            'rows_sha256': code_rows_sha256(rows)}
+
+
+def test_missing_codes_require_complete_fresh_ui_evidence_and_are_hashed_by_sku():
+    observed = _missing_code_response()
+    proof = _ui_code_proof(observed)
+    evidence = parse_official_skus(observed, product_id=PID, shop='销霁百货', code_ui_evidence=proof)
+    assert [row['code'] for row in evidence['rows']] == ['actual-0', 'actual-1', 'actual-2']
+    assert evidence['ui_code_rows'] == [
+        {'sku_id': row['sku_id'], 'code': row['code'], 'observed': True, 'input_count': 1}
+        for row in evidence['rows']]
+    assert evidence['raw_rows'][0].get('code') is None
+
+    with pytest.raises(DoudianError):
+        parse_official_skus(observed, product_id=PID)
+    stale = _ui_code_proof(_missing_code_response('p1:124:request'))
+    with pytest.raises(DoudianError) as rejected:
+        parse_official_skus(observed, product_id=PID, shop='销霁百货', code_ui_evidence=stale)
+    assert rejected.value.code == 'official_sku_code_stale'
+
+
+def test_explicit_null_codes_cannot_be_repaired_from_ui():
+    observed = _missing_code_response()
+    data = json.loads(observed['body'])
+    data['data']['model']['sku_detail']['value'][0]['code'] = None
+    observed['body'] = json.dumps(data, ensure_ascii=False)
+    with pytest.raises(DoudianError):
+        sku_code_ui_reference(observed, product_id=PID, shop='销霁百货')
+
+
+def test_ui_code_hash_ignores_request_metadata_but_detects_changed_values():
+    before_response = _missing_code_response('p1:123:request')
+    before_proof = _ui_code_proof(before_response)
+    before = parse_official_skus(before_response, product_id=PID, shop='销霁百货',
+                                 code_ui_evidence=before_proof)
+
+    after_response = _missing_code_response('p1:456:request')
+    after_proof = _ui_code_proof(after_response)
+    after_proof['observed_at'] += 1
+    after = parse_official_skus(after_response, product_id=PID, shop='销霁百货',
+                                code_ui_evidence=after_proof)
+    compare_official_skus(before, after)
+
+    after_proof['rows'][0]['code'] = 'changed'
+    after_proof['rows_sha256'] = code_rows_sha256(after_proof['rows'])
+    changed = parse_official_skus(after_response, product_id=PID, shop='销霁百货',
+                                  code_ui_evidence=after_proof)
+    with pytest.raises(DoudianError) as rejected:
+        compare_official_skus(before, changed)
     assert rejected.value.code == 'commercial_changed'

@@ -112,3 +112,33 @@ def test_adapter_stops_on_identity_layout_and_human_gates(error,waiting):
     with pytest.raises(DoudianError) as exc:
         Editor(bridge).read({'product_id':'3790019980637110699','shop':'样板店'})
     assert exc.value.waiting == waiting
+
+
+def test_read_skus_collects_ui_codes_only_for_the_bound_missing_code_response(monkeypatch):
+    from doudian_auto import official_skus, official_sku_codes
+
+    calls = []
+    response = {'fresh': True}
+    reference = {'product_id': '3790019980637110699', 'shop': '销霁百货',
+                 'expected_sku_ids': ['3387918799208229']}
+    proof = {'complete': True, 'rows': [{'sku_id': '3387918799208229', 'code': '', 'observed': True}]}
+
+    class ReadBridge(FakeBridge):
+        def command(self, action, args):
+            calls.append((action, args))
+            return response
+
+    monkeypatch.setattr(official_skus, 'sku_code_ui_reference',
+                        lambda result, *, product_id, shop: reference)
+    monkeypatch.setattr(official_skus, 'parse_official_skus',
+                        lambda result, **kwargs: {'response': result, **kwargs})
+    monkeypatch.setattr(official_sku_codes, 'collect_official_sku_codes',
+                        lambda editor, identity, ref, *, seconds: (calls.append((identity, ref, seconds)) or proof))
+
+    manifest = {'product_id': reference['product_id'], 'shop': reference['shop']}
+    result = Editor(ReadBridge()).read_skus(manifest)
+
+    assert calls[0] == ('official_sku_read', {'product_id': reference['product_id']})
+    assert calls[1] == (manifest, reference, 30)
+    assert result == {'response': response, 'product_id': reference['product_id'],
+                      'shop': reference['shop'], 'code_ui_evidence': proof}

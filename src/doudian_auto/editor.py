@@ -74,9 +74,15 @@ class Editor:
         return self.dom('snapshot', manifest)
 
     def read_skus(self, manifest):
-        from .official_skus import parse_official_skus
+        from .official_skus import parse_official_skus, sku_code_ui_reference
         response = self.bridge.command('official_sku_read', {'product_id': manifest['product_id']})
-        return parse_official_skus(response, product_id=manifest['product_id'])
+        reference = sku_code_ui_reference(response, product_id=manifest['product_id'], shop=manifest['shop'])
+        if reference is None:
+            return parse_official_skus(response, product_id=manifest['product_id'])
+        from .official_sku_codes import collect_official_sku_codes
+        observed = collect_official_sku_codes(self, manifest, reference, seconds=30)
+        return parse_official_skus(response, product_id=manifest['product_id'], shop=manifest['shop'],
+                                   code_ui_evidence=observed)
 
     def section_counts(self, manifest):
         """Per-section control counts: the readiness signal for the protected blocks.
