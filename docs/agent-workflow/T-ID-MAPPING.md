@@ -2,6 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
+| T-20261102-002 | [194-76](https://linear.app/1943186180/issue/194-76) | review | 五品结论：17男裤/44塑料凳各一次图文保存、全SKU/双端核验并另独立上架通过；14读取不稳定、15钱币字印二败、16新增扣件均隔离且0次保存。fb2ae4c修租约，e0b3e3d修店铺名延迟挂载，80相关检查通过。32/17/44满足fresh_form三品门槛并正常writer_ready=true，旧18不计门槛。用户授权恢复4→6→8，已finish8关2页；现场7verified/24needs_agent/30blocked，全仓未完成。 |
 | T-20261102-001 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 1a5b4a0修复Ego普通控件点击，15项专项通过；挂篮18一次保存并双端全套核验，另一次独立上架verified，9SKU/保护字段保持。分装瓶47标题图双端对齐，完整SKU不变但官方DOM多渲染一行，unknown/1次保存不变。5 verified/29 needs_agent/27 blocked，当前验收2/3；空间3已finish关闭3页。 |
 | T-20261101-001 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 官方SKU `code` 缺项增加逐SKU UI只读补证；422 Python/67 JS通过，尚待原Ego空间实页联调。挂篮18的9图ready，主图5单次重做后通过、未上传。分装瓶47一次保存后标题双端不一致，blocked/unknown、attempts=1，不重存。当前Ego空间清单为空，writer关闭，三品验收仍1/3。 |
 | T-20261031-001 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 关闭并读回确认妙手每日00:00销量<1自动下架规则；地刮重新单次上架、双端内容/SKU/状态核验。新增素材前只读preflight，67专项/CLI、401全量通过；分装瓶47准备9图，门档61原4主图已隔离并补槽位预检。继续筛选及SKU诊断；三品门槛仍1/3，通用writer关闭。 |

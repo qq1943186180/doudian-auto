@@ -5,6 +5,22 @@
 
 ## 给人的说明
 
+### T-20261102-002 · 194-76 · 五品测试结果（2通过/3隔离）
+
+- 状态：review；Agent：codex-miaoshou-reliability；从干净bf1b67b接续，Linear已公告后维护本块。五件测试有结论，不代表五件成功或全仓完成；父Issue仍in_progress。
+- 用户要求自行恢复后，SQLite/session均备份再恢复4→6；6在44上架点击前再次丢失，旧listing明确0次输入并superseded，重新核对后恢复8。session=miaoshou-five-tests-20261102、视口1464×795。本轮已finish空间8、关闭2自有页；空间6的用完历史页p3此前已关，其他空间未动。证据根work/ego/five-tests-20261102/。
+- 首批36/22/23/43/46均在预检拒绝（厚度缺失/草稿驳回/安装方式缺失/尺寸缺失/详情未就绪），未写商品。
+- 替补筛10件得5候选：14袜子3850071689249554608、15黄铜挂件3850071620530078120、16双面布包3850071178425271258、17男裤3850070641327866321、44塑料凳3848316155827716392；candidate-scan.json保存各项证据。
+- 素材agent曾遇会话额度，Root接手续租并完成17；44由codex-miaoshou-test-44继续，同版本过期领取按claim_next重领，备份旧claim，浏览器仅Root串行。fb2ae4c已推送，修复短心跳缩短长租约；6专项/60batch通过，实租约心跳验证保留。
+- 重复读取15/16/17/44保护字段稳定；14原读法不稳定。固定主图锚点原型两次通过，但继续独立复测14仍不一致（canonical-five-stability.json）；66项模拟测试不能代替实页证据，候选代码/测试已原样撤回。14本轮禁止上传保存，素材合格后保留并隔离执行，不放宽比较。
+- 14保留9合格图并隔离；15钱币字印单槽重做后仍错，正式blocked；16已ready图被Root终审发现detail3重做版新增金属扣，无原图依据，绑定原manifest/图片哈希后隔离。三件均未上传/保存，失败记录不覆盖。
+- 17男裤完成9新图，一次保存后首次读回仍旧版，保持unknown；后台任务11:16:49成功1/失败0后仅只读重核，双端完整verified；5新主/4新详、尾24详情与40SKU保持。随后单次独立上架并双端listed_verified，审核值3，不重存/重上架。
+- 17执行261.02秒，随后只读恢复42.32秒；证据17-execution-first.json、17-readback-after-task.json、17-history-detail.json及product-17/17-listing-state.json。保存/上架各1次，不重放。
+- e0b3e3d：官方表单先于店铺名挂载时，在现有30秒读取预算内等待精确店铺名；错商品/验证码仍立即停止，持续缺店铺仍拒绝。80项editor/preflight检查通过，44实页已跨过该卡点；首次12.79秒停在预检，0上传/0保存，不重放。
+- 44的detail1/2/4首版失败各重做一次后9槽合格；第二轮270.22秒只保存1次，后台28874582成功后只读28.05秒双端verified，9SKU/5新主/4新详/尾16详情保持。另独立上架1次，product-44/44-listing-recovered-state.json=listed_verified；旧44-listing-state.json是0次输入superseded，不重放。
+- 当前32/17/44通过严格fresh_form三品验收，current-writer-acceptance.json已正常落库并读回writer_ready=true；18内容虽verified但fresh_form=false，不计门槛、不重存。操作skill三处同步并校验。
+- 活体7 verified/24 needs_agent/30 blocked=61；five-products-results.json为本轮2上架/3未写异常，cleanup.json为关页证据。后续从24件预检继续；14/15/16失败素材不再硬传，47/19/42仍未知只读，已verified商品不重存或重上架。
+
 ### T-20261102-001 · 194-76 · Ego续办、挂篮改版上架及点击修复
 
 - 状态：in_progress；Agent：codex-miaoshou-reliability；从干净b41989b接续，1a5b4a0提交后工作区干净且Linear已公告，再维护本交接。
@@ -139,7 +155,7 @@ doudian-auto --json verify '<返回的job_dir>'
 
 ## 给下一个AI
 
-当前接续Linear 194-76与T-20261102-001，读共享协议、真实Git状态及本文最上任务块；稳定Agent名codex-miaoshou-reliability。入口是skills/miaoshou-auto-batch/SKILL.md和桌面“抖店全仓优化”。地刮32/挂篮18已完整改版并独立上架；分装瓶47仅允许只读核查，官方虚拟SKU表DOM采样仍不一致，不能再领取或重存。当前验收2/3、通用writer关闭；空间3已正常finish，续办使用新的browser session；收尾commit/push、回写194-76并读回。
+当前接续Linear 194-76与T-20261102-002，先读本文最上任务块；稳定Agent名codex-miaoshou-reliability。当前五品阶段空间4/session=miaoshou-five-tests-20261102尚在使用，只有Root操作浏览器。14/15/16已领取素材，17/44待领取；Root work脚本、原图与证据见work/ego/five-tests-20261102/。14本轮禁止上传保存，另外4款通过重复读取；先完成各自素材审核，不能将预检记作完整验收。地刮32/挂篮18已完整改版并上架；47仍unknown只读，19/42不重存。当前writer门槛2/3，通用writer关闭；每阶段收尾commit/push、回写194-76并读回。
 
 - 恢复入口：AGENTS.md → 本文 → git status --porcelain → Linear 194-76；映射见docs/agent-workflow/T-ID-MAPPING.md。194-54为旧单品历史。
 - 原生v5已完成地刮全套新图保存与双端核验；页面改版仍须核对店铺、精确ID、槽位和字段，不把这一件推广为全仓已验收。
