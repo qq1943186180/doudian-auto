@@ -1,18 +1,21 @@
 # 抖店本地上传
 
-更新：2026-11-02（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+更新：2026-11-03（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
 
 ### T-20261102-006 · 194-76 · 原生Ego推进三品
 
-- 状态：in_progress；从干净7b90f69接续，Linear已公告。用户授权再试Ego推进三个品；沿用不控制游戏桌面的约束，不重存8个verified/3个unknown，不第三次生成失败槽。
-- 新空间14，session=miaoshou-three-native-20261102；原生goto/wait/Snapshot首轮3.62秒通过，销霁百货已登录；绑定现有p1妙手/p2抖店，新增p3批量页正常打开，无桌面/窗口控制。
+- 状态：in_progress（本阶段已交接，2件待平台审核）；从干净7b90f69接续，收尾前27ae746干净且Linear已公告。用户授权Ego推进三品，保持不控制游戏桌面，不动原8个verified/3个unknown，不第三次生成失败槽。
+- session=miaoshou-three-native-20261102、空间14已正常finish，关闭p1妙手/p2抖店/p3批量与历史共3自有页；cleanup.json与state.finished=true确认。不按14重接，不关闭其他用途页。
 - 冻结5鞋底贴3850072589246529727、10BB夹3850071994200621373、21沐浴海绵3848323687044481622；双端标题/全图/1、5、18SKU及必填100%通过。历史5/21旧版已核验、10仅上传没保存，均以新rebaseline入口绑定所有旧观察哈希恢复同一队列版本，未清除unknown或旧保存记录。
-- 显式interaction_mode=native试用原生Snapshot/click/fill/upload；不预滚动、不改视口、不做focus emulation；最终保存guard与单次意图不变。5官方程序完整读取通过；原初探针服务运费模板一度显示ID，程序稳定挂载后为名称，不能将早期快照当保存基线。
-- 三素材agent复用旧合格图并补齐详情；程序新增仅existing-qualified允许的历史manifest/槽位/产品/原字节绑定，明确缺提示词，不伪造。21旧main1/2提示词已从父目录生成提示词.json找回；10旧详情1-3宽超限正在单次转换，21main2伪字待单次重做。
-- 454Python（167.41秒）/81JS全量通过；原生页只读通过，尚未上传或保存本轮商品。三claim正常领取7200秒；证据work/ego/three-native-20261102/。继续待素材严格schema校验、9槽实页预览/一次保存/双端读回及独立上架，不把准备完成当优化完成。
+- 0faadf7/27ae746已推送：显式native模式原生Snapshot/click/fill/upload，不改视口/焦点；方法小方框替代大label中心；初始隐藏ID/标题不当ready门槛；实际固定底栏遮挡只对该路线图槽居中，仍一次原生命中检查点击。保留全部保存/SKU/未知结果闸门。
+- 27张目标图逐项验收，复用15/新生12；14次内置生成（2次新图失败重做），无付费API。10旧main4及超宽detail1-3、21旧main2伪字均单次重做；失败证据保留。5/10旧prompt缺失用受限历史清单/产品/槽位/原hash来源，21main1/2原prompt已找回；不伪造。
+- 5鞋底贴本轮内容保存1次（最后执行140.63秒，前置4次0保存中断另保留），旧合格6图因MD5永久ID不变首读拒绝；新增严格qualified复用/本地hash/双端远端字节核验后仅只读恢复verified。随后独立上架1次、双端listed_verified；全1SKU/9目标图/尾7详情保持。不要重存/重上架5。
+- 10发夹245.83秒、21海绵231.63秒：各9槽上传预览、保存1次。历史任务29110866（00:36:45）/29111070（00:41:32）至00:49仍“抖店审核中”，成功0/失败0；双端未完整一致，保持blocked/unknown。10官方已新标题而妙手旧标题；审中妙手status0/checkStatus2/startSaleType0，不能视为上架验收或豁免保护字段。
+- 最终460Python（169.33秒）/83JS通过，skill仓库/Codex/WorkBuddy同步校验。活体9verified/52blocked=61；three-native-results.json保存准确阶段、失败步骤/网页计时，纯生成耗时未完整记录不能杜撰。本轮1上架/2待审，不是三品全成功或新路径三件完整验收。
+- 下一步只读查29110866/29111070是否完成，再按原manifest/baseline/映射严格双端核查；未知不得恢复/重试保存按钮、另点上架、重建基线或弱化比较。待完整verified后才可分别执行已授权的独立上架。证据work/ego/three-native-20261102/，上架5状态product-5/5-listing-state.json。
 
 ### T-20261102-005 · 194-76 · 官方Ego用法审计
 
