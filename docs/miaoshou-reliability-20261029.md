@@ -2,6 +2,25 @@
 
 来源：用户要求修复全仓优化的实际瓶颈；Linear 194-76；执行 codex-miaoshou-reliability。
 
+## 2026-11-02 官方用法复核：先纠正适配器
+
+本轮是文档与代码审计，没有改运行代码、执行网页动作或恢复桌面。官方[Windows产品说明](https://www.egolite.ai/document/en/docs/windows/product-introduce)明确Space可以沿用登录，在后台操作而不切用户标签/抢键盘焦点；不能从本项目的卡点推导Ego不具备这些能力。此前建议换成其他浏览器过早，优先纠正适配器并对照测试。
+
+接口以本机`ego-browser skill`输出v2.1.0为准（已确认end of guide），官网概览仍出现`useOrCreateTaskSpace`等旧示例；本项目使用当前`taskSpace`/Page接口这一点正确。当前官方[skill源文件](https://github.com/citrolabs/ego-lite/blob/main/package/ego-browser/skill-body/SKILL.md)与官网概览的默认关页叙述也有差别，不能混为同一版本规则。
+
+| 核对项 | 官方方式与现有实现 | 结论 |
+|---|---|---|
+| 连续动作合批 | 官方建议已知连续步骤放同一脚本，减少来回调用；EgoBridge每个command启动一次CLI。油瓶保存续办runId0207a9ec06c3单轮453次命令：226 evaluate、130 network、39 click、8 fill、5 upload、19 cdp及其他。 | 确认设计偏离、无谓开销；不是Ego要求。此数不含此前已完成的4张主图上传，不能当完整商品总调用数。 |
+| 原生自动滚动 | 安装版说明原生click/fill等会自动滚动，不需只为目标可点而预滚动；ego_runtime在点击前scrollIntoView，miaoshou_dom也会预滚动屏外按钮。 | 确认用法偏离；先测试原生定位/收侧栏，不能把预滚动失败归因客户端。 |
+| Snapshot读取 | 官方[Windows Snapshot](https://www.egolite.ai/document/en/docs/windows/snapshot)用于发现当前控件并在变化后刷新；本项目snapshot分支因历史refs锁问题改为document.body.innerText与placeholder拼接。 | 标注dom_text虽诚实，但不是官方Snapshot，可能包含屏外缓存行，损失可操作语义。恢复原生快照优先；若仍失败，再记录有证据的后备。 |
+| 视口/焦点/CDP | 安装版允许原生接口失败后使用CDP；现有ensureViewport持续注入模拟尺寸，普通点击还叠加focus emulation和几何检查，图片控件改用坐标。 | CDP本身并非违规。扩大默认使用的设计需回到真实Space布局对比；没有足够证据证明模拟视口或焦点造成全部故障，也不应未经验证全删。 |
+| 一直恢复主窗口 | 官方Space用于后台任务；此前通过桌面恢复/WindowBounds排障。 | 可作为特定诊断，但不应成为日常执行依赖；用户游戏约束继续有效。 |
+| finish与关页 | 当前安装版finish结束TaskSpace与全部标签引用；最后4页有主动finish记录。用户要求用完关项目页。 | 正常主动清理，不是自动闪退。结束后的旧spaceId不可续用；历史9/12消失的原因未证实。 |
+
+整改顺序：先用原生Snapshot、click/fill/waitForFunction和正常Space布局完成不保存业务的定位对比；把一次已知的“填筛选→查询→等待→读结果”及单槽“打开→上传→等待→确认”合在同轮，同时保留每槽的持久化进度。随后再缩减视口/焦点特例，最后重做一件明确范围的完整上传/唯一保存/双端核验。测试时不得重存8件已verified商品，不改变未知保存的只读边界。商业字段比对、全SKU核验与逐图质量检查继续保留；合批不等于减少核验。
+
+证据仅本机忽略目录`work/ego/official-audit-20261102/{installed-guide.txt,call-count.json}`。本次没有新运行代码，不重复测试旧代码，也不把审计结论写成原生路径已修好。后续性能比较需按相同商品/相同步骤测量，不把恢复轮与完整首轮耗时混比。
+
 ## 2026-11-02 Ego关闭的离线诊断与调用器修复
 
 用户游戏期间明确禁止桌面控制。本阶段不恢复/激活/重启窗口、不进行实页输入；此前用户Esc停止的桌面恢复也未作为修复成功证据。使用project-handoff维护T-20261102-004。实际窗口消失原因仍未完全定位，不能宣称Ego客户端已修好。
