@@ -5,6 +5,18 @@
 
 ## 给人的说明
 
+### T-20261102-003 · 194-76 · 剩余商品续办
+
+- 状态：review（本阶段有结论，全仓未完成）；从干净63dc4fb接续，Linear已公告。证据work/ego/remaining-20261102/；session=miaoshou-remaining-20261102已finish、关闭4自有页，其他用途未动。
+- 原24 needs_agent全量预检初筛48/49/53；21缺属性/槽位/草稿驳回/SKU证据问题通过正常入口隔离，网站写入0。scan-live.json和preflight-exceptions.json保留；首次scan.json是未绑定session的失败，不是商品缺陷。
+- 48/49/53正常领取7200秒，真实参考/原始妙手和官方全SKU/三项重复读回证据齐。三素材agent各限自己目录，Root独占浏览器写入。空间9→12→13均先备份再按既有自行恢复授权接续，其他qingshou/tbcli空间未动。
+- 恢复旧素材agent时误续17旧任务，改写已verified本地main3和prompt；立即叫停，备份误写版本到incident17，再从原生成输出及原prompt恢复，所有9图/source/prompt哈希重新验证通过。source/main1/main2本未变；店铺未再修改。以后派工必须明确禁止旧任务收尾。
+- 48漱口杯main5/detail3各一次重做后仍错印字，正式blocked，上传/保存0。49疏通器9图合格且上传9槽，预览发现原详情2/4重复使目标串位，保存0；新collision guard正常复测35.56秒隔离，保留9图/映射，不弱化预览或第三次生图。
+- 53油瓶3848311880170996172完成新标题/5主/4详，保存1次后unknown；历史29015772（19:07:47）成功1/失败0，再只读32.59秒双端verified，尾10详情/全3SKU/保护字段保持。随后独立上架1次，product-53/53-listing-state.json=listed_verified，官方radio=0、审核值3。不要重存或重上架。
+- 实页修复：Page级CDP恢复最小化Ego；收起已观察到的展开导航使屏外编辑按钮可点；精确编辑窗只切一次商品信息页签；图片槽位/选图关闭确认限定同坐标空间点击并复查命中。加宽视口与键盘编辑菜单原型无稳定效果，后者已撤回。细节见docs/miaoshou-reliability-20261029.md。
+- 代码55d8545（实页控件）/e7a66ef（重复详情预检）；全量439 Python/77 JS通过，最后页签预算微调另17专项通过；skill三处同步且结构校验通过。活体8 verified/53 blocked=61，remaining-results.json/cleanup.json保存结果；47/19/42未知仍各1次旧保存，已verified不重存，失败素材不做第三版。
+- 下一步：先验证能逐位置替换重复详情的妙手路径，再从异常真实来源补齐缺失属性与读取稳定性；不得把53次隔离当作已优化。父194-76保持in_progress；当前session已结束，后续用新session，不按13重接。
+
 ### T-20261102-002 · 194-76 · 五品测试结果（2通过/3隔离）
 
 - 状态：review；Agent：codex-miaoshou-reliability；从干净bf1b67b接续，Linear已公告后维护本块。五件测试有结论，不代表五件成功或全仓完成；父Issue仍in_progress。
