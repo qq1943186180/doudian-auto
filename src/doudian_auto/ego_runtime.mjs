@@ -54,6 +54,8 @@ export async function runEgo(request) {
   catch(e) { if(e.code!=='ENOENT')throw e; state={pages:{},requests:{},capture:false}; }
   const save=()=>fs.writeFile(statePath,JSON.stringify(state),'utf8');
   const fail=(code,message)=>{ const error=new Error(message);error.code=code;throw error; };
+  if(!state.finished&&state.cleanup?.phase==='finishing')
+    fail('ego_cleanup_unknown','Task-page cleanup outcome is unknown; do not repeat finish or reopen pages.');
   if(state.finished){
     if(['list_tabs','list_browser_tabs'].includes(action))return {tabs:[]};
     if(action==='navigate'&&runId&&runId!==state.runId)
@@ -100,7 +102,12 @@ export async function runEgo(request) {
   }
   if(action==='close_session') {
     const tabs=await task.tabs(),count=tabs.filter(t=>t.openedBy==='agent').length;
-    await task.finish({keep:[]});state.finished=true;await save();return {closed:count};
+    state.cleanup={phase:'finishing',scope:'task_pages',browser_exit_requested:false,
+      owned_labels:tabs.filter(t=>t.openedBy==='agent').map(t=>t.label),started_at:Date.now()};
+    await save();
+    await task.finish({keep:[]});state.finished=true;
+    state.cleanup.phase='finished';state.cleanup.finished_at=Date.now();await save();
+    return {closed:count,scope:'task_pages',browser_exit_requested:false};
   }
   let page=task.page(state.active);
   if(action==='navigate') {

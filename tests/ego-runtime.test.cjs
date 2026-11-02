@@ -49,7 +49,7 @@ async function fixture(t) {
   global.listTaskSpaces=async()=>[];
   const {runEgo}=await runtime;
   const statePath=path.join(root,'state.json');
-  return {run:(action,args={})=>runEgo({action,args,statePath,session:'test'}),calls,statePath,page};
+  return {run:(action,args={})=>runEgo({action,args,statePath,session:'test'}),calls,statePath,page,task};
 }
 
 for(const moved of [false,true])test('image slot pointer preserves measured coordinates; moved='+moved,async t=>{
@@ -293,8 +293,24 @@ test('reuses the task page across fresh navigations and finishes exactly once',a
   const f=await fixture(t);
   await f.run('navigate',{url:'https://v2-dd.chengji-inc.com/product/quick_edit',newTab:true});
   await f.run('navigate',{url:'https://v2-dd.chengji-inc.com/product/quick_edit',newTab:true});
-  assert.equal((await f.run('close_session')).closed,1);
+  assert.deepEqual(await f.run('close_session'),{closed:1,scope:'task_pages',browser_exit_requested:false});
+  const saved=JSON.parse(await fs.readFile(f.statePath,'utf8'));
+  assert.equal(saved.cleanup.phase,'finished');assert.deepEqual(saved.cleanup.owned_labels,['p1']);
   assert.equal((await f.run('list_tabs')).tabs.length,0);
   await assert.rejects(f.run('close_session'),{code:'ego_session_finished'});
   assert.equal(f.calls.filter(x=>x==='finish').length,1);
+});
+
+test('lost task cleanup receipt cannot trigger another finish or replacement task',async t=>{
+  const f=await fixture(t);let finishes=0;
+  f.task.finish=async()=>{
+    finishes++;const saved=JSON.parse(await fs.readFile(f.statePath,'utf8'));
+    assert.equal(saved.cleanup.phase,'finishing');assert.equal(saved.cleanup.browser_exit_requested,false);
+    throw Error('lost cleanup reply');
+  };
+  await assert.rejects(f.run('close_session'),/lost cleanup reply/);
+  const spaces=f.calls.filter(x=>Array.isArray(x)&&x[0]==='space').length;
+  await assert.rejects(f.run('close_session'),{code:'ego_cleanup_unknown'});
+  await assert.rejects(f.run('navigate',{url:'https://v2-dd.chengji-inc.com/product/quick_edit'}),{code:'ego_cleanup_unknown'});
+  assert.equal(finishes,1);assert.equal(f.calls.filter(x=>Array.isArray(x)&&x[0]==='space').length,spaces);
 });

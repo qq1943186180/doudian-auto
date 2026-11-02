@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import uuid
@@ -20,6 +21,32 @@ class EgoBridge(Bridge):
     @property
     def session_dir(self):
         return DATA_ROOT / 'ego-sessions' / hashlib.sha256(self.session.encode()).hexdigest()[:24]
+
+    def _check_pending(self, root):
+        pending = root / 'pending-command.json'
+        if not pending.exists():
+            return
+        try:
+            record = json.loads(pending.read_text(encoding='utf-8'))
+        except (ValueError, OSError) as exc:
+            raise DoudianError('ego_operation_unsettled', 'Ego待核查操作记录未完整读取，未发出新操作。') from exc
+        token = record.get('token', '') if isinstance(record, dict) else ''
+        if not re.fullmatch(r'[a-f0-9]{32}', token):
+            raise DoudianError('ego_operation_unsettled', 'Ego待核查操作记录异常，未发出新操作。')
+        output = root / f'{token}.result.json'
+        settled = None
+        if output.is_file():
+            try:
+                settled = json.loads(output.read_text(encoding='utf-8'))
+            except (ValueError, OSError):
+                pass  # A late result can still be in the middle of a write.
+        if (not isinstance(settled, dict) or type(settled.get('ok')) is not bool or
+                (settled.get('error') or {}).get('mayHaveLateEffects') is True):
+            raise DoudianError('ego_operation_unsettled',
+                'Ego上一操作尚未确认结束；未发出新操作，也未重放。请保留任务并核查晚到结果。')
+        # The result remains on disk as evidence. Consuming it never replays it or
+        # changes a product's unknown submission state.
+        pending.unlink()
 
     def _run(self, action, args=None):
         executable = shutil.which('ego-browser.cmd') or shutil.which('ego-browser')
@@ -44,15 +71,26 @@ class EgoBridge(Bridge):
         # No shell interpolation of product text, selectors or code. Never replay this
         # subprocess after timeout: even a failed command may have dispatched a save.
         with Lock(root / 'transport.lock'):
+            self._check_pending(root)
+            pending = root / 'pending-command.json'
+            pending.write_text(json.dumps({'token': token, 'action': action,
+                                          'run_id': self.run_id}), encoding='utf-8')
             try:
                 subprocess.run([executable, 'nodejs', '-e',
-                    "await import('" + script.as_uri() + "')"], capture_output=True,
+                    "await import('" + script.as_uri() + "')"],
+                    # The JSON result is written by the script. On Windows a CLI
+                    # child can inherit PIPE handles and keep communicate() stuck
+                    # after its parent times out. No pipes are needed here.
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
                     encoding='utf-8', errors='replace', timeout=65 if action == 'upload' else 35)
             except subprocess.TimeoutExpired as exc:
                 raise DoudianError('ego_transport_unknown', 'Ego操作超时，未重放；保存结果须只读核查。') from exc
             if not output.is_file():
                 raise DoudianError('ego_transport_unknown', 'Ego未返回操作结果，未重放；请按队列状态核查。')
             result = json.loads(output.read_text(encoding='utf-8'))
+            if (result.get('error') or {}).get('mayHaveLateEffects') is not True:
+                pending.unlink()
         if not result.get('ok'):
             error = result.get('error') or {}
             message = str(error.get('message', ''))
@@ -78,7 +116,10 @@ class EgoBridge(Bridge):
                     'transport': 'ego-native', 'error': exc.code}
 
     def require_ready(self):
-        if not self.status().get('running'):
+        status = self.status()
+        if status.get('error') == 'ego_operation_unsettled':
+            raise DoudianError('ego_operation_unsettled', 'Ego上一操作尚未确认结束；请核查晚到结果，未重放或恢复桌面。')
+        if not status.get('running'):
             raise WaitingHuman('ego_not_connected', 'Ego原生浏览器连接尚未就绪。')
 
     def command(self, action, args=None):
