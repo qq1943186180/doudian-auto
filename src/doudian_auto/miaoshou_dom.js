@@ -28,6 +28,17 @@
   if (op === 'query_button') return mark(all('button.J_filterFormSearch'));
   if (op === 'save_button') return mark(all('button.J_editProductSaveXhsProduct')
     .filter(button => text(button) === '保存到抖店(F)'));
+  if (op === 'navigation_toggle') {
+    const rows = all('.pro-table-custom-body-row').filter(row =>
+      (text(row).match(/商品ID[：:\s]*(\d{16,22})/) || [])[1] === String(p.product_id));
+    const buttons = rows.flatMap(row => [...row.querySelectorAll('button')]
+      .filter(button => text(button) === '编辑商品' && !button.disabled));
+    if (rows.length !== 1 || buttons.length !== 1 || buttons[0].getBoundingClientRect().right <= innerWidth)
+      return {count: 0};
+    return mark(all('aside .sidebar-icon').filter(el =>
+      el.closest('aside').getBoundingClientRect().width > 100 &&
+      [...el.querySelectorAll('use')].some(x => x.getAttribute('xlink:href') === '#icon-menu-narrow')));
+  }
   if (op === 'edit_button' || op === 'listing_button' || op === 'supplier_link') {
     const rows = [...document.querySelectorAll('.pro-table-custom-body-row')]
       .filter(row => (text(row).match(/\d{16,22}/g) || []).includes(String(p.product_id)));
@@ -45,6 +56,14 @@
     if (buttons.length === 1 && !visible(buttons[0]))
       buttons[0].scrollIntoView({block:'nearest',inline:'center',behavior:'instant'});
     return {...mark(buttons.filter(visible)), rows: rows.length};
+  }
+  if (op === 'information_tab') {
+    const dialogs = all('.product-edit-dialog');
+    if (dialogs.length !== 1) return {count: 0};
+    const ids = text(dialogs[0]).match(/(?:ID|商品ID)[：:\s]*(\d{16,22})/g) || [];
+    if (!ids.some(value => value.match(/\d{16,22}/)?.[0] === String(p.product_id))) return {count: 0};
+    return mark([...dialogs[0].querySelectorAll('[role="tab"]')].filter(el =>
+      visible(el) && text(el) === '商品信息' && el.getAttribute('aria-disabled') !== 'true' && !el.disabled));
   }
   if (op === 'dialog') {
     const dialogs = all('.product-edit-dialog');

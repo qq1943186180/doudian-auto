@@ -194,13 +194,30 @@ class MiaoshouEditor:
         self.bridge.command('fill', {'selector': self._mark_control('search_input'),
                                      'value': str(product_id)})
         self.bridge.command('click', {'selector': self._mark_control('query_button')})
+        navigation = self._visible_dom('navigation_toggle', product_id)
+        if isinstance(navigation, dict) and navigation.get('count') == 1:
+            self.bridge.command('click', {'selector': navigation['selector']})
         button = self._mark_control('edit_button', product_id)
         self.bridge.command('network', {'cmd': 'start'})
         prior = self.bridge.command('network', {'cmd': 'list', 'filter': BASE_EDIT_ENDPOINT}) or {}
         self._prior_edit_ids = {item.get('requestId') for item in prior.get('requests', [])}
         self.bridge.command('click', {'selector': button})
-        page = self._wait_tree(lambda snap: f'ID：{product_id}' in snap['tree_text'] and
-                               '商品标题：' in snap['tree_text'],
+        information_selected = False
+
+        def information_ready(snap):
+            nonlocal information_selected
+            if f'ID：{product_id}' not in snap['tree_text']:
+                return False
+            if '商品标题：' in snap['tree_text']:
+                return True
+            if not information_selected:
+                tab = self._visible_dom('information_tab', product_id)
+                if isinstance(tab, dict) and tab.get('count') == 1:
+                    information_selected = True
+                    self.bridge.command('click', {'selector': tab['selector']})
+            return False
+
+        page = self._wait_tree(information_ready,
                                '妙手商品信息窗没有加载目标商品。', seconds=30)
         # One-row search must produce one editing item. This prevents the left-side
         # multi-product navigator from silently switching to a neighbouring listing.

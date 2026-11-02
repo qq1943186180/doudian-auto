@@ -52,6 +52,37 @@ async function fixture(t) {
   return {run:(action,args={})=>runEgo({action,args,statePath,session:'test'}),calls,statePath,page};
 }
 
+for(const moved of [false,true])test('image slot pointer preserves measured coordinates; moved='+moved,async t=>{
+  const f=await fixture(t);let observations=0,inputs=[];
+  f.page.evaluate=async()=>++observations===1?
+    {count:1,x:40,y:80,actionable:true,imageSlot:true}:{x:moved?45:40,y:80};
+  f.page.click=async()=>{throw Error('Native click must not resize image slot');};
+  f.page.cdp=async(method,args)=>{if(method==='Input.dispatchMouseEvent')inputs.push(args);return {};};
+  if(moved)await assert.rejects(f.run('click',{selector:'[data-codex-miao-batch="observed"]'}),e=>e.code==='ego_target_not_unique');
+  else await f.run('click',{selector:'[data-codex-miao-batch="observed"]'});
+  assert.deepEqual(inputs.map(x=>[x.type,x.x,x.y]),moved?[]:[['mouseMoved',40,80],['mousePressed',40,80],['mouseReleased',40,80]]);
+});
+
+for(const [html,pointer] of [
+  ['<div class="replace-img-item"><div id="control" class="add-img-box"></div></div>',true],
+  ['<div class="select-product-filter-dialog"><button id="control">关闭</button></div>',true],
+  ['<div class="replace-image-dialog"><button id="control">确定</button></div>',true],
+  ['<div class="replace-image-dialog"><button id="control">删除</button></div>',false],
+  ['<button id="control" class="J_batchEditProduct">开始批量修改</button>',false],
+])test('measured pointer applies only to image view controls: '+html,async t=>{
+  const f=await fixture(t),{JSDOM}=require('jsdom');
+  const dom=new JSDOM(html,{url:'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field',runScripts:'outside-only'}),w=dom.window;
+  Object.defineProperty(w.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
+  w.HTMLElement.prototype.scrollIntoView=()=>{};
+  w.HTMLElement.prototype.getBoundingClientRect=()=>({x:20,y:60,width:40,height:40});
+  w.document.elementFromPoint=()=>w.document.getElementById('control');
+  f.page.evaluate=async(fn,arg)=>w.eval('('+fn.toString()+')')(arg);
+  let clicks=0,inputs=0;f.page.click=async()=>{clicks++;};
+  f.page.cdp=async method=>{if(method==='Input.dispatchMouseEvent')inputs++;return {};};
+  await f.run('click',{selector:'#control'});
+  assert.equal(inputs,pointer?3:0);assert.equal(clicks,pointer?0:1);
+});
+
 test('ordinary controls use the observed selector rather than a precomputed coordinate',async t=>{
   const f=await fixture(t);
   f.page.evaluate=async()=>({count:1,x:9999,y:9999,actionable:true,disabled:false});

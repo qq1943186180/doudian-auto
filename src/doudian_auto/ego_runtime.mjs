@@ -241,7 +241,11 @@ export async function runEgo(request) {
         if(nodes.length!==1)return {count:nodes.length};
         const el=nodes[0];el.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
         const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);
-        return {count:1,x,y,actionable:!!hit&&(hit===el||el.contains(hit)),disabled:!!el.disabled,fieldName:el.name||null};
+        const pickerControl=el.matches('.replace-image-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-dialog__headerbtn')||
+          (el.matches('.replace-image-dialog button,.select-product-filter-dialog button')&&/^(关闭|确定)$/.test(el.innerText.trim()));
+        const imageSlot=(el.matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box')||pickerControl)&&
+          location.hostname==='v2-dd.chengji-inc.com'&&location.pathname==='/product/batch/edit';
+        return {count:1,x,y,actionable:!!hit&&(hit===el||el.contains(hit)),disabled:!!el.disabled,fieldName:el.name||null,imageSlot};
       },args.selector);
       if(target.count!==1||!target.actionable||target.disabled)fail('ego_target_not_unique','No unique actionable current DOM target.');
       await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
@@ -249,7 +253,24 @@ export async function runEgo(request) {
         // Resolve the observed selector again through Ego's native action layer.
         // Its scroll/layout mapping can change after the precheck (notably under
         // a fixed viewport); dispatching the earlier DOM coordinates can miss.
-        result=await page.click(args.selector,{label:action==='fill'?'enter verified product content':'activate verified page control'});
+        if(action==='click'&&target.imageSlot){
+          // Native page.click may reset an emulated viewport before dispatch,
+          // moving an image slot underneath its earlier screen coordinates.
+          // Keep this pointer input in the measured CDP coordinate space.
+          const point=await page.evaluate(selector=>{
+            const xs=[...document.querySelectorAll(selector)];if(xs.length!==1)return null;
+            const el=xs[0],pickerControl=el.matches('.replace-image-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-dialog__headerbtn')||
+              (el.matches('.replace-image-dialog button,.select-product-filter-dialog button')&&/^(关闭|确定)$/.test(el.innerText.trim()));
+            if(!el.matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box')&&!pickerControl)return null;
+            const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);
+            return r.width>0&&r.height>0&&hit&&(hit===el||el.contains(hit))?{x,y}:null;
+          },args.selector);
+          if(!point||Math.abs(point.x-target.x)>1||Math.abs(point.y-target.y)>1)
+            fail('ego_target_not_unique','Image slot moved before pointer input.');
+          await page.cdp('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+          await page.cdp('Input.dispatchMouseEvent',{type:'mousePressed',...point,button:'left',clickCount:1});
+          result=await page.cdp('Input.dispatchMouseEvent',{type:'mouseReleased',...point,button:'left',clickCount:1});
+        }else result=await page.click(args.selector,{label:action==='fill'?'enter verified product content':'activate verified page control'});
         if(action==='fill'){
           await page.keyboard.press('ControlOrMeta+A');await page.keyboard.insertText(String(args.value??''));
           // Miaoshou replaces the product-ID input with a textarea on focus. The

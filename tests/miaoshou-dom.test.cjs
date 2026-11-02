@@ -24,6 +24,33 @@ test('ignores offscreen cached rows even when they have dimensions', () => {
   assert.equal(call('edit_button').count,1);
   assert.equal(w.document.querySelector('[data-codex-miao-target]').id,'live');
 });
+
+test('information tab requires exact dialog product and enabled observed tab', () => {
+  const {w,call}=fixture(`<div class="product-edit-dialog">ID：${pid}<button role="tab" id="info">商品信息</button></div>`);
+  const tab=w.document.getElementById('info');w.document.elementFromPoint=()=>tab;
+  assert.equal(call('information_tab').count,1);
+  assert.equal(call('information_tab',{product_id:'3850072653520044314'}).count,0);
+  tab.setAttribute('aria-disabled','true');assert.equal(call('information_tab').count,0);
+  tab.removeAttribute('aria-disabled');tab.textContent='SKU/价格库存';assert.equal(call('information_tab').count,0);
+});
+test('collapses only expanded navigation clipping the unique exact product action', () => {
+  const {w,call}=fixture('<aside><div class="sidebar-icon"><svg><use xlink:href="#icon-menu-narrow"></use></svg></div></aside>');
+  const icon=w.document.querySelector('.sidebar-icon'),aside=icon.parentElement,button=w.document.getElementById('live');
+  const rect=(left,width,top=100)=>({left,right:left+width,top,bottom:top+30,width,height:30});
+  aside.getBoundingClientRect=()=>rect(0,210);
+  icon.getBoundingClientRect=()=>rect(177,20);
+  button.getBoundingClientRect=()=>rect(1510,58);
+  button.parentElement.getBoundingClientRect=()=>rect(226,1218);
+  w.document.elementFromPoint=x=>x<210?icon:button;
+  assert.equal(call('navigation_toggle').count,1);
+  assert.equal(call('navigation_toggle',{product_id:'3850072653520044314'}).count,0);
+  assert.equal(call('navigation_toggle',{shop:'另一店'}).error,'wrong_shop');
+  aside.getBoundingClientRect=()=>rect(0,50);
+  assert.equal(call('navigation_toggle').count,0);
+  aside.getBoundingClientRect=()=>rect(0,210);
+  button.getBoundingClientRect=()=>rect(400,58);
+  assert.equal(call('navigation_toggle').count,0);
+});
 test('refuses two actionable rows and exact adjacent product ids', () => {
   const {call}=fixture(`<div class="pro-table-custom-body-row" data-y="200">商品ID：${pid}<button>编辑商品</button></div>`);
   assert.equal(call('edit_button').count,2);
