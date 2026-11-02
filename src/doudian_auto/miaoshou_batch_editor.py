@@ -50,6 +50,13 @@ def _batch_page_ready(snapshot, shop):
             parse_qs(parsed.query).get('batchType') != ['multi_field']):
         return False
     text = str(snapshot.get('tree_text') or '')
+    if snapshot.get('observation_kind') == 'native_snapshot':
+        # Native Snapshot describes the current viewport. The shop header can be
+        # offscreen after a resumable edit; bind route/form identity separately.
+        identity = snapshot.get('page_identity') or {}
+        # The ID textarea/title field are hidden in the initial range-mode form.
+        return (identity.get('shop') == shop and identity.get('batch_scope_tabs') == 1
+                and identity.get('batch_title_options') == 1)
     return (f'您好【{shop}】' in text and ('按商品ID修改' in text or '请输入商品ID' in text) and
             ('修改范围' in text or '综合修改(多字段修改)' in text))
 

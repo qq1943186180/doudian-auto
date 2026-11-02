@@ -10,6 +10,19 @@ from doudian_auto.miaoshou_batch_editor import (
 )
 
 
+def test_native_viewport_snapshot_requires_bound_offscreen_form_identity():
+    snapshot = {'url': 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field',
+        'observation_kind': 'native_snapshot', 'tree_text': 'currently visible image controls',
+        'page_identity': {'shop': '销霁百货', 'batch_id_fields': 0,
+                          'batch_title_fields': 0, 'batch_title_options': 1, 'batch_scope_tabs': 1}}
+    assert _batch_page_ready(snapshot, '销霁百货')
+    assert not _batch_page_ready(snapshot, 'another shop')
+    snapshot['page_identity']['batch_scope_tabs'] = 2
+    assert not _batch_page_ready(snapshot, '销霁百货')
+    snapshot.pop('page_identity')
+    assert not _batch_page_ready(snapshot, '销霁百货')
+
+
 def _form(tmp_path):
     old_mains = [f'https://p3-aio.ecombdimg.com/obj/ecom-shop-material/jpeg_m_old{i}_sx_123_www600-600'
                  for i in range(5)]

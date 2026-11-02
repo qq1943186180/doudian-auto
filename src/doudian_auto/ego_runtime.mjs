@@ -152,10 +152,13 @@ export async function runEgo(request) {
     if(current.count!==1||typeof args.checked!=='boolean'||(current.type==='radio'&&!args.checked))fail('ego_checkbox_not_unique','No unique observed enabled check control.');
     if(current.checked===args.checked)return {unchanged:true,checked:current.checked};
     if(native){
-      const selector='label:has('+args.selector+')';
+      // A method label can wrap its whole textarea/image form. Its center is
+      // not the switch. Use the observed visual box beside this exact input.
+      const selector='span:has(> '+args.selector+') > '+(current.type==='radio'?'.el-radio__inner':'.el-checkbox__inner');
       const labels=await page.evaluate(s=>[...document.querySelectorAll(s)].filter(x=>x.offsetParent!==null).length,selector);
       if(labels!==1)fail('ego_checkbox_not_unique','No unique native control label.');
       await page.click(selector,{label:'select verified modification option'});
+      await page.waitForFunction(p=>document.querySelector(p.selector)?.checked===p.checked,args,{timeout:3000});
       const checked=await page.evaluate(s=>document.querySelector(s)?.checked,args.selector);
       if(checked!==args.checked)fail('ego_checkbox_unconfirmed','Native control did not retain expected state.');
       return {changed:true,checked};
@@ -209,7 +212,17 @@ export async function runEgo(request) {
   }
   if(action==='evaluate')return {value:await page.evaluate(args.code)};
   if(action==='snapshot') {
-    if(native)return {url:await page.url(),observation_kind:'native_snapshot',tree_text:String(await page.snapshot()).slice(0,args.max_chars??26000)};
+    if(native){
+      const page_identity=await page.evaluate(()=>({
+        shop:(document.body.innerText.match(/您好【([^】]+)】/)||[])[1]??null,
+        batch_id_fields:[...document.querySelectorAll('textarea')].filter(x=>x.offsetParent!==null&&(x.placeholder||'').includes('请输入商品ID')).length,
+        batch_title_fields:[...document.querySelectorAll('textarea[name=inputNewContent]')].filter(x=>x.offsetParent!==null).length,
+        batch_title_options:[...document.querySelectorAll('input[type=checkbox][value=title]')].filter(x=>x.offsetParent!==null).length,
+        batch_scope_tabs:[...document.querySelectorAll('[role=tab]')].filter(x=>x.offsetParent!==null&&x.innerText.trim()==='按商品ID修改').length
+      }));
+      return {url:await page.url(),observation_kind:'native_snapshot',page_identity,
+        tree_text:String(await page.snapshot()).slice(0,args.max_chars??26000)};
+    }
     // DOM text avoids Ego's snapshot-ref file-lock failure. No fabricated refs.
     return await page.evaluate(max=>({url:location.href,observation_kind:'dom_text',tree_text:
       ((document.body?.innerText||'')+'\n'+[...document.querySelectorAll('input,textarea')]
@@ -265,10 +278,19 @@ export async function runEgo(request) {
           const xs=[...document.querySelectorAll(selector)].filter(el=>{
             for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;}
             const r=el.getBoundingClientRect();return r.width>0&&r.height>0;
-          });return {count:xs.length,disabled:!!xs[0]?.disabled,name:xs[0]?.name};
+          });return {count:xs.length,disabled:!!xs[0]?.disabled,name:xs[0]?.name,
+            imageFooter:xs.length===1&&xs[0].matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box')&&
+              location.hostname==='v2-dd.chengji-inc.com'&&location.pathname==='/product/batch/edit'&&
+              !!document.querySelector('.batch-edit-footer-ms')};
         },args.selector);
         if(observed.count!==1||observed.disabled)fail('ego_target_not_unique','No unique enabled native control.');
-        if(action==='click')result=await page.click(args.selector,{label:'activate verified product control'});
+        if(action==='click'){
+          // Live task5: native nearest-scroll left detail4's center underneath
+          // Miaoshou's fixed footer. Center only image slots on this proven route;
+          // native click still resolves/hit-checks the element and dispatches once.
+          if(observed.imageFooter)await page.evaluate(s=>document.querySelector(s)?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}),args.selector);
+          result=await page.click(args.selector,{label:'activate verified product control'});
+        }
         else {
           await page.fill(args.selector,String(args.value??''));
           const field={selector:args.selector,name:observed.name,value:String(args.value??'')};

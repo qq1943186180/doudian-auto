@@ -338,3 +338,26 @@ for(const lost of [false,true])test('native pilot saves once and never falls bac
   assert.equal(clicks,1);assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|DOM.focus/.test(x)),false);
   p.dom.window.close();
 });
+
+test('native method switch clicks its small box rather than the broad label containing a textarea',async t=>{
+  const f=await fixture(t),{JSDOM}=require('jsdom');
+  const dom=new JSDOM('<label><span><input id="choice" type="checkbox"><span class="el-checkbox__inner"></span></span><textarea>large method content</textarea></label>',{runScripts:'outside-only'}),w=dom.window;
+  Object.defineProperty(w.HTMLElement.prototype,'offsetParent',{get(){return w.document.body;}});
+  w.HTMLElement.prototype.getBoundingClientRect=()=>({width:14,height:14});
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,pages:{},interaction_mode:'native'}));
+  f.page.evaluate=async(fn,arg)=>w.eval('('+fn.toString()+')')(arg);
+  let clicks=0;f.page.click=async s=>{const target=w.document.querySelector(s);assert.equal(target.className,'el-checkbox__inner');clicks++;w.document.querySelector('#choice').checked=true;};
+  f.page.waitForFunction=async(fn,arg)=>assert.equal(await f.page.evaluate(fn,arg),true);
+  assert.equal((await f.run('checkbox',{selector:'#choice',checked:true})).checked,true);
+  assert.equal(clicks,1);dom.window.close();
+});
+
+test('observed fixed-footer image slots get centered before one native hit-checked click',async t=>{
+  const f=await fixture(t);let observations=0;const actions=[];
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,pages:{},interaction_mode:'native'}));
+  f.page.evaluate=async()=>{observations++;if(observations===1)return {count:1,disabled:false,imageFooter:true};actions.push('center');};
+  f.page.click=async()=>actions.push('native-click');
+  await f.run('click',{selector:'[data-observed-detail-source]'});
+  assert.deepEqual(actions,['center','native-click']);
+  assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|dispatchMouse/.test(x)),false);
+});

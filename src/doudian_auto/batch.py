@@ -316,13 +316,21 @@ def validate_agent_artifacts(path, expected_product_id, *, expected_shop=None,
     if len({item['sha256'] for item in records}) != len(records):
         raise DoudianError('duplicate_assets', '图片内容重复，已拒绝进入上传队列。')
     review = None
-    if require_visual_review:
+    raw_review = data.get('visual_review')
+    reuse_items = (raw_review.get('items') or []) if isinstance(raw_review, dict) else []
+    # Read-only recovery may reuse historical qualified revisions. It must still
+    # validate their actual provenance/reference review before allowing equal IDs.
+    has_reuse = any(isinstance(x, dict) and x.get('generator') == 'existing-qualified' for x in reuse_items)
+    if require_visual_review or has_reuse:
         from .visual_review import validate_visual_review
         review = validate_visual_review(data, records, manifest_path=path,
                                         product_id=expected_product_id, shop=expected_shop)
         if not review['approved'] and not allow_failed_review:
             raise DoudianError('visual_review_failed', '新图目视检查未通过，不得上传或保存。')
+    qualified_reuse = {(('mains' if x['kind'] == 'main' else 'details') + ':' + str(x['slot'])): x['asset_sha256']
+                       for x in reuse_items if x.get('generator') == 'existing-qualified'} if review and review['approved'] else {}
     return {'product_id': str(expected_product_id), 'title': title, 'assets': records,
+            'qualified_reuse': qualified_reuse,
             'visual_review': review,
             'asset_set_sha256': hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()}
 
@@ -1488,7 +1496,8 @@ def _matches_doudian_target(before, after, title, mappings):
             after_details[:4] == target_details and after_details[4:] == before_details[4:])
 
 
-def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings, *, asset_paths=None):
+def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings, *, asset_paths=None,
+                              qualified_reuse=None):
     """Resolve pre-save temp URLs to permanent IDs only after dual server readback."""
     expected = {*(f'mains:{slot}' for slot in range(1, 6)),
                 *(f'details:{slot}' for slot in range(1, 5))}
@@ -1519,9 +1528,13 @@ def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings,
             if resource_key(official_url) != final_key:
                 raise DoudianError('final_asset_platform_mismatch', f'{slot_key} 妙手与抖店图片ID不同。')
             old_urls = before_groups[group]
-            if slot <= len(old_urls) and resource_key(old_urls[slot - 1]) == final_key:
-                raise DoudianError('final_asset_unchanged', f'{slot_key} 保存后仍是原图片，目标替换未读回。')
+            unchanged = slot <= len(old_urls) and resource_key(old_urls[slot - 1]) == final_key
             prior = by_slot[slot_key]
+            reuse_hash = (qualified_reuse or {}).get(slot_key)
+            reused = bool(unchanged and reuse_hash == prior['source_sha256'] and asset_paths is not None
+                          and paths_by_slot.get(slot_key) and _digest(paths_by_slot[slot_key]) == reuse_hash)
+            if unchanged and not reused:
+                raise DoudianError('final_asset_unchanged', f'{slot_key} 保存后仍是原图片，目标替换未读回。')
             prior_is_permanent = (prior.get('asset_state') == 'permanent' or
                                   (not prior.get('asset_state') and is_permanent_material_url(
                                       prior.get('remote_url'), expected_key=prior.get('remote_key'))))
@@ -1536,6 +1549,8 @@ def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings,
                 if not path or _digest(path) != prior['source_sha256']:
                     raise DoudianError('artifact_manifest_changed', '保存后的素材本地哈希发生变化。')
                 final['content_verification'] = verify_material_content(miao_url, path)
+            if reused:
+                final['reused_qualified_existing'] = True
             finalized.append(final)
     if len(miaoshou_after.get('details') or []) != len(before_groups['details']) or \
             len(doudian_after.get('details') or []) != len(before_groups['details']):
@@ -1866,7 +1881,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                         'edit_url': f'https://{HOST}/ffa/g/create?product_id={item["product_id"]}'}, manifest['title'])
                     try:
                         final_mappings = _finalize_target_mappings(baseline, miao_after,
-                            official_after, mappings, asset_paths=[p for _, _, p in _target_asset_slots(manifest['assets'])])
+                            official_after, mappings, asset_paths=[p for _, _, p in _target_asset_slots(manifest['assets'])],
+                            qualified_reuse=manifest.get('qualified_reuse'))
                     except DoudianError:
                         final_mappings = None
                     shelf_policy = _warehouse_shelf_preservation(
@@ -2054,7 +2070,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                     miao_read, official, doudian_identity, manifest['title'])
                 try:
                     final_mappings = _finalize_target_mappings(miao_before, miao_after,
-                        official_after, mappings, asset_paths=asset_paths)
+                        official_after, mappings, asset_paths=asset_paths,
+                        qualified_reuse=manifest.get('qualified_reuse'))
                 except DoudianError:
                     final_mappings = None
                 shelf_policy = _warehouse_shelf_preservation(
