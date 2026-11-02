@@ -67,7 +67,9 @@ export async function runEgo(request) {
   state.spaceId=task.spaceId;
   state.active??='p1';
   await save();
+  const native=state.interaction_mode==='native';
   const ensureViewport=async page=>{
+    if(native)return; // Let Ego handle background layout and scrolling itself.
     let info=await page.info();
     let viewport=state.viewport;
     if(!viewport||viewport.width<=0||viewport.height<=0){
@@ -149,6 +151,15 @@ export async function runEgo(request) {
     },args.selector);
     if(current.count!==1||typeof args.checked!=='boolean'||(current.type==='radio'&&!args.checked))fail('ego_checkbox_not_unique','No unique observed enabled check control.');
     if(current.checked===args.checked)return {unchanged:true,checked:current.checked};
+    if(native){
+      const selector='label:has('+args.selector+')';
+      const labels=await page.evaluate(s=>[...document.querySelectorAll(s)].filter(x=>x.offsetParent!==null).length,selector);
+      if(labels!==1)fail('ego_checkbox_not_unique','No unique native control label.');
+      await page.click(selector,{label:'select verified modification option'});
+      const checked=await page.evaluate(s=>document.querySelector(s)?.checked,args.selector);
+      if(checked!==args.checked)fail('ego_checkbox_unconfirmed','Native control did not retain expected state.');
+      return {changed:true,checked};
+    }
     // Element Plus keeps the accessible input at zero size. The documented focus
     // wrapper rejects it, while DOM.focus + one trusted Space works even when the
     // Ego window is minimized. Never assign checked or dispatch synthetic events.
@@ -198,6 +209,7 @@ export async function runEgo(request) {
   }
   if(action==='evaluate')return {value:await page.evaluate(args.code)};
   if(action==='snapshot') {
+    if(native)return {url:await page.url(),observation_kind:'native_snapshot',tree_text:String(await page.snapshot()).slice(0,args.max_chars??26000)};
     // DOM text avoids Ego's snapshot-ref file-lock failure. No fabricated refs.
     return await page.evaluate(max=>({url:location.href,observation_kind:'dom_text',tree_text:
       ((document.body?.innerText||'')+'\n'+[...document.querySelectorAll('input,textarea')]
@@ -219,11 +231,18 @@ export async function runEgo(request) {
     if(action==='cdp') {
       if(!/^(Input\.(dispatchMouseEvent|dispatchKeyEvent|insertText)|Emulation\.setFocusEmulationEnabled)$/.test(args.method))
         fail('ego_cdp_scope','Unsupported browser input protocol.');
-      result=await page.cdp(args.method,args.params??{});
+      if(native){
+        if(args.method!=='Emulation.setFocusEmulationEnabled')fail('ego_native_input_required','Native pilot requires Page input controls.');
+        result={skipped:true};
+      }else result=await page.cdp(args.method,args.params??{});
     } else if(action==='activate_batch_save') {
       const observed=await page.evaluate(inspectBatchSave,args.guard);
       const precheck=message=>{const e=new Error(message);e.code='ego_save_precheck_failed';e.inputDispatched=false;throw e;};
       if(!observed.valid)precheck('Batch save control or bound product content changed: '+observed.reason);
+      if(native){
+        // The durable caller already persisted intent; dispatch exactly once.
+        result=await page.click('button.J_batchEditProduct',{label:'save verified single product revision'});
+      }else{
       await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:true});
       try {
         const doc=await page.cdp('DOM.getDocument',{depth:0});
@@ -236,10 +255,30 @@ export async function runEgo(request) {
         // Exactly one ordinary keyboard activation; errors after this point stay unknown.
         result=await page.keyboard.press('Enter');
       }finally{await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:false});}
+      }
     } else if(action==='upload') {
       result=await page.setInputFiles(args.selector,args.files??args.paths);
     } else {
       if(!args.selector||args.selector.startsWith('@'))fail('ego_refs_unsupported','Use freshly observed DOM selectors, not stale snapshot refs.');
+      if(native){
+        const observed=await page.evaluate(selector=>{
+          const xs=[...document.querySelectorAll(selector)].filter(el=>{
+            for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;}
+            const r=el.getBoundingClientRect();return r.width>0&&r.height>0;
+          });return {count:xs.length,disabled:!!xs[0]?.disabled,name:xs[0]?.name};
+        },args.selector);
+        if(observed.count!==1||observed.disabled)fail('ego_target_not_unique','No unique enabled native control.');
+        if(action==='click')result=await page.click(args.selector,{label:'activate verified product control'});
+        else {
+          await page.fill(args.selector,String(args.value??''));
+          const field={selector:args.selector,name:observed.name,value:String(args.value??'')};
+          const confirmed=await page.evaluate(p=>{
+            const xs=[...document.querySelectorAll('input,textarea')].filter(x=>x.offsetParent!==null&&(x.matches(p.selector)||p.name&&x.name===p.name));
+            return xs.length===1&&xs[0].value===p.value;
+          },field);
+          if(!confirmed)fail('ego_fill_unconfirmed','Native input differs from the exact intended value.');
+        }
+      }else{
       const target=await page.evaluate(selector=>{
         const nodes=[...document.querySelectorAll(selector)].filter(el=>{
           for(let p=el;p;p=p.parentElement){const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden')return false;}
@@ -298,6 +337,7 @@ export async function runEgo(request) {
           if(confirmed!==true)fail('ego_fill_unconfirmed','Input did not retain the expected value after blur.');
         }
       } finally { await page.cdp('Emulation.setFocusEmulationEnabled',{enabled:false}); }
+      }
     }
   } finally {
     if(capture){

@@ -314,3 +314,27 @@ test('lost task cleanup receipt cannot trigger another finish or replacement tas
   await assert.rejects(f.run('navigate',{url:'https://v2-dd.chengji-inc.com/product/quick_edit'}),{code:'ego_cleanup_unknown'});
   assert.equal(finishes,1);assert.equal(f.calls.filter(x=>Array.isArray(x)&&x[0]==='space').length,spaces);
 });
+
+test('native pilot leaves background viewport and focus to Ego and uses real Snapshot',async t=>{
+  const f=await fixture(t);
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,pages:{},interaction_mode:'native'}));
+  f.page.info=async()=>{throw Error('must not force viewport');};
+  f.page.snapshot=async()=> 'button [ref=2] text "观察到的按钮"';
+  const s=await f.run('snapshot');assert.equal(s.observation_kind,'native_snapshot');
+  assert.match(s.tree_text,/ref=2/);
+  f.page.evaluate=async()=>({count:1,disabled:false});
+  await f.run('click',{selector:'.replace-img-item .add-img-box'});
+  assert.equal(f.calls.filter(x=>Array.isArray(x)&&x[0]==='selector-click').length,1);
+  assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|DOM.focus|dispatchMouse/.test(x)),false);
+});
+
+for(const lost of [false,true])test('native pilot saves once and never falls back after lost click '+lost,async t=>{
+  const f=await fixture(t),p=savePage();let clicks=0;
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,pages:{},interaction_mode:'native'}));
+  f.page.evaluate=p.evaluate;
+  f.page.click=async s=>{assert.equal(s,'button.J_batchEditProduct');clicks++;if(lost)throw Error('lost response');return {};};
+  if(lost)await assert.rejects(f.run('activate_batch_save',{guard:p.expected}),/lost response/);
+  else await f.run('activate_batch_save',{guard:p.expected});
+  assert.equal(clicks,1);assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|DOM.focus/.test(x)),false);
+  p.dom.window.close();
+});

@@ -1,0 +1,62 @@
+import json
+
+import pytest
+
+from doudian_auto import batch
+from doudian_auto.errors import DoudianError
+from doudian_auto.rebaseline import rebaseline_external
+from doudian_auto.visual_review import file_hash
+from test_preflight import queue, _snapshot
+
+
+@pytest.mark.parametrize('mode', ['valid', 'unknown', 'attempted', 'missing', 'changed', 'price', 'unresolved'])
+def test_external_rebaseline_requires_resolved_history_and_full_dual_read(queue, tmp_path, mode):
+    row = queue.rows[0]
+    pid = row['product_id']
+    history = tmp_path / 'history.json'
+    history.write_text(json.dumps({'product_id': pid, 'phase': 'editing',
+                                  'submission_status': 'not_attempted'}))
+    batch.reconcile_observation(history, shop=row['shop'], db_path=queue.db)
+    official = _snapshot(row)
+    sku = official['sku_evidence']['rows'][0]
+    miao = {k: official[k] for k in ('product_id', 'title', 'mains', 'details')}
+    miao.update(shop=row['shop'], protected_complete=True, protected={'status': 1,
+        'specPrices': [{'skuId': sku['sku_id'], 'specDetailIds': sku['spec_ids'],
+                       'price': sku['price'], 'stockNum': sku['stock'],
+                       'stepStockNum': sku['step_stock'], 'code': sku['code'], 'skuStatus': sku['enabled']}]})
+    if mode == 'price':
+        miao['protected']['specPrices'][0]['price'] = '999.00'
+    proof = {k: row[k] for k in ('product_id', 'shop', 'target_version')}
+    proof.update(read_only=True, reviewer='test-reviewer', resolved_observations=[{
+        'evidence': {'path': str(history), 'sha256': file_hash(history)},
+        'resolution': 'unknown' if mode == 'unresolved' else 'no_save_attempted',
+        'reason': 'No save input in historical observation; fresh server baseline recovered.'}])
+    for key, data in (('miaoshou', miao), ('doudian', official)):
+        path = tmp_path / (key + '.json')
+        path.write_text(json.dumps(data), encoding='utf-8')
+        proof[key] = {'path': str(path), 'sha256': file_hash(path)}
+    if mode == 'missing':
+        del proof['doudian']
+    if mode == 'changed':
+        history.write_text('{}')
+    conn = batch._db(queue.db)
+    if mode == 'unknown':
+        conn.execute("UPDATE products SET submission_state='unknown' WHERE id=?", (row['id'],))
+    if mode == 'attempted':
+        conn.execute('UPDATE products SET submission_attempts=1 WHERE id=?', (row['id'],))
+    conn.close()
+    path = tmp_path / 'proof.json'
+    path.write_text(json.dumps(proof), encoding='utf-8')
+    if mode == 'valid':
+        result = rebaseline_external(row['id'], path, db_path=queue.db)
+        assert result['state'] == 'needs_agent'
+        assert result['target_version'] == row['target_version']
+    else:
+        with pytest.raises(DoudianError):
+            rebaseline_external(row['id'], path, db_path=queue.db)
+    conn = batch._db(queue.db)
+    final = dict(conn.execute('SELECT * FROM products WHERE id=?', (row['id'],)).fetchone())
+    assert final['state'] == ('needs_agent' if mode == 'valid' else 'blocked')
+    assert conn.execute('SELECT count(*) FROM external_observations WHERE task_id=?', (row['id'],)).fetchone()[0] == 1
+    assert final['submission_attempts'] == (1 if mode == 'attempted' else 0)
+    conn.close()

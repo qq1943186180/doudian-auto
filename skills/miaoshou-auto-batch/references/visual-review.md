@@ -18,7 +18,9 @@ Add `visual_review` to the existing manifest:
 }
 ```
 
-`items` must contain exactly `main:1..5` and `detail:1..4`. Each item has `kind` (`main` or `detail`), integer `slot`, `asset_sha256`, `generator` (`builtin-imagegen` or `existing-qualified`), `prompt` (`path` and SHA256 of the prompt actually used), and `checks`. Reused qualified assets still need their original prompt and a new comparison against this product's references.
+`items` must contain exactly `main:1..5` and `detail:1..4`. Each item has `kind` (`main` or `detail`), integer `slot`, `asset_sha256`, `generator` (`builtin-imagegen` or `existing-qualified`), `prompt` (`path` and SHA256 of the prompt actually used), and `checks`. Reused qualified assets need a new comparison against this product's references.
+
+For a historical `existing-qualified` output whose exact prompt was not retained, use `legacy_provenance: {exact_prompt_unavailable: true, manifest: {path, sha256}, asset: {path, sha256}}` instead of inventing a prompt. The original manifest must predate the fresh source snapshot, identify the same product and built-in ImageGen provenance, and bind the exact numbered slot to the original file outside the new task folder. Recognized historical manifests contain hashed `assets[].file` rows or ordered `main`/`detail` filename lists. Original and target hashes must match. This exception records the provenance gap explicitly; it cannot authorize new generations, reference-photo reuse, changed bytes, incomplete dimensions, or failed visual checks. Newly generated images always require the actual prompt.
 
 `checks` contains all five fact keys. Each check has `status` (`pass` or `fail`), `observed` (concrete visible details), and `reference_sha256` (one or more hashes from source references). Do not use blanket “pass/一致” descriptions. For example, a waistband printing check should say which visible letters are preserved, or record `fail` if letters disappear. Do not fabricate review evidence from metadata or a thumbnail too small to see the detail.
 

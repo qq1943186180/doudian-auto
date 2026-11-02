@@ -38,6 +38,47 @@ def _bound_file(record, base, code):
     return path
 
 
+def _legacy_provenance(item, asset, base, source_path, product_id):
+    """Retain historical built-in outputs without inventing their missing prompt.
+
+    This records provenance, not an assertion of visual quality. The normal fresh
+    reference/five-fact review remains mandatory for every reused slot.
+    """
+    record = item.get('legacy_provenance')
+    code = 'legacy_image_provenance'
+    if (item.get('generator') != 'existing-qualified' or not isinstance(record, dict)
+            or record.get('exact_prompt_unavailable') is not True):
+        raise DoudianError(code, '仅既有素材可声明原提示词缺失，不能用此路径代替新图提示词。')
+    manifest = _bound_file(record.get('manifest'), base, code)
+    original = _bound_file(record.get('asset'), base, code)
+    try:
+        data = json.loads(manifest.read_text(encoding='utf-8'))
+        historical = (manifest.stat().st_mtime < source_path.stat().st_mtime
+                      and not original.is_relative_to(base))
+        if str(data.get('productId')) != str(product_id) or not historical:
+            raise ValueError('not a historical product manifest')
+        kind, slot = item['kind'], item['slot']
+        listed = False
+        for row in data.get('assets', []):
+            name = row.get('file', '')
+            if re.fullmatch(rf'{kind}[-_]{slot}\.png', name):
+                listed = (original == (manifest.parent / name).resolve()
+                          and row.get('sha256') == asset['sha256'])
+        # The older clip manifest lists filenames instead of hashed asset rows.
+        names = data.get(kind, [])
+        if (isinstance(names, list) and len(names) >= slot
+                and isinstance(names[slot - 1], str)
+                and re.fullmatch(rf'{kind}[-_]{slot}\.png', names[slot - 1])):
+            listed = original == (manifest.parent / names[slot - 1]).resolve()
+        generation = json.dumps(data.get('imageGeneration', data.get('generatedWith', '')),
+                                ensure_ascii=False).lower()
+        if not (listed and re.search(r'built[ -]?in.{0,20}image[_ ]?gen', generation)
+                and file_hash(original) == asset['sha256']):
+            raise ValueError('asset slot or built-in generation not bound')
+    except (OSError, ValueError, TypeError, AttributeError):
+        raise DoudianError(code, '旧素材须绑定同商品、同槽位的历史内置生图清单和未改变的原文件。')
+
+
 def validate_visual_review(data, assets, *, manifest_path, product_id, shop=None):
     review = data.get('visual_review')
     if not isinstance(review, dict) or review.get('schema_version') != 1:
@@ -82,7 +123,10 @@ def validate_visual_review(data, assets, *, manifest_path, product_id, shop=None
             raise DoudianError('original_asset_not_revision', '原图测试素材不能计为全套换新图片。')
         if item.get('generator') not in GENERATORS:
             raise DoudianError('image_provenance_missing', '新图缺少内置生图或既有合格素材的来源记录。')
-        _bound_file(item.get('prompt'), base, 'image_prompt_changed')
+        if item.get('legacy_provenance') is not None:
+            _legacy_provenance(item, asset, base, source_path, product_id)
+        else:
+            _bound_file(item.get('prompt'), base, 'image_prompt_changed')
         checks = item.get('checks')
         if not isinstance(checks, dict) or set(checks) != set(CHECKS):
             raise DoudianError('visual_review_incomplete', '每张图必须逐项检查身份、颜色、数量、印字和规格。')
