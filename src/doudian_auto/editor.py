@@ -47,7 +47,9 @@ class Editor:
             try:
                 return self.dom('snapshot', manifest)
             except WaitingHuman as exc:
-                if exc.code != 'editor_not_ready':
+                # The product form can mount before the shop badge. Keep the same
+                # exact shop gate; only poll its absence within the read deadline.
+                if exc.code not in ('editor_not_ready', 'shop_not_confirmed'):
                     raise
                 return None
             except DoudianError as exc:
