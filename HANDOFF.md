@@ -5,6 +5,15 @@
 
 ## 给人的说明
 
+### T-20261102-004 · 194-76 · Ego关闭离线诊断
+
+- 状态：review；从干净5b74ed0接续，已在194-76公告。用户正在游戏，明确禁止桌面控制；本轮只分析本地日志/转储、代码与离线测试，没有恢复/重启/激活窗口，没有网页操作或商品写入。
+- 17:13/17:16两份dump均为0x517a7ed simulated exception；PID分别17468（gpu-process）/16976（browser），截至本轮仍在且创建时间都为11月1日22:40，排除了这两份dump代表当时进程终止的说法。不能因此确定窗口消失原因；原始转储不上传，摘要只在work/ego/ego-close-20261102/。
+- Windows真实父子进程离线复现：0.15秒预算、原PIPE实耗1.594秒，新DEVNULL0.156秒。Ego调用器去掉无用PIPE并隐藏CLI窗口；不终止Ego或游戏。结果仍走独立JSON文件。
+- 新增pending-command持久化：超时/断电/无结果时不再发下一条；部分写入、损坏记录或mayHaveLateEffects仍阻塞；完整晚到结果只解锁新观察，不重放旧保存，不改队列unknown。清理另持久化task_pages/不退出浏览器意图；finish回复丢失后不重复关闭/重建。
+- 代码500a710；67桥接/批量Python、78 JS通过，最后损坏记录检查另5桥接测试通过；skill仓库/Codex/WorkBuddy同步且结构校验通过。未新增TaskSpace，无本轮项目标签需要清理，旧已结束任务未重开。
+- 使用project-handoff记录本阶段；真实Ego长延迟及窗口消失修复尚未实页回归，遵守用户游戏约束。源码依据与离线证据见docs/miaoshou-reliability-20261029.md最新节。
+
 ### T-20261102-003 · 194-76 · 剩余商品续办
 
 - 状态：review（本阶段有结论，全仓未完成）；从干净63dc4fb接续，Linear已公告。证据work/ego/remaining-20261102/；session=miaoshou-remaining-20261102已finish、关闭4自有页，其他用途未动。

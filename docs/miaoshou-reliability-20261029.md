@@ -2,6 +2,22 @@
 
 来源：用户要求修复全仓优化的实际瓶颈；Linear 194-76；执行 codex-miaoshou-reliability。
 
+## 2026-11-02 Ego关闭的离线诊断与调用器修复
+
+用户游戏期间明确禁止桌面控制。本阶段不恢复/激活/重启窗口、不进行实页输入；此前用户Esc停止的桌面恢复也未作为修复成功证据。使用project-handoff维护T-20261102-004。实际窗口消失原因仍未完全定位，不能宣称Ego客户端已修好。
+
+两份原始dump的异常码均为`0x517a7ed`，对应PID17468（gpu-process，17:13:10）和16976（browser，17:16:00），版本0.6.1.13 beta。离线解析只提取流目录、异常、模块和白名单注释，未导出任意内存字符串，原转储未上传。两PID至本轮仍在且创建时间均为11月1日22:40，说明这些转储不是对应进程当时退出的证据。[Crashpad源码](https://chromium.googlesource.com/crashpad/crashpad/+/3e988865adb034df4b61aabd6e3683f68ef0a981/client/crashpad_client_win.cc)定义该码为simulated exception，用于非崩溃诊断；[微软异常结构](https://learn.microsoft.com/en-us/windows/win32/api/minidumpapiset/ns-minidumpapiset-minidump_exception)及[Crashpad注释结构](https://crashpad.chromium.org/doxygen/structcrashpad_1_1MinidumpCrashpadInfo.html)为解析依据。不能把异常地址位于chrome_elf.dll解释成该DLL导致闪退。
+
+在本机Windows用独立Python父/子进程复现继承输出管道：预算0.15秒，原capture_output PIPE方案实耗1.594秒才抛超时；去掉PIPE、使用DEVNULL后0.156秒。说明原调用器确有超时收尾被子进程输出句柄拖住的机制，但没有重跑Ego的35秒实页卡死，不能据此保证所有223秒案例都只有此原因。
+
+EgoBridge的JSON结果本来由独立脚本写文件，无需捕获CLI输出，现使用DEVNULL并以CREATE_NO_WINDOW启动后台调用器。只停止超时的调用进程，未新增全局taskkill、Browser.close、Ego重启或桌面按键。启动前持久化pending-command；超时、断电或无结果时，后续命令即使只读也先拒绝，避免旧输入晚到与新操作交错。完整晚到结果只解锁下一次观察，绝不重放先前命令或把商品unknown改为成功。未写完的JSON、损坏token或明确mayHaveLateEffects继续隔离，保留原结果证据。
+
+TaskSpace清理新增持久化意图：scope=task_pages、owned_labels、browser_exit_requested=false。正常finish后才记录finished；回复丢失后拒绝重复finish或重新打开空间。上轮4页正常清理记录不应被叙述为整个Ego退出。若实际窗口仍消失，需另查客户端窗口生命周期，当前程序修复没有改变未知的客户端内部逻辑。
+
+本地证据在忽略目录`work/ego/ego-close-20261102/{dump-summary,deadline-reproduction}.json`；测试含真实父子进程截止时间、待结束操作阻断、部分/晚到结果、不重放、损坏记录及关闭回复丢失。未借本次诊断修改商品或重新保存8件已verified任务。
+
+代码500a710。67项桥接/批量Python、78项JS检查通过；最后损坏记录处理另5项桥接测试通过。skill三处同步并通过结构校验。本阶段没有新建TaskSpace，没有项目网页需关闭；真实Ego的长延迟、未知操作恢复及窗口生命周期仍待遵守用户不控制桌面的约束后进行实页回归，不能用离线通过替代。
+
 ## 2026-11-02 剩余24件预检与实页续办
 
 24件原needs_agent逐件预检，初筛48/49/53三件，其余21件通过正常隔离入口记录缺失属性、非标准槽位、草稿驳回或完整SKU证据问题，网站写入0。原始失败、最终重复读取和图片/提示词/原始来源证据均保留在忽略目录`work/ego/remaining-20261102/`。空间9、12先后丢失，按用户既有自行恢复授权备份并恢复同名空间13，未操作其他任务空间。
