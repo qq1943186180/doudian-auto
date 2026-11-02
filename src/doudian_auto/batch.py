@@ -1939,6 +1939,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 miao = MiaoshouEditor(bridge, item['shop'], session=session)
                 miao.open_product(item['product_id'], fresh=True)
                 miao_before = miao.read_product(item['product_id'])
+                from .miaoshou_batch_editor import require_distinct_detail_sources
+                require_distinct_detail_sources(miao_before['details'])
                 if miao_before.get('protected', {}).get('startSaleType') is None:
                     raise DoudianError('shelf_mode_unknown',
                                        '妙手基线没有读回审核后的上架模式，未开始批量编辑。')
@@ -2136,7 +2138,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                          'protected_incomplete', 'baseline_incomplete',
                                          'official_sku_incomplete', 'sku_sources_disagree',
                                          'required_attributes_missing', 'required_attributes_unobserved',
-                                         'shelf_mode_unpreservable'}
+                                         'shelf_mode_unpreservable', 'writer_detail_source_collision'}
                         if fatal:
                             error_detail = None
                             if code in {'required_attributes_missing', 'required_attributes_unobserved'}:

@@ -202,6 +202,8 @@ def _validate_snapshot(snapshot, identity):
         raise DoudianError('writer_image_slots_incomplete',
             f'当前写入器需要正好5张主图和至少4张已就绪详情图；官方实读主图{main_count}张、'
             f'详情{detail_count}张（状态={snapshot["detail_status"]}），不作为新素材候选。')
+    from .miaoshou_batch_editor import require_distinct_detail_sources
+    require_distinct_detail_sources(snapshot['details'])
     batch.require_official_attributes(snapshot)
 
 

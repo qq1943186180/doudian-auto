@@ -1030,8 +1030,10 @@ def test_agent_preparation_parallelism_is_capped_at_three(tmp_path):
 
 
 @pytest.mark.parametrize('keep_session', [False, True])
-@pytest.mark.parametrize('required_missing', [False, True])
-def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, keep_session, required_missing):
+@pytest.mark.parametrize('failure_mode', ['ui', 'required', 'duplicate_detail'])
+def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, keep_session, failure_mode):
+    required_missing = failure_mode == 'required'
+    isolated = failure_mode != 'ui'
     ids = ['3850072900438720563', '3850072900438720564']
     source = tmp_path / 'products.json'
     source.write_text(json.dumps({'products': [
@@ -1063,7 +1065,9 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, k
     baseline = lambda pid: {
         'product_id': pid, 'shop': '销霁百货', 'shop_confirmed': True,
         'title': 'original', 'mains': [f'main-{i}' for i in range(5)],
-        'details': [f'detail-{i}' for i in range(4)], 'protected': protected_sections,
+        'details': (['detail-0', 'detail-1', 'detail-2', 'detail-1']
+                    if failure_mode == 'duplicate_detail' and pid == ids[0]
+                    else [f'detail-{i}' for i in range(4)]), 'protected': protected_sections,
         'draft_loaded': False, 'rejected': False, 'sku_evidence': sku_evidence(pid),
         'required_attributes': {'observed': True, 'completion_percent':0 if required_missing and pid == ids[0] else 100, 'fields': [{'name': '硬度', 'required': True,
             'values': [] if required_missing and pid == ids[0] else ['中硬']}],
@@ -1150,8 +1154,15 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, k
     result = batch.run_batch('http://127.0.0.1:10086', batch_id=batch_id, product_ids=ids,
                              limit=2, owner='test-writer', db_path=db, keep_browser_session=keep_session)
     assert [item['product_id'] for item in result['run']] == ids
-    assert result['run'][0]['state'] == ('blocked' if required_missing else 'editing')
-    assert result['run'][0]['resumable'] is not required_missing
+    assert result['run'][0]['state'] == ('blocked' if isolated else 'editing')
+    assert result['run'][0]['resumable'] is not isolated
+    if failure_mode == 'duplicate_detail':
+        assert result['run'][0]['reason'] == 'writer_detail_source_collision'
+        first = batch.batch_status(batch_id, db_path=db)['products'][0]
+        assert first['submission_attempts'] == 0
+        conn = batch._db(db)
+        assert conn.execute('SELECT upload_map_json FROM products WHERE id=?', (first['id'],)).fetchone()[0] == '[]'
+        conn.close()
     if required_missing:
         assert result['run'][0]['reason'] == 'required_attributes_missing'
         first=batch.batch_status(batch_id,db_path=db)['products'][0]
@@ -1161,7 +1172,7 @@ def test_batch_continues_after_one_product_ui_exception(tmp_path, monkeypatch, k
     assert FakeBridge.instances[0].commands.count('close_session') == (0 if keep_session else 1)
     assert result['browser_session_cleanup'] == ({'attempted': False, 'reason': 'same_goal_continues'}
                                                 if keep_session else {'attempted': True, 'closed': 0})
-    assert batch.batch_status(batch_id, db_path=db)['counts'] == {('blocked' if required_missing else 'editing'): 1, 'uploaded': 1}
+    assert batch.batch_status(batch_id, db_path=db)['counts'] == {('blocked' if isolated else 'editing'): 1, 'uploaded': 1}
 
 
 def test_old_readback_success_cannot_accept_a_new_upload_path(tmp_path):

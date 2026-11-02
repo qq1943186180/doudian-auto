@@ -54,6 +54,15 @@ def _batch_page_ready(snapshot, shop):
             ('修改范围' in text or '综合修改(多字段修改)' in text))
 
 
+def require_distinct_detail_sources(details):
+    """URL replacement affects every occurrence, including an unchanged tail."""
+    keys = [resource_key(url) for url in details]
+    if any(keys.count(key) != 1 for key in keys[:4]):
+        raise DoudianError('writer_detail_source_collision',
+            '前4张详情存在重复原图，或与保留尾图重复；妙手按图片查找替换会同时改动多个位置，'
+            '当前写入器不能逐位置替换，已停止生成或上传。')
+
+
 def validate_batch_form_state(state, *, product_id, shop, title, baseline, asset_paths):
     """Pure fail-closed check for the observed form and its per-product preview."""
     if not isinstance(state, dict):

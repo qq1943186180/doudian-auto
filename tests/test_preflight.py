@@ -209,6 +209,18 @@ def test_official_image_slots_must_satisfy_current_writer_before_generating_asse
     assert queue.db.read_bytes() == before
 
 
+@pytest.mark.parametrize('tail_collision', [False, True])
+def test_duplicate_detail_source_stops_before_assets_and_continues_queue(queue, browser, tail_collision):
+    snap = _snapshot(queue.rows[0], detail_count=5)
+    snap['details'][4 if tail_collision else 3] = snap['details'][1]
+    browser.snapshots[IDS[0]] = snap
+    before = queue.db.read_bytes()
+    result = _run(queue)
+    assert result['products'][0]['reason'] == 'writer_detail_source_collision'
+    assert result['candidate_product_ids'] == [IDS[1]]
+    assert queue.db.read_bytes() == before
+
+
 def test_concrete_read_exception_is_recorded_and_next_product_is_read(queue, browser):
     browser.snapshots[IDS[0]] = DoudianError('official_sku_incomplete', '官方完整SKU响应未读到')
     result = _run(queue)
