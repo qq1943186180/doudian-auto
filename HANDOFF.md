@@ -5,6 +5,18 @@
 
 ## 给人的说明
 
+### T-20261103-003 · 194-76 · 准备续办、读取恢复与本批两品上架
+
+- 状态：done（本批结案，非全仓完成）；从干净15db36f接续并Linear公告，Root唯一浏览器写入器。活体17verified/44blocked=61；19/42旧unknown各1次不变，不重存成功或未知任务。
+- 14袜子经新增recover-prepared审计入口恢复同版本旧9合格图；两轮新鲜双端57.96秒通过。内容保存1次328.41秒，超时后只读41.60秒恢复verified；34SKU/5主/前4详/尾7详情/商业字段通过，另一次上架69.93秒双端listed_verified。
+- 30拖鞋架6新图/3重新审核旧合格图、6次生成0重做；几次原生顶部勾选失败均0保存，候选position补丁实页未通过已撤回。完成错误结案后显式采用已有compatibility路径，内容350.80秒保存1次，1SKU/9目标图/尾11详及商业字段双端verified。
+- 30第一次上架工具明确结束报不可见，原请求/结果哈希及count1保留；新鲜双端仍仓库且内容不变后建立独立attempt2。守卫真实按钮后一次原生Enter，随后捕获新鲜非草稿响应并官方独立全字段/SKU核验为listed_verified；不将第二次结果归给首尝试，不重存图文。
+- 27杯架详2/3各重做一次仍把单端跨板挂臂画成双端跨前沿，Root与准备agent复核，按正常quarantine隔离、0上传0保存，严禁第三次生成或complete旧passed清单；全阶段11次内置生成，无付费API。
+- 49重复详情A,B,C,B,D：同空间实页整组替换预览四目标顺序和原尾图通过，复用4映射/0新上传/0保存/队列不变；正式模式保存守卫及双端验收仍待后续实现，v5碰撞守卫不得放开。
+- dd91a02/9474592/cdf1888/dd6c01d已推送：准备续办、仅精确卡住读取的单次关页审计恢复、Snapshot帧树精确超时标记文本读、初始店铺badge等待；553Python通过176.91秒、93JS通过，skill三处同步校验。技术细节docs/miaoshou-reliability-20261029.md。
+- session=miaoshou-prepared-recovery-20261103、空间31已正常finish关3自有页（卡住p1此前审计关1次），state.finished=true、无pending；未退出Ego、未动他用页。work/ego/prepared-recovery-20261103/{completion-results,cleanup}.json及各产品状态为证据，不按31重接。
+- 后续优先49正式整组详情模式及真实来源补缺属性；27/15/16/34/48视觉二败继续隔离。父194-76保持in_progress，全仓未完成。
+
 ### T-20261103-002 · 194-76 · 异常品分批推进
 
 - 状态：done（本批4件，非全仓完成）；从干净d7cf6e2接续并Linear公告。起点11verified/50blocked；终点活体15verified/46blocked=61，旧19/42仍unknown各1次，不重存已verified，不第三次生成失败槽。

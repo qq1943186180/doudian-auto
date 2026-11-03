@@ -2,6 +2,46 @@
 
 来源：用户要求修复全仓优化的实际瓶颈；Linear 194-76；执行 codex-miaoshou-reliability。
 
+## 2026-11-03 准备任务续办、卡住读取恢复与重复详情试验（T-20261103-003）
+
+从干净15db36f接续；空间30已结束，没有借用旧标签。本轮session=miaoshou-prepared-recovery-20261103、空间31，Root唯一浏览器写入器。初始15 verified/46 blocked；正式结果以work/ego/prepared-recovery-20261103/completion-results.json为准，全仓194-76继续。
+
+### 准备素材的审计恢复与官方读取时序
+
+`batch recover-prepared --task-id --proof`只接受blocked/official_repeat_snapshot_unstable:、零上传零保存、无基线/意图/读回/准备记录、无活跃或残留执行占用、无兄弟版本或官方活动任务的原行。它保留既有清单/目标版本/历史，严格核验完整视觉审核与素材哈希；proof绑定商品、店铺、版本、reviewer、manifest_sha256及恰好两轮带observed_at的双端文件哈希，每份文件及观测时间不超过30分钟。每轮必填、全部SKU、字段和有序图片互证；两轮完整保护字段与妙手审核原值严格一致。同一proof不可重用，仅恢复ready，正常写入前仍重新读取基线。14真实两轮57.96秒通过后经正常入口恢复，未手清状态。
+
+官方getSchema响应可能先于店铺标识挂载。`_stable_doudian_snapshot`在同一页等精确店铺/布局后再滚动；商家编码补证只在尚未读取任何SKU或navigation_id之前，允许shop_not_confirmed在原30秒预算内等待。验证码及已读行后店铺/页面变化立即拒绝，缺行不填空，不再把后台加载当成需要重新登录。对应dd91a02/dd6c01d；最终553 Python通过176.91秒，93 JS通过，skill三处同步并结构校验。
+
+14袜子复用旧9合格图，无新增生成；前置18.03/12.25秒两次零保存读取中断留档。实际图文保存一次328.41秒，读回导航等待load超时后仍unknown；另一次只读22.01秒同类超时，没有重存。依安装版SDK help将goto/reload等待条件改为domcontentloaded，随后41.60秒正常只读恢复verified。标题/5主/前4详/尾7详情/全34SKU及其他字段通过；另一次独立上架69.93秒，双端listed_verified，审核原值3，消费者前端未另访。
+
+### 无响应读取页的正式结案
+
+49现场先遇35秒传输超时，完整late导航结果到达后正常解锁观察，未删除marker或重放。之后p1的精确VISIBLE_DOM(navigation_toggle)返回EGO_PAGE_EVALUATION_TIMED_OUT、executionStopped=false/mayHaveLateEffects=true。安装版SDK明确说明此情形要先reload或close Page；普通命令仍被pending守卫阻止。
+
+新增`batch recover-read --session --proof`只认这条当前源码原样构造的navigation_toggle请求、精确错误标志、商品/店铺/会话/space/page/token和原request/result哈希，不接受其他evaluate、click或保存。关闭前持久化唯一意图；SDK确认精确quick_edit自有页后仅close一次，确认其他页标签保留，再由完整receipt结案原pending。丢响应只能消费late receipt，不能再次close/换Space；原result、requests与商品unknown状态不改。真实关闭31/p1一次，p2/p3保留，原请求及result字节保留。9474592；30专项测试与真实receipt通过，证据49-stalled-read-proof.json、49-stalled-read-recovery.json。
+
+新建的同空间p4随后遇原生Snapshot的Page.getFrameTree超时，但前面的身份evaluate已成功。cdf1888只对此精确无late-effects的帧树超时允许另标记dom_text_after_frame_tree_timeout的纯文本读取，无伪造refs，不替代SKU/字段检查。其他CDP错误、无响应evaluate和mayHaveLateEffects仍停止。49重新双端读取完整1SKU/5详情及所有原字段通过。不同自有页恢复沿用空间31，未重启Ego或动用户其他任务。
+
+### 新素材终审与单品状态
+
+27杯架、30拖鞋架均通过完整新鲜双端预检和必填100%，按正常rebaseline绑定全部历史accepted哈希，同一版本领取。两租约到期后按claim_next原商品/原版本重领，初始claim及SQLite备份保留，没有改版本绕过。课程免费GET超时重试一次后降级，无付费API。
+
+30旧main1/2/detail1与导出的before参考同哈希，无法当作已验证生成修订复用，补生2主+详1；旧合格main3–5重新检查复用，再生详2–4，共6次生成、0重做。三名素材协作者分别做27、30详2–4、30前缀；Root接手30最后source/逐图清单，真实SKU规格1、颜色随机，所有9图实看并严格validator/complete。原图中旧AI图和不相关片段不能作为唯一事实依据；30事实绑定真实结构/贴装照片和实际SKU，未新增承重数字或配件。
+
+27新详2/3各重做一次、详4一次，共5次生成。准备agent最初宣称9槽通过，结构化validator也通过；Root终审发现两个重做版虽可数12钩，却把真实单端跨板挂臂画成两端都跨在板前沿。准备agent复核同意。两槽均已用完重做机会，不第三次生成；原passed清单和全部首败/最终图保留，Root新建绑定哈希的root-visual-quarantine.json，经正常quarantine入口隔离，上传/保存均0。不能把格式校验或历史“qualified”当成真实外形通过，也不能再complete该旧passed清单。
+
+30原生流程在顶部desc勾选处多次被label拦截，全部0保存。底栏滚动已解决一种遮挡；own-label position候选单独实测成功，但完整fresh流程仍失败，候选代码/测试原样撤回，不能记作修复。完成原生错误结果核对、确认checked=false、零保存及无pending/执行占用后，持久化原state及哈希，显式新尝试改为已有compatibility路径；同空间31、原版本/清单/基线保持，不是对不确定保存的自动fallback。30最终compatibility流程350.80秒，图文保存仅1次；双端标题、5主、前4详、原尾11详、完整1SKU和所有其他保护字段通过。原生勾选前置失败104.50/18.84/61.23/64.42秒均记录，不能只报成功耗时。
+
+30独立上架首工具尝试先发生p1旧标签引用、关闭控件问题，随后已武装的点击返回完整“element is not visible in the viewport”工具失败；原token请求/结果及save_click_count=1保留，新鲜双端仍仓库且内容/保护字段不变。30-listing-failure-resolution.json只记录工具结束证据，不伪称绝无早期输入。另建attempt2，保留旧尝试不覆盖；关闭无修改提示后守卫精确商品行真实上架按钮，持久化未知意图后一次原生Enter。随后列表上架审核通过，普通SDK编辑点击未打开弹窗；在观察当前页后，用文档允许的CDP测量/命中守卫仅打开读取按钮一次，捕获观测时刻1793704073.065的新精确ID非草稿getProductBaseEditInfo响应（Python解析避免19位ID精度丢失），再独立官方全SKU/图片/保护字段比对通过。新状态30-listing-keyboard-state.json=listed_verified，审核原值3；仓库draftStatus0→3仅此独立上架证据中窄允许，不改内容保存比较器。attempt2从准备到最终核验1354.32秒，包含读取故障和调查间隔，不冒称网页纯执行耗时；消费者前端未另访。
+
+最终completion-results活体17verified/44blocked=61，14/30均独立listed_verified，27隔离、49仅预览，19/42旧未知各1次不变。全阶段11次内置生成（30六次、27五次），未新增付费API。结束空间31一次finish关3自有页，finished=true、无pending；先前卡住p1单次审计关闭另计，未请求退出浏览器。553Python/93JS为最终接受代码结果；96JS的owner-position候选已撤回，不能计入交付能力。
+
+### 49重复详情的无保存试验
+
+真实双端基线仍为A,B,C,B,D。当前v5碰撞守卫保持阻止上传/保存，不改成writer eligible；只读探针明确记录这一已知限制，并单独检查完整SKU/必填/保护字段。已实际观察详情方式8：`delDescImage`加`delDescImgType=processAddDeleteAll`，入口`label.el-radio:has(input[value=processAddDeleteAll]) .add-img-btn`，新增图片窗口可用逗号拼接最多30个链接。
+
+复用既有4张合格详情的上传映射并校验本地字节，整组表单设为目标1/2/3/4加原D尾图。真实单品预览完整呈现4个独立目标顺序及原尾图；4目标逐张远端内容核验、旧详情完整顺序也通过。该试验新上传0、商品保存0、队列状态未改，证据49-shadow-preview.json。正式支持仍需加入该模式专属的表单观察、完整目标/尾图保存守卫和保存后双端核查，不能直接解除v5碰撞隔离，也不能把预览当成保存完成。
+
 ## 2026-11-03 异常品续办：只读恢复及可选尺码列误判
 
 Task14 袜子的独立双端重复读取，34个完整SKU证据及全部价格库存值相同；官方价格库存/尺码表分区仅将四个相邻、未勾选、可用的可选列开关重新排列：靴筒围、靴筒高、鞋底厚、鞋跟高。新比较器只在完整官方SKU已先严格比较成功、分区名精确、四条记录各唯一且相邻、字段集合和checkbox/name/checked/disabled完全符合实测形态时，对这四条记录排序；不删字段、不排序SKU或价格，不接受缺失、选中、禁用或其他差异。11项新增测试含10类反例；全量471 Python通过（174.05秒）。
