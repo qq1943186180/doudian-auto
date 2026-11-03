@@ -1,9 +1,20 @@
 # 抖店本地上传
 
-更新：2026-11-03（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+更新：2026-11-03（Asia/Shanghai）；Agent：codex-miaoshou-reliability（最近一次写入：workbuddy-independent）。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261103-004 · 194-76 · WorkBuddy 独立测试 Ego 断线（0轮/1次进程退出/登录态被抹）
+
+- 状态：review（调查完成，被阻断）；Linear 已公告（comment cae6fc75）。外部 Agent=WorkBuddy，**Codex 全程未操作 Ego**，独立自建 2 个测试空间。证据 work/ego/workbuddy-independent-20261103/{REPORT.md,TIMELINE.md,evidence/RAW-ERRORS.md,evidence/E1-browser-process-exit.md,evidence/process-samples.csv,linear-comment.md}。
+- **商品只读 0/3 轮**，一轮未开始。要求读销霁百货 3848318346160374034（妙手+抖店各 3 轮），因登录态不可用而无法执行；未用 Default 空态硬跑充数、未换空间掩盖。
+- **发生 1 次真实断线：19:38:31→19:38:36，断在 browser 进程层（ego.exe 4→0，主 PID 16976 消失）**。排除控制连接断开（连接方已死）、排除空间 finish（本测试未调用，且 user 空间 29 一并消失）、排除命令超时（5 秒内立即断开）。两个 profile 均写 exit_type=Crashed；listTaskSpaces 崩溃前 1 个→崩溃后 []。19:38:37 外部自动拉起新树 PID 31716，非本测试动作；全程未 kill/close/finish/重启。
+- **不支持「Codex 导致断线」，但也未排除**：Codex 最后日志 19:36:09（早于故障 2m22s），状态写盘 19:37:40、残留 tmp 19:37:58，属收尾静默期；断线时无 codex.exe 进程、无 Codex 的 Ego 空间；唯一 Ego 客户端是本测试 CLI。→ 当期无并发窗口，属**未观测**而非已排除。
+- **阻断项（优先于断线处理）**：崩溃把唯一带登录态的 `Profile 1`（尚运 李）从注册表抹掉。profiles() 只剩 Default；profileId:"Profile 1" → `newTaskSpace: Profile not found`；Default 下妙手/抖店 100% 跳 fxg.jinritemai.com/login/common。目录与 cookie 完好（557,056 B / 1,177 条，jinritemai 27、chengji 14，sessionid 至 2026-12-31）但无法被选中。未手工改 Local State、未重新 import（避免覆盖 cookie）。需人工在 GUI 确认 profile 或备份后官方 import，否则需本人短信重登。
+- 稳定性旁证（Default 下只读，非业务）：控制连接压测 14/14 通过（goto 503–1,579ms）；6 轮快照+空间盘点 57.8 秒，第 6 轮快照 5,490→114 字符（29 秒后复查恢复 5,4xx，判单次采集瞬时降级）；19:39:43–19:53:35 共 66 采样点全存活，无二次退出。阴性证据：无 CrashDumps/WER/Application Error/Hang/Crashpad dmp、内存非耗尽、Ego 无运行日志 → 静默退出属黑盒，需开 LocalDumps 或 ETW。
+- 空间处置：自建 id 1、id 2 均 claim→finish({keep:[]}) 关闭，最终 listTaskSpaces=[]；**未重接空间 31、未触碰 user 空间 29(tbauto)**、其他用途页未动。未改项目代码/队列/设置、未用新增付费 API、未关闭或操作 Codex。
+- 下一步：P0 恢复 profile 登录态 → P1 同一脚本连跑 10–20 次判偶发/必现（Codex 离线作对照）→ P2 开 LocalDumps+ETW 补取证 → P3 Codex 在线/离线并发对照（本轮未覆盖，与「不同时操作 Ego」指令冲突，需用户授权）。父 194-76 保持 in_progress。
 
 ### T-20261103-003 · 194-76 · 准备续办、读取恢复与本批两品上架
 
