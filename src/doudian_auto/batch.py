@@ -1378,6 +1378,27 @@ def execution_readiness(endpoint, *, db_path=None):
             'reason': reason}
 
 
+def _scroll_details_after_schema_reload(editor, identity, *, seconds=30):
+    """The SKU reload can return before the exact shop badge mounts again."""
+    last_error = None
+    def ready():
+        nonlocal last_error
+        try:
+            editor.dom('scroll', identity, kind='details')
+            return True
+        except DoudianError as error:
+            if error.code not in ('shop_not_confirmed', 'editor_not_ready', 'editor_layout_changed'):
+                raise
+            last_error = error
+            return False
+    try:
+        editor.bridge.wait(ready, bool, '官方SKU重载后店铺与详情区域尚未就绪。', seconds=seconds)
+    except DoudianError as error:
+        if error.code == 'page_timeout' and last_error is not None:
+            raise last_error
+        raise
+
+
 def _stable_doudian_snapshot(editor, identity):
     """Read the official editor after its protected blocks stop mounting."""
     from .workflow import compare_protected
@@ -1392,7 +1413,7 @@ def _stable_doudian_snapshot(editor, identity):
         editor.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
                                       'params': {'enabled': True}})
         focused = True
-        editor.dom('scroll', identity, kind='details')
+        _scroll_details_after_schema_reload(editor, identity)
         editor.wait_details(identity, seconds=30)
         previous = None
         steady = 0

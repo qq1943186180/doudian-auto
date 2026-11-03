@@ -458,11 +458,15 @@ def test_optional_reports_keep_readonly_evidence_and_redact_credentials(queue, b
 
 
 def test_calls_shared_stable_reader_for_fresh_complete_snapshots(queue, monkeypatch):
+    from doudian_auto.bridge import Bridge as LiveBridge
     opens, commands = [], []
 
     class Bridge:
         def __init__(self, endpoint, *, session, timeout):
             assert session == SESSION
+
+        def wait(self, *args, **kwargs):
+            return LiveBridge.wait(self, *args, **kwargs)
 
         def command(self, action, args=None):
             assert action == 'cdp'

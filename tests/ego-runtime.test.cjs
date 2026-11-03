@@ -102,7 +102,8 @@ test('official SKU evidence comes from one UI reload and drops context tokens an
   f.page.url=async()=>url;
   const events=[];
   f.page.events=async()=>events.splice(0);
-  f.page.reload=async()=>{
+  f.page.reload=async options=>{
+    assert.deepEqual(options,{waitUntil:'domcontentloaded',timeout:15000});
     f.calls.push('reload');
     events.push({method:'Network.requestWillBeSent',params:{requestId:'schema-1',request:{
       url:'https://fxg.jinritemai.com/product/tproduct/getSchema',method:'POST'}}},
@@ -119,6 +120,18 @@ test('official SKU evidence comes from one UI reload and drops context tokens an
   assert.equal(result.completed,true);assert.equal(result.page_url,url);
   assert.equal(JSON.parse(result.body).data.context.product_id,'3850072653520044313');
   assert.equal(/secret-|do-not-store|not_evidence/.test(JSON.stringify(result)),false);
+});
+
+for(const lost of [false,true])test('navigation waits for DOM and never replays a timeout '+lost,async t=>{
+  const f=await fixture(t);let navigations=0;
+  const url='https://v2-dd.chengji-inc.com/product/quick_edit';
+  f.page.goto=async (target,options)=>{
+    assert.equal(target,url);assert.deepEqual(options,{waitUntil:'domcontentloaded',timeout:15000});
+    navigations++;if(lost)throw Error('navigation committed but response lost');
+  };
+  if(lost)await assert.rejects(f.run('navigate',{url}),/response lost/);
+  else await f.run('navigate',{url});
+  assert.equal(navigations,1);
 });
 
 test('official schema redaction refuses unsafe numeric product IDs',async()=>{
@@ -360,4 +373,24 @@ test('observed fixed-footer image slots get centered before one native hit-check
   await f.run('click',{selector:'[data-observed-detail-source]'});
   assert.deepEqual(actions,['center','native-click']);
   assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|dispatchMouse/.test(x)),false);
+});
+
+for(const mode of ['footer','other','clear','wrong-route','lost'])test('native checkbox obstruction handling '+mode,async t=>{
+  const f=await fixture(t),{JSDOM}=require('jsdom');
+  const url=mode==='wrong-route'?'https://v2-dd.chengji-inc.com/product/quick_edit':'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field';
+  const dom=new JSDOM('<label><span><input id="choice" type="checkbox"><span class="el-checkbox__inner"></span></span>详情图</label><div class="batch-edit-footer-ms"><div id="footer-hit"></div></div><div id="other"></div>',{url,runScripts:'outside-only'}),w=dom.window;
+  Object.defineProperty(w.HTMLElement.prototype,'offsetParent',{get(){return w.document.body;}});
+  w.HTMLElement.prototype.getBoundingClientRect=()=>({x:262,y:775,width:14,height:14});
+  let centers=0,clicks=0;
+  w.document.elementFromPoint=()=>w.document.querySelector(mode==='other'?'#other':mode==='clear'?'.el-checkbox__inner':'#footer-hit');
+  w.HTMLElement.prototype.scrollIntoView=function(){assert.equal(this.className,'el-checkbox__inner');centers++;};
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,pages:{},interaction_mode:'native'}));
+  f.page.evaluate=async(fn,arg)=>w.eval('('+fn.toString()+')')(arg);
+  f.page.click=async()=>{clicks++;if(mode==='lost')throw Error('lost native result');w.document.querySelector('#choice').checked=true;};
+  f.page.waitForFunction=async(fn,arg)=>assert.equal(await f.page.evaluate(fn,arg),true);
+  if(mode==='lost')await assert.rejects(f.run('checkbox',{selector:'#choice',checked:true}),/lost native result/);
+  else await f.run('checkbox',{selector:'#choice',checked:true});
+  assert.equal(centers,['footer','lost'].includes(mode)?1:0);assert.equal(clicks,1);
+  assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|dispatchMouse/.test(x)),false);
+  dom.window.close();
 });

@@ -121,7 +121,9 @@ export async function runEgo(request) {
     else if(Object.keys(state.pages).length) page=await task.newPage();
     state.pages[key]=page.label;state.active=page.label;await save();
     await ensureViewport(page);
-    await page.goto(args.url);
+    // The official editor can stay interactive while unrelated resources keep
+    // the load event pending. Field/identity readiness is checked by the caller.
+    await page.goto(args.url,{waitUntil:'domcontentloaded',timeout:15000});
     return {success:true,tabId:page.label,url:await page.url()};
   }
   if(action==='close_tab') {
@@ -155,8 +157,17 @@ export async function runEgo(request) {
       // A method label can wrap its whole textarea/image form. Its center is
       // not the switch. Use the observed visual box beside this exact input.
       const selector='span:has(> '+args.selector+') > '+(current.type==='radio'?'.el-radio__inner':'.el-checkbox__inner');
-      const labels=await page.evaluate(s=>[...document.querySelectorAll(s)].filter(x=>x.offsetParent!==null).length,selector);
-      if(labels!==1)fail('ego_checkbox_not_unique','No unique native control label.');
+      const labels=await page.evaluate(s=>{
+        const xs=[...document.querySelectorAll(s)].filter(x=>x.offsetParent!==null);
+        const r=xs.length===1?xs[0].getBoundingClientRect():null;
+        const onBatch=location.hostname==='v2-dd.chengji-inc.com'&&location.pathname==='/product/batch/edit';
+        const hit=onBatch&&r?document.elementFromPoint(r.x+r.width/2,r.y+r.height/2):null;
+        return {count:xs.length,footerOccluded:!!hit?.closest('.batch-edit-footer-ms')};
+      },selector);
+      if(labels.count!==1)fail('ego_checkbox_not_unique','No unique native control label.');
+      // A measured native click on the unselected detail switch hit the fixed
+      // footer. Center only this observed obstruction before one ordinary click.
+      if(labels.footerOccluded)await page.evaluate(s=>document.querySelector(s)?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}),selector);
       await page.click(selector,{label:'select verified modification option'});
       await page.waitForFunction(p=>document.querySelector(p.selector)?.checked===p.checked,args,{timeout:3000});
       const checked=await page.evaluate(s=>document.querySelector(s)?.checked,args.selector);
@@ -185,7 +196,7 @@ export async function runEgo(request) {
       fail('wrong_identity','Official SKU read requires the exact current product editor.');
     await page.cdp('Network.enable',{});await page.events();
     const started=Date.now(),requests=new Map();
-    await page.reload(); // UI reload only; never invoke or replay a business API.
+    await page.reload({waitUntil:'domcontentloaded',timeout:15000}); // UI reload only; no business API replay.
     while(Date.now()-started<30000){
       for(const event of await page.events()){
         const p=event.params??{},id=p.requestId;
