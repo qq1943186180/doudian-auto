@@ -225,6 +225,36 @@ def guard_siblings(jobs_root, product_id, exclude=None):
         '新任务不能绕过旧任务的提交保护。'.format(detail))
 
 
+def _inactive_size_option_content(block, *, full_skus_compared):
+    """Canonicalize only the four measured, unused size-column switches.
+
+    Task14's two fresh reads had identical 34-SKU evidence and all values,
+    but the platform permuted these four adjacent optional columns. Preserve
+    every record; never sort prices, selected columns or arbitrary inputs.
+    """
+    content = _content(block)
+    if not full_skus_compared or block.get('section') not in (
+            'goodsEditScrollContainer-价格库存', 'goodsEditScrollContainer-尺码表'):
+        return content
+    options = {'靴筒围(cm)', '靴筒高(cm)', '鞋底厚(cm)', '鞋跟高(cm)'}
+    inputs = content.get('inputs')
+    if not isinstance(inputs, list):
+        return content
+    positions = [i for i, row in enumerate(inputs)
+                 if isinstance(row, dict) and row.get('value') in options]
+    if len(positions) != 4 or positions != list(range(positions[0], positions[0] + 4)):
+        return content
+    rows = [inputs[i] for i in positions]
+    if ({row['value'] for row in rows} != options or any(
+            set(row) != {'type', 'name', 'value', 'checked', 'disabled'} or
+            row['type'] != 'checkbox' or row['name'] != '' or
+            row['checked'] is not False or row['disabled'] is not False for row in rows)):
+        return content
+    ordered = list(inputs)
+    ordered[positions[0]:positions[-1] + 1] = sorted(rows, key=lambda row: row['value'])
+    return {**content, 'inputs': ordered}
+
+
 def compare_protected(before, after):
     """Fail unless every field outside the writable scope is provably unchanged.
 
@@ -241,7 +271,8 @@ def compare_protected(before, after):
     `20,10` passed. Coverage gaps have to be fixed in the collector, not tolerated in the
     comparison.
     """
-    if 'sku_evidence' in before or 'sku_evidence' in after:
+    full_skus_compared = 'sku_evidence' in before or 'sku_evidence' in after
+    if full_skus_compared:
         from .official_skus import compare_official_skus
         compare_official_skus(before.get('sku_evidence'), after.get('sku_evidence'))
     baseline = _section_index(before)
@@ -275,8 +306,8 @@ def compare_protected(before, after):
     for name in sorted(current):
         if exempt(name):
             continue
-        left = _normalize_images(_content(baseline[name]))
-        right = _normalize_images(_content(current[name]))
+        left = _normalize_images(_inactive_size_option_content(baseline[name], full_skus_compared=full_skus_compared))
+        right = _normalize_images(_inactive_size_option_content(current[name], full_skus_compared=full_skus_compared))
         if left != right:
             raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
 
