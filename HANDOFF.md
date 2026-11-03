@@ -1,20 +1,22 @@
 # 抖店本地上传
 
-更新：2026-11-03（Asia/Shanghai）；Agent：codex-miaoshou-reliability（最近一次写入：workbuddy-independent）。
+更新：2026-11-03（Asia/Shanghai）；Agent：codex-miaoshou-reliability（最近一次写入：workbuddy-independent，20:28）。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
 
-### T-20261103-004 · 194-76 · WorkBuddy 独立测试 Ego 断线（0轮/1次进程退出/登录态被抹）
+### T-20261103-004 · 194-76 · WorkBuddy 独立测试 Ego 断线（抖店3/3轮成功、妙手0/3待授权、1次真实进程退出）
 
-- 状态：review（调查完成，被阻断）；Linear 已公告（comment cae6fc75）。外部 Agent=WorkBuddy，**Codex 全程未操作 Ego**，独立自建 2 个测试空间。证据 work/ego/workbuddy-independent-20261103/{REPORT.md,TIMELINE.md,evidence/RAW-ERRORS.md,evidence/E1-browser-process-exit.md,evidence/process-samples.csv,linear-comment.md}。
-- **商品只读 0/3 轮**，一轮未开始。要求读销霁百货 3848318346160374034（妙手+抖店各 3 轮），因登录态不可用而无法执行；未用 Default 空态硬跑充数、未换空间掩盖。
-- **发生 1 次真实断线：19:38:31→19:38:36，断在 browser 进程层（ego.exe 4→0，主 PID 16976 消失）**。排除控制连接断开（连接方已死）、排除空间 finish（本测试未调用，且 user 空间 29 一并消失）、排除命令超时（5 秒内立即断开）。两个 profile 均写 exit_type=Crashed；listTaskSpaces 崩溃前 1 个→崩溃后 []。19:38:37 外部自动拉起新树 PID 31716，非本测试动作；全程未 kill/close/finish/重启。
-- **不支持「Codex 导致断线」，但也未排除**：Codex 最后日志 19:36:09（早于故障 2m22s），状态写盘 19:37:40、残留 tmp 19:37:58，属收尾静默期；断线时无 codex.exe 进程、无 Codex 的 Ego 空间；唯一 Ego 客户端是本测试 CLI。→ 当期无并发窗口，属**未观测**而非已排除。
-- **阻断项（优先于断线处理）**：崩溃把唯一带登录态的 `Profile 1`（尚运 李）从注册表抹掉。profiles() 只剩 Default；profileId:"Profile 1" → `newTaskSpace: Profile not found`；Default 下妙手/抖店 100% 跳 fxg.jinritemai.com/login/common。目录与 cookie 完好（557,056 B / 1,177 条，jinritemai 27、chengji 14，sessionid 至 2026-12-31）但无法被选中。未手工改 Local State、未重新 import（避免覆盖 cookie）。需人工在 GUI 确认 profile 或备份后官方 import，否则需本人短信重登。
-- 稳定性旁证（Default 下只读，非业务）：控制连接压测 14/14 通过（goto 503–1,579ms）；6 轮快照+空间盘点 57.8 秒，第 6 轮快照 5,490→114 字符（29 秒后复查恢复 5,4xx，判单次采集瞬时降级）；19:39:43–19:53:35 共 66 采样点全存活，无二次退出。阴性证据：无 CrashDumps/WER/Application Error/Hang/Crashpad dmp、内存非耗尽、Ego 无运行日志 → 静默退出属黑盒，需开 LocalDumps 或 ETW。
-- 空间处置：自建 id 1、id 2 均 claim→finish({keep:[]}) 关闭，最终 listTaskSpaces=[]；**未重接空间 31、未触碰 user 空间 29(tbauto)**、其他用途页未动。未改项目代码/队列/设置、未用新增付费 API、未关闭或操作 Codex。
-- 下一步：P0 恢复 profile 登录态 → P1 同一脚本连跑 10–20 次判偶发/必现（Codex 离线作对照）→ P2 开 LocalDumps+ETW 补取证 → P3 Codex 在线/离线并发对照（本轮未覆盖，与「不同时操作 Ego」指令冲突，需用户授权）。父 194-76 保持 in_progress。
+- 状态：review（断线已定性、抖店已实测通过；妙手待用户授权）；Linear 已公告（comment cae6fc75，本轮结果另补 comment）。外部 Agent=WorkBuddy，**Codex 全程未操作 Ego**，独立自建 3 个测试空间。测试窗口 19:36–20:28（约 50 分钟）。证据 work/ego/workbuddy-independent-20261103/{REPORT.md,TIMELINE.md,evidence/E1..E4,RAW-ERRORS.md,process-samples*.csv,round-doudian-0*.log,wheel-*.log}。
+- **商品只读结果：抖店 3/3 轮全成功、`wroteNothing:true`；妙手 0/3 轮（卡一次性 ISV 授权页，需用户点「确认授权」）**。三轮抖店读到完全一致数据：title=`壁挂拖鞋架 浴室粘贴式双钩收纳架 颜色随机`(21字符)、imgCount=45、mainLike=9、detailLike=27、shopName/hasBasics=true、三层退出编辑均 `hadDialog:false`（无脏状态）。
+- **发生 1 次真实断线：19:38:31→19:38:36，断在 browser 进程层（ego.exe 4→0，主 PID 16976 消失）**。排除控制连接断开（连接方已死）、排除空间 finish（本测试未调用，且 user 空间 29 一并消失）、排除命令超时（5 秒内立即断开，exit code 0）。两 profile 均写 exit_type=Crashed；listTaskSpaces 崩溃前 1 个→崩溃后 []。19:38:37 外部拉起新树 PID 31716，非本测试动作；**全程未 kill/close/finish/重启**。此后至 20:28 **未再复发**（两段采样共 122 点，20:10:46–20:17:10 的 56 点零值 0，主 PID 30148 稳定）。
+- **不支持「Codex 导致断线」，本轮是强阴性但也未排除**：Codex 最后日志 19:36:09（早于故障 2m22s），状态写盘 19:37:40、残留 tmp 19:37:58 = 收尾静默期；断线时无 codex.exe、`ExecutablePath~codex`=0、无 Codex 的 Ego 空间；唯一 Ego 客户端是本测试 CLI(cli_count=1)。→ 当期**无并发窗口**，属**未观测**而非已排除。要真正回答须做 A/B 并发对照（P3，违反「不同时操作 Ego」指令，需授权）。
+- **阻断已解**：崩溃曾把唯一登录态 `Profile 1`(尚运 李) 从注册表抹掉（`newTaskSpace: Profile not found`，Default 下 100% 跳登录页）。用户处理后恢复为 **`Profile 2`(尚运 李, isDefault:true)**，抖店 `loggedIn:true`，无需短信重登。⚠️ **profile id 从 `Profile 1` 变为 `Profile 2`，任何硬编码 `profileId:"Profile 1"` 的脚本/配置现在都会失败**，须改用 `taskSpace(name)` 走默认或动态取 `profiles().find(p=>p.isDefault).id`。
+- **新发现（比断线更影响效率）：`mouse.wheel()` 单次阻塞 4–48 秒**。三组对照：example.com 基线 3,952/4,030 ms（`mouse.move` 单独就要 1,000 ms）；抖店列表页 26,153/19,095 ms（同页 `window.scrollTo` 仅 **8 ms**）；抖店表单页 36,878/37,210/41,084/40,349/48,350 ms（同页 `scrollTop` 仅 1,000 ms）。滚动占总耗时 87–91%。`scrollY` 恒 0 已实证为页面结构（外层 docH=docClient=1128 不可滚，真实容器 `div.styles_form__Ew_RZ` 4563/913、`div.styles_scrollBody__KKYBa` 6097/905），非滚动失败。**建议滚动改走 evaluate 定位容器后设 scrollTop/scrollIntoView，mouse.wheel 仅留给需真实滚轮事件的懒加载场景**（按指令未改代码）。附带观测：第 1 轮 151s 内 renderer PID 27920→15064 于 20:16:31 替换，主 PID 稳定、renderer 恒 7、页面未崩未重载，判为渲染进程回收重建而非断线，但会加剧 wheel 等待。
+- **妙手阻断（唯一未完成项）**：`v2-dd.chengji-inc.com/product/quick_edit` → `fuwu.jinritemai.com/authorize?service_id=234&from=isv.authorize`，标题「抖店服务市场-授权」，`isLoginPage:false`、`isAuthzPage:true`、`rows:0`，20:10 与 20:24 两次探测结果一致（稳定阻断）。授权范围含订单/物流/客服会话，属店铺所有者决策，**未代点**。用户点「确认授权」后可立刻补跑妙手 3 轮（脚本可复用 round-doudian-0*.mjs 改 URL/选择器）。
+- 稳定性旁证（Default 下只读，非业务）：控制连接压测 14/14 通过（goto 503–1,579ms，evaluate 0–26ms）；6 轮快照+空间盘点 57.8 秒，第 6 轮快照 5,490→114 字符（29 秒后复查恢复 5,4xx，判单次采集瞬时降级）。阴性证据：无 CrashDumps/WER/Application Error/Hang/Crashpad dmp、内存非耗尽（Available 4025MB）、Ego 无运行日志 → 静默退出属黑盒，需开 LocalDumps 或 ETW（需授权）。
+- 空间处置：自建 id 1、2、3 均 `claimTaskSpace`→`finish({keep:[]})` 关闭；空间3 终态 `{closedSpace:true, closedManagedLabels:["p1"], preservedUnmanagedCount:0}`；最终 `listTaskSpaces()`=**`[]`**、`ego-browser.exe` 残留 0、主进程 30148 存活。**未重接空间 31、未触碰 user 空间 29(tbauto)**、其他用途页未动。未改项目代码/队列/设置、未用新增付费 API、未关闭或操作 Codex。
+- 下一步：P0 用户点妙手「确认授权」→ 补跑 3 轮；P1 同一脚本连跑 10–20 次判偶发/必现（Codex 离线作对照）；P2 开 LocalDumps+ETW 补取证；P3 Codex 在线/离线 A-B 并发对照（需用户授权）；P4 滚动改 evaluate 路径（需批准改代码）。父 194-76 保持 in_progress。
 
 ### T-20261103-003 · 194-76 · 准备续办、读取恢复与本批两品上架
 
