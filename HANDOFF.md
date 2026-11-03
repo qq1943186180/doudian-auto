@@ -1,6 +1,6 @@
 # 抖店本地上传
 
-更新：2026-11-03（Asia/Shanghai）；Agent：codex-miaoshou-reliability（最近一次写入：workbuddy-independent，11-04 00:35）。
+更新：2026-11-03（Asia/Shanghai）；Agent：codex-miaoshou-reliability（最近一次写入：workbuddy-independent，11-04 00:52）。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
@@ -47,6 +47,24 @@
 - **更正我自己的误判**：00:23 我用 `Test-Path E:\pagefile.sys` 得到 `NO`，据此说「重启后两盘都没页文件」——**错的**。`pagefile.sys` 是受保护系统文件，非提权会话 `stat` 不了，`Test-Path` 会**静默返回「不存在」而非「拒绝访问」**。权威判据只有 `Win32_PageFileUsage` / `CommitLimit`。
 - **重启后验收四条**（用户执行并重启后按此复验）：`AutomaticManagedPagefile=False`；`PagingFiles=C:\pagefile.sys 16384 32768`；`Win32_PageFileUsage` 仅有 `C:\pagefile.sys` 且 Alloc=16384；`C:\pagefile.sys` 存在、`E:\pagefile.sys` 消失。
 - 重启后待办：① 按四条验收；② 重跑 `mouse.wheel` 递进实验（干净页 → 抖店表单页 → 回干净页）做前后对比；③ 重跑抖店 3 轮只读做前后对比；④ 结果回写 REPORT/Linear/本文件 + git。
+
+#### T-20261103-004 追加三：P0 页文件迁移已完成落地（00:34–00:50）
+
+证据：`evidence/E7-pagefile-migration-applied.md`
+
+- ✅ **pagefile 已从 `E:`（HDD）迁到 `C:\pagefile.sys`（NVMe），16384/32768 MB，生效。**
+- 🔴 **v1 失败过一次，暴露两个缺陷**：
+  - **直接报错**：`New-CimInstance : 属性"InitialSize"的类型不匹配`（`HRESULT 0x80041005`）。根因：`Win32_PageFileSetting.InitialSize/MaximumSize` 的 CIM 类型是 **`UInt32`**，而 PowerShell 字面量 `16384` 是 **`Int32`**，`New-CimInstance` 要求类型**精确匹配不做隐式转换**。修复：`[uint32]16384`。
+  - **更危险的设计缺陷**：v1 顺序「关自动管理 → 删旧设置 → **建 WMI** → **写注册表（最后）**」+ `$ErrorActionPreference='Stop'`，WMI 抛错后**永远走不到写注册表**，留下 **`PagingFiles` 为空 + 自动管理已关**。**若此时重启将完全没有页文件**（CommitLimit 40,424→15,848 MB，丧失转储能力）。
+  - **文案 bug**：`.cmd` 在退出码非 0/1 时兜底打印 `FAILED: not elevated`，但用户已提权成功（`privilege ok: LI\19431`）。已细分 0/1/2/其他。
+- **v2 修复原则：权威路径优先。** 关键认知——`HKLM\...\Memory Management\PagingFiles` 才是 **SMSS 开机真正读的值**，`Win32_PageFileSetting` 只是其 WMI 视图。故 v2 顺序改为「关自动管理（L52）→ **写注册表（L68，权威）** → 清旧 WMI（L96，非致命）→ 建新 WMI（L105，非致命）」，且任何关键失败自动回滚 `AutomaticManagedPagefile=True`。AST 校验 `注册表在 WMI 之前 = True`。`rollback-pagefile.ps1` 同步重写为「先开自动管理（安全态）→ 恢复注册表 → 清 WMI」，AST 校验顺序正确。
+- **七条独立证据交叉验证**：① `AutomaticManagedPagefile=False`；② `PagingFiles=C:\pagefile.sys 16384 32768`（1 元素）；③ `Win32_PageFileSetting` Init=16384(`UInt32`) Max=32768(`UInt32`)；④ `Win32_PageFileUsage` 报 `C:` Alloc=16384MB（**已切换**）；⑤ **E: 空闲 141.3→165.3 GB（+24.0 GB = 24576 MB 释放）**；⑥ **C: 空闲 86.8→72.2 GB（−14.6 GB）**；⑦ `CommitLimit` 40,424→**32,232 MB**（=15848+16384，差值精确）。**证据⑤⑥是磁盘空间实际增减，无法伪造，最硬。**
+- 🔴 **意外：不需要重启。** 脚本预期 `effective after reboot`，但 Windows **在线完成迁移**（`ExistingPageFiles` 变空、`PageFileUsage` 直接报 C:、E: 当场释放 24 GB）。前提是当时使用量极低（`Current` 仅 13 MB）。**仍建议重启一次**验证冷启动路径。
+- ⚠️ **副作用：Commit Limit 降 8,192 MB**（初始 24,576→16,384）。当前 Committed 12,326 MB 占新 Limit 38%，历史峰值仅 7,169 MB，够用。**若要恢复 40 GB 级或 full dump 能力，改 `24576 32768`。**
+- ✅ **wheel 前后对比：无改善，印证原判断。** 迁移前 24–41 / 11,976–48,350 / 39 / 24–41 ms → 迁移后 **42 / 12,031 / 30 / 26 ms**。结论：**页文件位置对 `mouse.wheel` 无影响**，wheel 代价取决于**页面状态**（DOM 复杂度 + 渲染进程累积残留），不是磁盘 IO 也不是内存压力。迁 NVMe 的价值在换页延迟（HDD ~5–10 ms vs NVMe ~0.05 ms）与释放 E: 24 GB，**别指望它治 wheel 慢**。正解仍是滚动改 `evaluate`。
+- **工具踩坑（重要）**：`ego-browser nodejs <file.mjs>` **不是**正确用法，会报 `ReferenceError: xxx is not defined`（把文件名首段当变量求值）。正确形式是 **stdin 重定向**：`ego-browser nodejs < script.mjs`。另外 ego runtime **只转发最终表达式**，`console.log` 内容不保证到达 stdout，脚本结尾须把结果 `JSON.stringify` 作为最后一个表达式。
+- **新增交付**：`post-reboot-verify.mjs`（重启后一键验收，5 项判定 + 盘符→物理盘映射，试跑 5/5 PASS）、`wheel-after-pagefile.mjs`、`FIX-empty-pagingfiles.cmd`。
+- **待办**：① 重启后跑 `post-reboot-verify.mjs` 验冷启动；② 决定是否改 `24576 32768`；③ wheel 改 `evaluate`（需批准改代码）；④ 妙手 3 轮（仍卡 ISV 授权）。
 
 ### T-20261103-003 · 194-76 · 准备续办、读取恢复与本批两品上架
 
