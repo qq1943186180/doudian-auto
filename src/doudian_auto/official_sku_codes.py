@@ -113,8 +113,20 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
     started = monotonic()
     deadline = started + seconds
     observed, navigation_id, rounds, operation = {}, None, 0, 'read'
+    initial_shop_error = None
     while monotonic() < deadline:
-        result = _probe(editor, operation, identity, navigation_id)
+        try:
+            result = _probe(editor, operation, identity, navigation_id)
+        except WaitingHuman as error:
+            # The fresh SKU response can precede the asynchronously loaded badge.
+            # Wait only before observing any rows/navigation; never hide a mid-read
+            # identity change or a verification prompt, and keep the same deadline.
+            if error.code != 'shop_not_confirmed' or navigation_id is not None or observed:
+                raise
+            initial_shop_error = error
+            sleep(min(0.2, max(0, deadline - monotonic())))
+            continue
+        initial_shop_error = None
         rounds += 1
         _require(result.get('product_id') == identity['product_id'] and
                  result.get('page_url') == reference['page_url'] and result.get('shop_confirmed') is True,
@@ -152,5 +164,7 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
         _require(type(pending) is int and pending >= 0)
         operation = 'scroll_pending' if result['ready'] and pending else 'read'
         sleep(min(0.2, max(0, deadline - monotonic())))
+    if initial_shop_error is not None:
+        raise initial_shop_error
     raise DoudianError('official_sku_code_incomplete',
                        f'官方UI商家编码在读取预算内仅确认{len(observed)}/{len(expected)}个SKU，缺失值未作为空值。')

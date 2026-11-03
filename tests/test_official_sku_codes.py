@@ -119,6 +119,31 @@ def test_human_takeover_propagates_without_further_probe_calls(probe):
     assert len(probe.calls) == 1
 
 
+def test_shop_badge_may_mount_after_schema_but_before_first_code_row(probe):
+    probe.frames = [WaitingHuman('shop_not_confirmed', 'badge mounting'),
+                    _frame([_row(sku) for sku in SKUS])]
+    evidence = _collect(probe)
+    assert evidence['complete'] is True
+    assert [call[0] for call in probe.calls] == ['read', 'read']
+
+
+def test_missing_initial_shop_never_supplies_an_empty_code(probe):
+    probe.frames = [WaitingHuman('shop_not_confirmed', 'absent')] * 100
+    with pytest.raises(WaitingHuman) as error:
+        _collect(probe, seconds=0.5)
+    assert error.value.code == 'shop_not_confirmed'
+
+
+def test_shop_loss_after_any_observed_rows_stops_without_retry(probe):
+    probe.frames = [_frame([_row(SKUS[0])], pending=2),
+                    WaitingHuman('shop_not_confirmed', 'badge lost'),
+                    _frame([_row(sku) for sku in SKUS])]
+    with pytest.raises(WaitingHuman) as error:
+        _collect(probe)
+    assert error.value.code == 'shop_not_confirmed'
+    assert len(probe.calls) == 2
+
+
 def test_request_time_and_row_order_do_not_change_stable_value_hash(probe):
     probe.frames = [_frame([_row(sku) for sku in SKUS])]
     proof = _collect(probe)
