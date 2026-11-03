@@ -341,6 +341,21 @@ test('native pilot leaves background viewport and focus to Ego and uses real Sna
   assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|DOM.focus|dispatchMouse/.test(x)),false);
 });
 
+for(const mode of ['frame-tree','unsettled','different-cdp'])test('native snapshot failure handling '+mode,async t=>{
+  const f=await fixture(t);let reads=0,snapshots=0;
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,pages:{},interaction_mode:'native'}));
+  f.page.evaluate=async()=>++reads===1?{shop:'销霁百货'}:{url:'https://v2-dd.chengji-inc.com/product/quick_edit',tree_text:'您好【销霁百货】\n商品快速编辑'};
+  f.page.snapshot=async()=>{snapshots++;throw Object.assign(new Error(mode==='different-cdp'?'Page.captureScreenshot timed out':'Page.getFrameTree timed out'),
+    {code:'EGO_CDP_REQUEST_TIMEOUT',...(mode==='unsettled'?{mayHaveLateEffects:true,executionStopped:false}:{})});};
+  if(mode==='frame-tree'){
+    const observed=await f.run('snapshot');assert.equal(observed.observation_kind,'dom_text_after_frame_tree_timeout');
+    assert.match(observed.tree_text,/销霁百货/);assert.equal(reads,2);assert.equal(observed.tree_text.includes('[ref='),false);
+  }else{
+    await assert.rejects(f.run('snapshot'),{code:'EGO_CDP_REQUEST_TIMEOUT'});assert.equal(reads,1);
+  }
+  assert.equal(snapshots,1);
+});
+
 for(const lost of [false,true])test('native pilot saves once and never falls back after lost click '+lost,async t=>{
   const f=await fixture(t),p=savePage();let clicks=0;
   await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,pages:{},interaction_mode:'native'}));

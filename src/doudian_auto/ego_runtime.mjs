@@ -231,8 +231,20 @@ export async function runEgo(request) {
         batch_title_options:[...document.querySelectorAll('input[type=checkbox][value=title]')].filter(x=>x.offsetParent!==null).length,
         batch_scope_tabs:[...document.querySelectorAll('[role=tab]')].filter(x=>x.offsetParent!==null&&x.innerText.trim()==='按商品ID修改').length
       }));
-      return {url:await page.url(),observation_kind:'native_snapshot',page_identity,
-        tree_text:String(await page.snapshot()).slice(0,args.max_chars??26000)};
+      try {
+        return {url:await page.url(),observation_kind:'native_snapshot',page_identity,
+          tree_text:String(await page.snapshot()).slice(0,args.max_chars??26000)};
+      } catch(error) {
+        // Live p4: identity evaluation succeeded, but Snapshot's frame-tree query
+        // timed out. A text read is sufficient for readiness, never for ref clicks.
+        if(error?.code!=='EGO_CDP_REQUEST_TIMEOUT'||!String(error.message).includes('Page.getFrameTree')||
+           error.mayHaveLateEffects===true||error.executionStopped===false)throw error;
+        const observed=await page.evaluate(max=>({url:location.href,tree_text:
+          ((document.body?.innerText||'')+'\n'+[...document.querySelectorAll('input,textarea')]
+            .filter(x=>x.offsetParent!==null).map(x=>x.getAttribute('placeholder')||'').join('\n')).slice(0,max)}),args.max_chars??26000);
+        return {...observed,observation_kind:'dom_text_after_frame_tree_timeout',page_identity,
+          native_snapshot_error:'EGO_CDP_REQUEST_TIMEOUT: Page.getFrameTree'};
+      }
     }
     // DOM text avoids Ego's snapshot-ref file-lock failure. No fabricated refs.
     return await page.evaluate(max=>({url:location.href,observation_kind:'dom_text',tree_text:
