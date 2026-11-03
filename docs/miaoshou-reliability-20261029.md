@@ -2,6 +2,18 @@
 
 来源：用户要求修复全仓优化的实际瓶颈；Linear 194-76；执行 codex-miaoshou-reliability。
 
+## 2026-11-04 WorkBuddy复核与妙手授权后三轮读取（T-20261104-001）
+
+WorkBuddy的37589b9..24b436d相对ebe0621仅修改HANDOFF，没有改浏览器适配器。本机独立查证页文件当前仅C:、初始16384/最大32768MB、自动管理关闭、活动分配16384MB；LastBootUpTime=00:42:32.5，System1074=00:41:49、6006=00:42:07、6005=00:42:42。所以成功观察证明重启后配置生效，不能支持其“无需重启在线迁移”结论。原报告采样19:38:31旧Ego主PID16976尚在、19:38:36进程零、19:38:41新PID31716，支持整树退出而非仅控制请求超时，触发原因仍未知。Codex未操作期间也复现，不能归因Codex；缺事件与不同时间内存余量不能完全排除瞬时/单renderer OOM。报告wheel-after-pagefile.log仍12031ms；迁移不构成滚动修复。
+
+用户完成授权后，沿唯一空间4（miaoshou-auth-test-20261104）接回正确销霁百货。在商品3848318346160374034上三次打开编辑，从页面实际发出的getProductBaseEditInfo读取新鲜isDraft=0响应，经Python原有parse_edit_response白名单解析、精确保留长ID。三次标题、5主/15详、完整保护字段均与30-listing-keyboard-state.after.miaoshou匹配；CDN主机轮换沿既有素材身份规则，未放宽SKU/字段。没有上传、编辑商品字段或业务保存/上下架授权动作。
+
+初始button:text-is查询未匹配，宽编辑selector发现17个旧节点，两者均在操作前拒绝；按新观察的J_filterFormSearch及完整ID唯一按钮后成功读取。第1/3轮原生退出成功，第2轮原生关闭未生效、等待10秒失败；焦点核验后的Enter触发“没有任何修改，无需操作”，已捕获事件无saveEditProductInfo/batchProcessProduct；测量点击也未完成退出。没有再次碰业务按钮，最终同页只读goto恢复。第3轮显式回商品信息页签再关闭，打开读取1140ms、全轮9660ms；仅一例，不宣称已修好。首轮tabpanel为空，不假称DOM全图已挂载，完整图文/字段比较来自新鲜响应。截图曾Page.captureScreenshot超时，原始结果保留。
+
+RESULT记录read_passed=3、native_open_read_close_passed=2、失败轮2；报告/快照/逐页签/请求路径及恢复证据在work/ego/miaoshou-auth-test-20261104/。没有运行代码修改或新离线测试，不替代保存与官方双端验收。finish一次收到closedSpace=true/closedManagedLabels=[p1]收据；同轮listTaskSpaces仍列空间4 user元数据及他用tbauto，保留此差异，不二次finish或抢占他用空间。旧空间31未重接。
+
+本轮活体17verified/44blocked=61，19/42旧unknown不动。HANDOFF原T003/004归档docs/handoff-history/T-20261103-003-004.md，原文含已被本节纠正的断言；后续Agent以本节复核边界及实时证据为准。下一步仍为原生退出/点击和慢滚动定位、49正式详情模式、真实来源补缺属性；素材二败不得第三次生成。
+
 ## 2026-11-03 准备任务续办、卡住读取恢复与重复详情试验（T-20261103-003）
 
 从干净15db36f接续；空间30已结束，没有借用旧标签。本轮session=miaoshou-prepared-recovery-20261103、空间31，Root唯一浏览器写入器。初始15 verified/46 blocked；正式结果以work/ego/prepared-recovery-20261103/completion-results.json为准，全仓194-76继续。
