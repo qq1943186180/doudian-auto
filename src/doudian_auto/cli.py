@@ -116,6 +116,9 @@ def parser():
     batch_recover_prepared = batch_sub.add_parser('recover-prepared', help='以两轮完整只读证据恢复尚未上传/保存的合格素材任务')
     batch_recover_prepared.add_argument('--task-id', required=True, type=int)
     batch_recover_prepared.add_argument('--proof', required=True)
+    batch_recover_read = batch_sub.add_parser('recover-read', help='凭审计证明关闭无响应的只读页面一次，保留其他页和未知保存')
+    batch_recover_read.add_argument('--session', required=True)
+    batch_recover_read.add_argument('--proof', required=True)
     batch_resume = batch_sub.add_parser('resume', help='检查可续办任务；加--apply后继续未提交或只读核查任务')
     batch_resume.add_argument('--batch-id')
     batch_resume.add_argument('--limit', type=int, default=1)
@@ -720,6 +723,14 @@ def run(args):
             if args.batch_command == 'recover-prepared':
                 from .prepared_recovery import recover_prepared_after_reads
                 return recover_prepared_after_reads(args.task_id, args.proof)
+            if args.batch_command == 'recover-read':
+                if args.endpoint != 'ego':
+                    raise DoudianError('ego_endpoint_required', '此读取恢复仅用于原生Ego，需指定--endpoint ego。')
+                from .ego_bridge import EgoBridge
+                from .stalled_read_recovery import recover_stalled_read
+                from .jobs import DATA_ROOT as recovery_root, Lock as recovery_lock
+                with recovery_lock(recovery_root / 'browser.lock'):
+                    return recover_stalled_read(EgoBridge(session=args.session), args.proof)
             if args.batch_command == 'repair-title':
                 if not 1 <= len(set(args.product_ids)) <= 10:
                     raise DoudianError('title_repair_scope', '标题补救必须指定1至10个不同商品ID。')
