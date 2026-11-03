@@ -18,6 +18,19 @@
 - 空间处置：自建 id 1、2、3 均 `claimTaskSpace`→`finish({keep:[]})` 关闭；空间3 终态 `{closedSpace:true, closedManagedLabels:["p1"], preservedUnmanagedCount:0}`；最终 `listTaskSpaces()`=**`[]`**、`ego-browser.exe` 残留 0、主进程 30148 存活。**未重接空间 31、未触碰 user 空间 29(tbauto)**、其他用途页未动。未改项目代码/队列/设置、未用新增付费 API、未关闭或操作 Codex。
 - 下一步：P0 用户点妙手「确认授权」→ 补跑 3 轮；P1 同一脚本连跑 10–20 次判偶发/必现（Codex 离线作对照）；P2 开 LocalDumps+ETW 补取证；P3 Codex 在线/离线 A-B 并发对照（需用户授权）；P4 滚动改 evaluate 路径（需批准改代码）。父 194-76 保持 in_progress。
 
+#### T-20261103-004 追加：内存假设核查（20:56–21:05，用户提问「有没有可能是内存不够」）
+
+- **结论：不是内存容量不够，但发现真实的配置错误。** 证据 work/ego/workbuddy-independent-20261103/evidence/E5-memory-hypothesis.md。
+- **排除内存耗尽的五条硬证据**：① 19:00–20:00 `Resource-Exhaustion-Detector`(2004) **零记录**（全历史仅 1 条，内容是「已成功记录 OS 信息」不是耗尽告警）；② 今日全天零 `Application Error`(1000)/`Hang`(1002)；③ `explorer`/`dwm`/`MsMpEng`/`Memory Compression`/85×`svchost` 全部始于 11-01 22:31 **未重启**；④ pagefile 峰值仅用 **29.2%**（7,169/24,576 MB）；⑤ **反向实验**：21:00 内存比 20:25 更紧张（可用 2,681 vs 4,025 MB），`mouse.wheel` 反而快 100 倍。
+- ⚠️ **差点误判**：`WER 1001` 里有 `BlueScreen P1:1e c0000005`，粗看像「19:38 附近蓝屏」，但时间点严格每 4 小时一次（00:00/04:51/08:48/12:52/16:11/20:45）→ 是**旧转储周期性重报**，19:38 不在其中。`WER ReportArchive` 今日无新报告。
+- 🔴 **真问题（P0，零成本）**：**pagefile 在 `E:\pagefile.sys`，E: 是 `WDC WD5000LPVX` HDD 机械盘（SATA）；而系统盘 C: 是 `CF600 512GB` NVMe SSD，闲置。** 应把 pagefile 移到 C:（C: 余 89 GB 够）。这属系统配置修改，**需用户确认后执行**，本轮未动。
+- 机器配置：15,848 MB（16 GB DDR5-5600 Micron），**单条单通道**（仅 ChannelA-DIMM1，DIMM2 空）；Commit Limit 40,424 MB；开机 46.4 小时。**建议 P1 加第二条 16 GB 组双通道**（容量+带宽双翻倍），与用户原计划一致。
+- 澄清一个排除：英雄联盟 `LeagueClient.exe` 启动于 **20:10:35**，**晚于 19:38 崩溃 32 分钟**，游戏不是崩溃时内存压力来源（初疑已排除）。
+- **`mouse.wheel` 结论重要修正（推翻初版）**：初版称「平台 ~4 秒固定底噪」是**错的**。递进实验（wheel-degrade.log）：干净 example.com **30 ms** → 抖店表单页 **11,976 ms** → 回 example.com **39 ms**。真实基线 24–41 ms；20:25 那次 4 秒是**旧 page 携带前序抖店渲染残留**。结论：wheel 慢**取决于页面状态**，与内存无关；且**复用 page 会累积劣化**（旧 page 4,000 ms vs 新 page 30 ms），若必须用 wheel 可考虑重页面切换后重建 page。第二变量（同页 11,976 vs 48,350 ms 差 4 倍）**仍未定位**，需 CDP 层日志。
+- 取证局限：系统**未开启性能计数器日志**，无法回看 19:38 内存曲线；`Win32_Process.PeakWorkingSetSize` 全返回 0；已退出进程不留痕迹。要可判定须开 `logman` MemTrace（命令见 E5 §6）。
+- 保留未排除：Chromium 渲染进程自有 OOM 路径可能**不写 Windows 日志**（本报告已记 renderer 27920→15064 替换），单 renderer 被杀可能导致主进程整体退出而不留 WER。需 LocalDumps+ETW 验证。
+- 临时空间：内存测试用的 id 4、5 均已 `finish({keep:[]})` 关闭，终态 `listTaskSpaces()`=**`[]`**；user 空间 29(tbauto) 仍未触碰。`page.close()` 与 `claimTaskSpace()` 写 state 时出现 `EPERM rename space-N.json`（文件被 `browser-host:30148` 持有），`finish` 仍成功，属可绕过的已知抖动。
+
 ### T-20261103-003 · 194-76 · 准备续办、读取恢复与本批两品上架
 
 - 状态：done（本批结案，非全仓完成）；从干净15db36f接续并Linear公告，Root唯一浏览器写入器。活体17verified/44blocked=61；19/42旧unknown各1次不变，不重存成功或未知任务。
