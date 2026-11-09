@@ -1,9 +1,18 @@
 # 抖店本地上传
 
-更新：2026-11-04（Asia/Shanghai）；Agent：codex-miaoshou-reliability。
+更新：2026-11-09（Asia/Shanghai）；Agent：codex-skill-optimize。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261109-001 · 194-155 · 抖店与妙手 skill 优化
+
+- 状态：done；仅技能/提示与文档，未操作浏览器、队列或线上商品。以当前代码核实 Claude 建议，保留用户既有明确授权，定义保存/发布/上架范围及提交前摘要，类目需明确授权，补属性必须有事实来源。
+- 抖店主文件精简为入口和状态表；新 references/title-lifecycle.md、environment-and-facts.md 明确 review/受控试用、事实JSON、解释器与脚本路径、免费RAG参数及降级，补 submitted 结案例外，未知提交不重发。
+- 妙手单品技能从已安装版纳入当前分支，保留两个参考文件，区分快速编辑人工记录与现有 miaoshou-auto-batch 程序闸门；Ego/Kimi按当前可用通道选用，旧Kimi样例仅限兼容路径。同步用户本轮结束关页约定。
+- 旧主文件及本轮腾出的两个旧HANDOFF块原文见 docs/handoff-history/2026-11-09-skill-source.md；不把历史验收或旧任务数量当当前能力。miaoshou-auto-batch程序及业务进度保持原记录。
+- 验证：两套canonical及三份安装副本结构有效、相对Markdown引用全部存在；离线title check/diagnose/apply dry-run通过，缺依赖提示实测退出2并明确两个scripts路径；仓库与Codex两技能、WorkBuddy已有抖店技能逐文件SHA256一致。无真实写入验收，title-only仍review。
+- 提交：技能 f083cbf；交接单独提交并push origin；Issue结果回写并读回；恢复入口为本块及两个skill主文件。验证记录仅在 work/skill-optimize/，不入Git。
 
 ### T-20261104-001 · 194-76 · 妙手授权后三轮只读测试
 
@@ -163,26 +172,7 @@
 - 现场：授权已恢复，同一TaskSpace8已完成程序单品双端读取、原图5主+4详情上传/预览9/9字节一致、尾10张保留，保存0次；固定原视口后严格双端基线复读通过，已结束空间并关闭本轮4个自有标签。证据在 `work/ego/reliability-20261029/`。
 - 后续：合格全套新图、当前版本3件连续完整保存/双端逐字段验收、官方虚拟SKU全量覆盖仍未完成；固定视口不代表隐藏SKU已遍历。技术结论与续办入口见 [docs/miaoshou-reliability-20261029.md](docs/miaoshou-reliability-20261029.md)。
 
-### T-20261026-002 · 194-76 · 妙手全仓优化程序与页面验收
-
-- 状态：in_progress；以下是修复前阶段记录，当前队列与浏览器入口以 T-20261029-001 为准。完整旧块已归档到 [docs/handoff-history/T-20261026-002-before-reliability.md](docs/handoff-history/T-20261026-002-before-reliability.md)。
-- 队列、最多3个agent领取、单写入器、逐槽上传、一次保存、双端读回及GUI已实现；生产writer仍关闭，原图测试不算全套新图验收。
-- 商品20/24/29是 verified_by_readback，保存尝试1/3/2次；不重复保存。商品24/29旧标题已修复，9张目标图、详情尾图和商业字段双端核验，均在仓库。
-- 旧版标题修复505c5e1在main；当时暂存的新上传实现afcc388已在本轮选择性接入并继续修订，不能继续按“尚未接入”处理。
-- 标题任务26884873当时显示完成/成功1/失败0；原始证据在 ~/.doudian-auto/title-repair-preflight/history-24.json。商品数据和图片不进Git。
-- startSaleType是审核后去向，仓库0→1仅按 preserve_warehouse_v1 明确策略比较；详见 [docs/miaoshou-shelf-policy.md](docs/miaoshou-shelf-policy.md)。未知保存、saveTempBatchTask不能重放。
-- Ego原图5主+4详情上传9/9字节一致，预览尾10张详情保留，复读基线一致，保存0次；耗时与通道边界见 [docs/ego-browser-evaluation-20261029.md](docs/ego-browser-evaluation-20261029.md)。
-- 女童裤缺腰头印字、宠物球孔位等旧AI候选不合格；三品当前写入器全链路验收仍待完成。旧素材在 work/acceptance-20261029/，原测试在 ~/.doudian-auto/ego-evaluation/20261029/。
-
-### T-20261026-001 · 194-52 · 交付后审查：补两处断档（WorkBuddy，Codex 复检通过）
-
-- 状态：done。对 194-52（Codex 2026-10-21 交付的 skill + 离线校验）做交付后审查，交付本身合格，但发现两处断档已修复。
-- **审查复现**：194-52 声称的 9 项校验全部独立复跑通过（4 素材 assets + 3 compare + 改价/错标题 2 负例）；仓库 141 Python + 24 jsdom 全过；git 干净、origin 已推、桌面快捷方式在、zip 备份完整。
-- **断档 1（高危，已修）**：`~/.workbuddy/skills/doudian-product-workflow` 副本自 194-52 当天安装后从未同步，与当天 zip 备份 diff 为 0 行——**带着已修复的标题下限 bug**：副本 `doudian_check.py` 自带计数规则下限 15 units，而 canonical 已修为 16（平台 8–30 汉字 = 16–60 字符）并改为委托已安装 `doudian_auto` 包（T-20261022-005）。本机任何 WorkBuddy 会话跑旧副本都会放行 15-unit 标题、提交被平台打回。已用 canonical 覆盖同步三处副本（workbuddy/codex/仓库字节一致，SHA-256 相同），实测 14 units 拒、15 units 拒、16 units 过。
-- **断档 2（已修）**：本仓库 `T-ID-MAPPING.md` 与 HANDOFF 此前无 194-52 记录（该单交接只存在于 Codex 会话 outputs 目录，不在任何 git 仓内，误删即失）。已补两行映射（T-20261026-001 + 原始的 T-20261021-003），并把 `skill-backup-20261021.zip`、`HANDOFF-codex-session-20261021.md`、`skill-checks-summary.json` 归档至 `docs/agent-workflow/history/194-52/`（与原始文件字节一致）。
-- **Codex 复检结论**：「核心修复到位，9 项独立校验全部符合预期。未发现高、中严重度问题」；仅余 2 处低级文档问题——本 HANDOFF 缺记录（即本条）与 `title.py` 模块注释残留 `15-60`（已改 `16-60`）。
-- **长期纪律**：skill 是三处安装（仓库 canonical + `~/.codex` + `~/.workbuddy`），**仓库改 canonical 后必须同步两个安装目录**，否则 WorkBuddy 侧会静默用旧规则。校验脚本的标题规则唯一事实源是已安装的 `doudian_auto` 包，不允许任何副本再自带计数实现。
-- Codex 调用方式已封装为 user 级 skill `codex-cli-review`（`~/.workbuddy/skills/`）：exe 路径含版本哈希会变，skill 内教 glob 发现；模板 `codex exec -s read-only --ephemeral -o <报告> "<prompt>"`。
+旧任务块 T-20261026-002/001 原文见 [技能优化前历史归档](docs/handoff-history/2026-11-09-skill-source.md)。
 
 ### 历史记录归档
 
@@ -231,6 +221,8 @@ doudian-auto --json verify '<返回的job_dir>'
 - 兼容旧素材校验脚本skills/.../scripts/doudian_check.py；其compare读取旧sections格式，CLI读回使用protected格式，不混用二者。
 
 ## 给下一个AI
+
+技能优化见最上 T-20261109-001 / 194-155；业务进展以最上业务任务块及其证据为准，以下旧接续段不作为活体进度。
 
 当前接续Linear 194-76与T-20261102-002，先读本文最上任务块；稳定Agent名codex-miaoshou-reliability。当前五品阶段空间4/session=miaoshou-five-tests-20261102尚在使用，只有Root操作浏览器。14/15/16已领取素材，17/44待领取；Root work脚本、原图与证据见work/ego/five-tests-20261102/。14本轮禁止上传保存，另外4款通过重复读取；先完成各自素材审核，不能将预检记作完整验收。地刮32/挂篮18已完整改版并上架；47仍unknown只读，19/42不重存。当前writer门槛2/3，通用writer关闭；每阶段收尾commit/push、回写194-76并读回。
 
