@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .bridge import is_native_endpoint
 from .errors import DoudianError
 from .materials import verify_material_content
 from .workflow import is_permanent_material_url, is_temporary_upload_url, resource_key
@@ -300,7 +301,7 @@ class MiaoshouBatchEditor:
         if state.get('unchanged'):
             return
         try:
-            if getattr(self.bridge, 'endpoint', None) == 'ego':
+            if is_native_endpoint(getattr(self.bridge, 'endpoint', None)):
                 self.bridge.command('checkbox', {'selector': f'input[data-codex-miao-checkbox="{marker}"]',
                                                  'checked': bool(checked)})
             else:
@@ -330,7 +331,7 @@ class MiaoshouBatchEditor:
         if state.get('unchanged'):
             return
         try:
-            if getattr(self.bridge, 'endpoint', None) == 'ego':
+            if is_native_endpoint(getattr(self.bridge, 'endpoint', None)):
                 self.bridge.command('checkbox', {'selector': f'input[data-codex-miao-checkbox="{marker}"]', 'checked': True})
             else:
                 self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})
@@ -778,7 +779,7 @@ class MiaoshouBatchEditor:
             "return {count:1}})()")
         if armed != {'count': 1}:
             raise DoudianError('miaoshou_batch_submit_button_unavailable', '最终提交按钮状态变化，尚未保存。')
-        if getattr(self.bridge, 'endpoint', None) == 'ego':
+        if is_native_endpoint(getattr(self.bridge, 'endpoint', None)):
             guard = self._save_guard(product_id, title, mappings)
             observed = self.bridge.command('batch_save_probe', {'guard': guard})
             if not isinstance(observed, dict) or observed.get('valid') is not True:
@@ -816,7 +817,7 @@ class MiaoshouBatchEditor:
         before_ids = {item.get('requestId') for item in before.get('requests', [])}
         self.bridge.command('network', {'cmd': 'start'})
         # This exact page-level button is distinct from each row's "保存修改" action.
-        if getattr(self.bridge, 'endpoint', None) == 'ego':
+        if is_native_endpoint(getattr(self.bridge, 'endpoint', None)):
             self.bridge.command('activate_batch_save', {'guard': self._save_guard(product_id, title, mappings)})
         else:
             self.bridge.command('click', {'selector': f'[data-codex-miao-batch="{marker}"]'})

@@ -9,7 +9,7 @@
 
 - 状态：done；用本机 Codex CLI（`-s danger-full-access --ephemeral`，只读审查、未改文件）对本轮 Ego 切换与验收做独立复核，报告存 `work/codex-review-20261110/codex-report.md`。
 - **Codex 结论：需修复后交付**，三个必修项全部处理完毕：
-  1. **`ego` 端点大小写/空白不一致**（中）→ 新增 `bridge.is_native_endpoint()` / `normalize_endpoint()` 作为唯一判定来源；`Bridge.__new__` 与 CLI `recover-read` 的 `args.endpoint != 'ego'` 裸比较统一改为调用它；`main()` 解析后立即归一化，`'EGO'` / `' ego '` 均识别为原生通道。补 4 条测试（3 个变体 + 1 条 CLI 端到端接受）。
+  1. **`ego` 端点大小写/空白不一致**（中）→ 新增 `bridge.is_native_endpoint()` / `normalize_endpoint()` 作为唯一判定来源；**全仓 6 处裸比较全部收敛**：`Bridge.__new__`、CLI `recover-read`、`preflight.py` 2 处、`miaoshou_batch_editor.py` 4 处；`main()` 解析后立即归一化，`'EGO'` / `' ego '` 均识别为原生通道。补 4 条测试（3 个变体 + 1 条 CLI 端到端接受）。复查 `grep -rn "== 'ego'" src/` 现只剩 `is_native_endpoint` 自身那一行。
   2. **HANDOFF「给下一个AI」段旧接续误导**（中）→ 该段原文写「当前接续 T-20261102-002、空间4/session 尚在使用、writer 门槛 2/3」，已过时。改为顶部显著提示 + 新增「当前状态（截至 2026-11-10 01:40）」块，旧接续段降级为「历史接续记录（写于 2026-11-02 阶段，已过时，仅供追溯）」并用删除线标出过时结论。
   3. **测试商品仍「售卖中」**（中）→ 已下架并刷新核实：行状态 `已下架`，按钮变 `上架`，toast「下架成功」。列表仍 57 件（下架不删）。
 - Codex 确认为**通过**的项：`test_stalled_read_cli` 改法保住了原测试意图未削弱；`DEFAULT_ENDPOINT` 常量被 Bridge/CLI/GUI 共用且与 `environment-and-facts.md` 的优先级描述一致；发布验收结论有证据支撑，但边界应表述为「发布提交链路跑通」而非「商品已最终生效」。
@@ -280,12 +280,12 @@ doudian-auto --json verify '<返回的job_dir>'
 > 🔴 **当前接续以本文最上面三个任务块为准**：T-20261110-003（Ego 发布链路验收）/ T-20261110-002（Ego 写入链路验收）/ T-20261110-001（Ego 只读验收），Linear 194-155。
 > 下方「历史接续记录」段落写于 2026-11-02 前后，其空间号、session 名、队列分布、writer 门槛数字**均已过时**，只作决策轨迹参考，**不得当作当前状态执行**。
 
-### 当前状态（截至 2026-11-10 01:40）
+### 当前状态（截至 2026-11-10 01:52）
 
 - **浏览器通道**：默认已是 Ego 原生（`--endpoint` 默认 `ego`），Kimi WebBridge 降为需显式传地址的兼容通道。写入链路与发布链路均已用 Ego 实测通过。
 - **队列活体**：61 件 = 17 verified + 44 blocked（其中 2 件 unknown，attempts=1）。查询命令见下方「数据与算法」，别引用旧任务块里的数字。
 - **本轮遗留待办**：测试商品 `3853110071722639434`（Ego 验收产物）**已下架**（2026-11-10 01:45 核实：行状态「已下架」，按钮变「上架」）。未删除，仍在列表计数 57 内，可按需删除。
-- **已知代码缺陷（未修）**：`ego_runtime.mjs` 在空间内所有页面关闭后，`task.page(state.active)` 仍返回 truthy 空壳，导致下一次 `navigate` 必失败（报 `page p1 was closed`）。绕过方式只能临时改 `session_dir/state.json`，**不是正式修复**。正解：复用前先确认目标标签仍存在，否则 `task.newPage()` 并持久化。
+- **已知代码缺陷（未修）**：`ego_runtime.mjs` 在空间内所有页面关闭后，`task.page(state.active)` 仍返回 truthy 空壳，导致下一次 `navigate` 必失败（报 `page p1 was closed`）。绕过方式只能临时改 `session_dir/state.json`，**不是正式修复**。Codex 给的最小改法（未落地，待授权实施）：navigate 分支先用 `const tabs = await task.tabs()` 取实时标签，`tabs.some(t => t.label === state.active)` 判断 active 是否存活；不存活的走 `await task.newPage()`；**关键**——路由缓存命中前也要用同一份 `tabs` 校验 `state.pages[key]`，不存在则删该 key 并新建，否则仍会通过过期缓存取回已关闭标签；最后按原逻辑写回 `state.pages[key]` / `state.active` 并 `save()`。
 
 ### 历史接续记录（写于 2026-11-02 阶段，已过时，仅供追溯）
 

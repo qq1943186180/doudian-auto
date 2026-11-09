@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from . import batch
-from .bridge import Bridge
+from .bridge import Bridge, is_native_endpoint
 from .editor import Editor
 from .errors import DoudianError
 from .jobs import HOST, Lock, write_json
@@ -267,7 +267,7 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                     if bridge is None:
                         bridge = Bridge(endpoint, session=session, timeout=25)
                         editor = Editor(bridge)
-                    if endpoint == 'ego':
+                    if is_native_endpoint(endpoint):
                         space_id = _existing_ego_space(bridge, space_id)
                         item['evidence']['space_id'] = space_id
                     identity = {'product_id': current['product_id'], 'shop': current['shop'],
@@ -308,7 +308,7 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                         item.update(state='skipped', reason=skip[0], message=skip[1],
                                     queue_state=current['state'], submission_state=current['submission_state'])
                         continue
-                    if endpoint == 'ego':
+                    if is_native_endpoint(endpoint):
                         _existing_ego_space(bridge, space_id)
                     item.update(eligible=True, state='eligible', message='新鲜官方读取通过，可领取同一目标版本准备素材。')
                 except Exception as exc:
