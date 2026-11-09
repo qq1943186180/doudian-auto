@@ -15,6 +15,8 @@
 - Codex 确认为**通过**的项：`test_stalled_read_cli` 改法保住了原测试意图未削弱；`DEFAULT_ENDPOINT` 常量被 Bridge/CLI/GUI 共用且与 `environment-and-facts.md` 的优先级描述一致；发布验收结论有证据支撑，但边界应表述为「发布提交链路跑通」而非「商品已最终生效」。
 - Codex 对 `ego_runtime.mjs` 缺陷的判断：与代码路径相符（`task.page()` 返回非空不等于标签仍打开），但「所有版本所有状态必失败」无法由单段代码证明；手改 `state.json` **不适合当通用恢复方案**（文件与运行时状态可能不同步），正解是复用前先校验目标标签存在、否则 `task.newPage()`。本轮**未修 runtime**，已记入当前状态待办。
 - 未修项（刻意保留）：`ego_runtime.mjs` 缺陷本身；Codex 建议的全仓 `127.0.0.1:10086` 二次检索（我判断剩余命中均在测试/兼容示例，属合理保留）。
+- **第二轮复核**（Codex 抓到我第一轮漏改）：`preflight.py` 2 处、`miaoshou_batch_editor.py` 4 处仍在裸比较 `== 'ego'`，规则漂移风险未全项目消除；另指出当前状态块时间 01:40 早于下架核实的 01:45。已全部修（commit `7480e8c`）。
+- **第三轮复核：Codex 判「可交付」**，四项全过：①`grep` 确认 src/ 只剩 `is_native_endpoint` 定义自身，无 `in ('ego',)`/字典键等其他形式；②`is_native_endpoint(None)` 返回 False，`getattr(...,None)` 不抛异常；③`bridge.py` 不反向依赖这两个模块，无循环导入；④相关测试 130 项通过（Codex 独立跑）。
 
 ### T-20261110-003 · 194-155 · Ego 发布链路端到端验收（同一测试商品走到提交）
 
