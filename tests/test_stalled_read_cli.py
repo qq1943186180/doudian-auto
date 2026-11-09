@@ -21,5 +21,12 @@ def test_stalled_read_cli_binds_native_session_and_proof(monkeypatch, capsys, tm
 def test_stalled_read_cli_rejects_non_native_endpoint(monkeypatch, capsys):
     monkeypatch.setattr(stalled_read_recovery, 'recover_stalled_read',
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not run')))
-    assert cli.main(['--json', 'batch', 'recover-read', '--session', 'owned-task', '--proof', 'proof.json']) == 1
+    assert cli.main(['--json', '--endpoint', 'http://127.0.0.1:10086', 'batch', 'recover-read',
+                     '--session', 'owned-task', '--proof', 'proof.json']) == 1
     assert json.loads(capsys.readouterr().out)['error']['code'] == 'ego_endpoint_required'
+
+
+def test_default_endpoint_is_native_ego(monkeypatch):
+    # The default browser channel is Ego native; Kimi HTTP is explicit-only.
+    parsed = cli.parser().parse_args(['doctor'])
+    assert parsed.endpoint == 'ego'

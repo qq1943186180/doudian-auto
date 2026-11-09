@@ -1,8 +1,9 @@
 """Observed, UI-driven writer for the authenticated Miaoshou quick editor.
 
-The adapter uses Kimi's browser controls for every page action. Network capture is
-read-only evidence from requests that the page itself made; this module never replays
-site write APIs.
+The adapter drives every page action through the selected browser channel (Ego native
+by default; Kimi HTTP bridge only as an explicit compatibility choice). Network capture
+is read-only evidence from requests that the page itself made; this module never
+replays site write APIs.
 """
 
 from __future__ import annotations

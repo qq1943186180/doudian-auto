@@ -6,7 +6,7 @@ import sys
 import time
 
 from . import __version__
-from .bridge import Bridge
+from .bridge import DEFAULT_ENDPOINT, Bridge
 from .editor import Editor
 from .errors import DoudianError
 from .jobs import DATA_ROOT, Lock, load_job, prepare, read_json, resolve_product, write_json
@@ -22,7 +22,7 @@ def parser():
     root = Parser(prog='doudian-auto', description='抖店本地上传：校验素材 → 上传预览 → 发布并重开核验。')
     root.add_argument('--json', action='store_true', help='输出稳定JSON结果')
     root.add_argument('--version', action='version', version=__version__)
-    root.add_argument('--endpoint', default=os.environ.get('DOUDIAN_BRIDGE_URL', 'http://127.0.0.1:10086'), help='本机Kimi连接地址，或ego使用Ego原生通道')
+    root.add_argument('--endpoint', default=os.environ.get('DOUDIAN_BRIDGE_URL', DEFAULT_ENDPOINT), help='浏览器通道：默认ego走Ego原生通道；Kimi兼容通道用本机HTTP地址')
     sub = root.add_subparsers(dest='command', required=True)
     sub.add_parser('doctor', help='检查本地服务、扩展与安装；不操作商品')
     resolve = sub.add_parser('resolve', help='编辑链接或商品ID转稳定标识')
@@ -815,7 +815,7 @@ def run(args):
     if args.command == 'doctor':
         status = bridge.status()
         ready = bool(status.get('running') and status.get('extension_connected') and not status.get('version_mismatch'))
-        return {'version': __version__, 'offline_ready': True, 'browser_ready':ready, 'auth_source':'当前浏览器登录态；不提取凭据', 'bridge':status, 'next': '可上传预览' if ready else '先完成本地准备；连接Edge Kimi扩展后再上传', 'data_root':str(DATA_ROOT)}
+        return {'version': __version__, 'offline_ready': True, 'browser_ready':ready, 'auth_source':'当前浏览器登录态；不提取凭据', 'bridge':status, 'next': '可上传预览' if ready else '先完成本地准备；让Ego原生浏览器连接就绪后再上传', 'data_root':str(DATA_ROOT)}
     editor = Editor(bridge)
     if args.command in ('upload','submit','verify'):
         workflow = Workflow(args.job, editor)

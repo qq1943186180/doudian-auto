@@ -9,14 +9,17 @@ from urllib.request import Request, urlopen
 from .errors import DoudianError, WaitingHuman
 
 
+DEFAULT_ENDPOINT = 'ego'
+
+
 class Bridge:
-    def __new__(cls, endpoint='http://127.0.0.1:10086', *args, **kwargs):
+    def __new__(cls, endpoint=DEFAULT_ENDPOINT, *args, **kwargs):
         if cls is Bridge and endpoint == 'ego':
             from .ego_bridge import EgoBridge
             return object.__new__(EgoBridge)
         return object.__new__(cls)
 
-    def __init__(self, endpoint='http://127.0.0.1:10086', session='doudian-auto', timeout=25):
+    def __init__(self, endpoint=DEFAULT_ENDPOINT, session='doudian-auto', timeout=25):
         parsed = urlparse(endpoint)
         if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1') or parsed.username or parsed.password:
             raise DoudianError('invalid_endpoint', '浏览器连接仅允许本机HTTP地址。')
@@ -37,7 +40,7 @@ class Bridge:
     def require_ready(self):
         status = self.status()
         if not status.get('running') or not status.get('extension_connected') or status.get('version_mismatch'):
-            raise WaitingHuman('browser_not_connected', '请在Edge连接Kimi扩展本地控制，再查看任务状态继续。')
+            raise WaitingHuman('browser_not_connected', '请先让Ego原生浏览器连接就绪，再查看任务状态继续。')
 
     def command(self, action, args=None):
         body = json.dumps({'action': action, 'args': args or {}, 'session': self.session}, ensure_ascii=True).encode()

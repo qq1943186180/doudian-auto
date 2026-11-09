@@ -6,7 +6,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, simpledialog, ttk
 
-from .bridge import Bridge
+from .bridge import DEFAULT_ENDPOINT, Bridge
 from .editor import Editor
 from .errors import DoudianError
 from .jobs import DATA_ROOT, load_job, prepare, read_json
@@ -15,7 +15,7 @@ from .batch import (batch_status, create_batch, execution_readiness, recover_exp
 from .workflow import Workflow
 
 
-def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
+def launch(endpoint=DEFAULT_ENDPOINT, smoke_test=False):
     root = tk.Tk()
     if smoke_test:
         root.withdraw()
@@ -232,7 +232,7 @@ def launch(endpoint='http://127.0.0.1:10086', smoke_test=False):
             if ok and action == 'prepare':
                 fields['job'].set(result['job_dir'])
             labels = {'prepare':'素材校验通过，任务已准备。','upload':'已上传预览，尚未发布。','submit':'已发布并重开核验。','verify':'已重开核验。'}
-            status.set((('连接正常。' if result.get('browser_ready') else '扩展未连接；可继续离线准备。') if action == 'doctor' else labels.get(action,'完成。')) if ok else result['message'])
+            status.set((('连接正常。' if result.get('browser_ready') else '浏览器未就绪；可继续离线准备。') if action == 'doctor' else labels.get(action,'完成。')) if ok else result['message'])
             # Keep GUI readable; full evidence is stored inside the task folder.
             summary = {k:v for k,v in result.items() if k not in ('manifest',)}
             log.insert('end',json.dumps(summary,ensure_ascii=False,indent=2)+'\n\n')
