@@ -24,8 +24,8 @@ def load_title_rules():
         sys.stderr.write(
             '需要已安装的 doudian_auto 包（标题规则以它为准）。\n'
             '请用项目虚拟环境运行，例如：\n'
-            '  <repo>/.venv/Scripts/python.exe scripts/doudian_check.py ...\n'
-            '若尚未安装：powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1\n'
+            '  <repo>/.venv/Scripts/python.exe <skill>/scripts/doudian_check.py ...\n'
+            '若尚未安装：在源码仓库根目录执行 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-local.ps1\n'
         )
         raise SystemExit(2)
     return title_rules
