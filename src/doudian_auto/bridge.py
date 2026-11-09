@@ -12,9 +12,25 @@ from .errors import DoudianError, WaitingHuman
 DEFAULT_ENDPOINT = 'ego'
 
 
+def is_native_endpoint(endpoint):
+    """Single source of truth for "does this endpoint mean the native Ego channel".
+
+    Bridge dispatch and every caller that needs to know whether the channel is native
+    must agree, so normalisation lives here instead of being repeated as a bare string
+    comparison. Only the literal name (any case, surrounding space allowed) is native;
+    anything else is treated as an HTTP endpoint and validated as such.
+    """
+    return isinstance(endpoint, str) and endpoint.strip().lower() == 'ego'
+
+
+def normalize_endpoint(endpoint):
+    """Canonical form of an endpoint: 'ego' for the native channel, else the raw string."""
+    return 'ego' if is_native_endpoint(endpoint) else endpoint
+
+
 class Bridge:
     def __new__(cls, endpoint=DEFAULT_ENDPOINT, *args, **kwargs):
-        if cls is Bridge and endpoint == 'ego':
+        if cls is Bridge and is_native_endpoint(endpoint):
             from .ego_bridge import EgoBridge
             return object.__new__(EgoBridge)
         return object.__new__(cls)

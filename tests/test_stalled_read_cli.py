@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from doudian_auto import cli, stalled_read_recovery
 
 
@@ -30,3 +32,29 @@ def test_default_endpoint_is_native_ego(monkeypatch):
     # The default browser channel is Ego native; Kimi HTTP is explicit-only.
     parsed = cli.parser().parse_args(['doctor'])
     assert parsed.endpoint == 'ego'
+
+
+@pytest.mark.parametrize('spelling', ['EGO', ' ego ', 'Ego'])
+def test_ego_endpoint_spelling_variants_are_the_same_channel(spelling):
+    # Bridge dispatch and the CLI's native-only checks must agree on one rule, or a
+    # differently spelled endpoint would silently become an HTTP endpoint and fail
+    # with an unrelated error.
+    from doudian_auto.bridge import Bridge, is_native_endpoint, normalize_endpoint
+    from doudian_auto.ego_bridge import EgoBridge
+
+    assert is_native_endpoint(spelling) is True
+    assert normalize_endpoint(spelling) == 'ego'
+    assert isinstance(Bridge(spelling), EgoBridge)
+
+
+def test_ego_spelling_variant_accepted_by_native_only_command(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr('doudian_auto.jobs.DATA_ROOT', tmp_path)
+    calls = []
+
+    def recover(bridge, proof):
+        calls.append(bridge.endpoint)
+        return {'recovered': True}
+    monkeypatch.setattr(stalled_read_recovery, 'recover_stalled_read', recover)
+    assert cli.main(['--json', '--endpoint', 'EGO', 'batch', 'recover-read',
+                     '--session', 'owned-task', '--proof', str(tmp_path / 'proof.json')]) == 0
+    assert calls == ['ego']

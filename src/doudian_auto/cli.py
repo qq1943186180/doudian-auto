@@ -6,7 +6,7 @@ import sys
 import time
 
 from . import __version__
-from .bridge import DEFAULT_ENDPOINT, Bridge
+from .bridge import DEFAULT_ENDPOINT, Bridge, is_native_endpoint, normalize_endpoint
 from .editor import Editor
 from .errors import DoudianError
 from .jobs import DATA_ROOT, Lock, load_job, prepare, read_json, resolve_product, write_json
@@ -724,7 +724,7 @@ def run(args):
                 from .prepared_recovery import recover_prepared_after_reads
                 return recover_prepared_after_reads(args.task_id, args.proof)
             if args.batch_command == 'recover-read':
-                if args.endpoint != 'ego':
+                if not is_native_endpoint(args.endpoint):
                     raise DoudianError('ego_endpoint_required', '此读取恢复仅用于原生Ego，需指定--endpoint ego。')
                 from .ego_bridge import EgoBridge
                 from .stalled_read_recovery import recover_stalled_read
@@ -849,6 +849,9 @@ def main(argv=None):
     json_mode = '--json' in arguments
     try:
         args = parser().parse_args(arguments)
+        # Normalise once here so every downstream comparison sees the same spelling.
+        # 'EGO' and ' ego ' are the same channel as 'ego'; anything else stays a URL.
+        args.endpoint = normalize_endpoint(args.endpoint)
         data = run(args)
         result = {'ok':True, 'data':data}
         code = 0
