@@ -25,7 +25,7 @@ description: 直接通过抖店后台修改现有商品标题或完整方主图�
 
 ## 环境与离线准备
 
-先读 [环境、事实文件与本地检查](references/environment-and-facts.md)，确认真实源码目录、项目 Python、CLI 与所选浏览器。当前直接抖店适配器依赖 Kimi WebBridge；浏览器未就绪时继续离线准备，保留任务，等待恢复。不要把批量程序的 Ego 通道当作此适配器已验证的替代品。
+先读 [环境、事实文件与本地检查](references/environment-and-facts.md)，确认真实源码目录、项目 Python、CLI 与所选浏览器。当前直接抖店适配器默认走 Ego 原生通道；浏览器未就绪时继续离线准备，保留任务，等待恢复。Kimi WebBridge 只是显式选用的兼容通道，不是默认路径。
 
 ```powershell
 doudian-auto --json title check --title '<最终标题>'

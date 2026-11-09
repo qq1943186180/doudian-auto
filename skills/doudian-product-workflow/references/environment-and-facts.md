@@ -20,7 +20,9 @@ $projectPython = Join-Path $repo '.venv/Scripts/python.exe'
 
 脚本 `assets` 要求五张不重复方主图，命名 `main_01_*.jpg` 到 `main_05_*.jpg`，详情以 `detail_` 开头；接受的实际扩展名为 jpg/jpeg/png。局部替换不套用整套数量规则。`compare` 只比较旧 `sections` 快照实际采到的内容；CLI 的 `protected` 格式另由程序核验。
 
-直接抖店适配器使用 Kimi WebBridge 登录态，端点优先级 `--endpoint` > `DOUDIAN_BRIDGE_URL` > `http://127.0.0.1:10086`。先读当前可用的 `kimi-webbridge` 操作协议，`doctor` 失败再读可用的 `kimi-webbridge-boot`；从当前技能清单定位文件，不写死 WorkBuddy 路径。缺少桥接/浏览器时可离线 prepare，不执行 upload/submit。服务修复涉及 stop/restart/upgrade 时确认其在现有授权内；不自动重放写请求、不导出 Cookie。
+直接抖店适配器默认走 **Ego 原生通道**（`--endpoint` 默认即 `ego`），端点优先级 `--endpoint` > `DOUDIAN_BRIDGE_URL` > `ego`。使用前读当前可用的 `ego-browser` 技能/文档，用其原生 TaskSpace/Page 接口；`ego-browser --version` 可确认已安装的运行时版本。Kimi WebBridge（`http://127.0.0.1:10086`）仅作显式兼容通道，只有确实要回退时才传该地址，并按 `kimi-webbridge` 协议操作，不写死 WorkBuddy 路径。
+
+缺少浏览器/通道未就绪时可离线 `prepare`，不执行 `upload`/`submit`。通道修复涉及 stop/restart/upgrade 时确认其在现有授权内；不自动重放写请求、不导出 Cookie。
 
 ## facts JSON
 

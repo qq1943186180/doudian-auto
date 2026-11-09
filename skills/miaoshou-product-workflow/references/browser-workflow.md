@@ -4,9 +4,9 @@
 
 ## 连接与商品定位
 
-以下协议示例仅用于 Kimi 兼容通道；选用 Ego 时读当前 ego-browser 文档，使用其原生 TaskSpace/Page 接口，不向 Ego 发送这些 Kimi action。控件锚点须现场重新观察。
+默认通道是 **Ego 原生接口**（`--endpoint` 默认即 `ego`）：读当前 `ego-browser` 文档，用其原生 TaskSpace/Page 接口，不要向 Ego 发送下方 Kimi action。下列 `/command` 协议示例**仅在显式选用 Kimi 兼容通道**（`--endpoint http://127.0.0.1:10086`）时适用。控件锚点须现场重新观察。
 
-读取 `kimi-webbridge/SKILL.md` 后使用其 `/command` 协议。Windows 每条请求写入独立 UTF-8 无 BOM 文件再由 `curl.exe --data-binary @文件` 发送，返回后清理。session 放顶层；地址以服务 status 为准。
+选用 Kimi 时读其 `SKILL.md` 后使用 `/command` 协议。Windows 每条请求写入独立 UTF-8 无 BOM 文件再由 `curl.exe --data-binary @文件` 发送，返回后清理。session 放顶层；地址以服务 status 为准。
 
 先 `list_browser_tabs` 看已有页。只读查看可 `attach_tab`，建立编辑基线则新开快速编辑页，防止复用他人的脏输入。首次新建组名可用“妙手商品编辑”，同一任务沿用同一 session。
 
