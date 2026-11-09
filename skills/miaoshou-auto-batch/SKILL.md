@@ -1,78 +1,72 @@
 ---
 name: miaoshou-auto-batch
-description: Prepare complete title and image revisions for existing Douyin Shop warehouse products through the durable doudian-auto batch queue, with agent-generated copy/assets and program verification.
+description: 通过 doudian-auto 持久批量队列修改抖店在仓商品的标题、5张方主图及前4张详情，准备素材与视觉审查并执行妙手/抖店双端核验。适用于完整图文批次；单品快速编辑或局部图片槽位替换使用 miaoshou-product-workflow，直接抖店后台改版使用 doudian-product-workflow。
 ---
 
 # 妙手批量商品优化
 
-Use the local `doudian-auto` program for durable work tracking and asset validation. The agent handles product facts, course knowledge, title writing, image generation, and visual review. The browser executor handles one product at a time and must preserve each product's existing shelf state and commercial fields.
+Agent 核查商品事实、写标题、准备和目视审查素材；程序管理队列、租约、素材/证据哈希、串行浏览器写入和双端核验。正常批量任务通过 `doudian-auto` CLI 执行，不能绕过队列去页面补点保存或手改状态。明确授权的适配器修复可做限定范围的调试，仍保留锁、提交意图和未知结果约束。
 
-## Current entry points
+## 范围与准入
+
+- 已明确授权指定批次按约定标准改好并保存时，同版预检、续租、恢复和保存沿用授权，不逐品重复确认；范围或发布意图不明时确认后再写。
+- 当前 Writer 只接受明确在仓商品、5 张已就绪方主图及至少 4 张已就绪详情；替换五主图与前四详情，后续详情保持。**前四个源图各自在整个详情序列中只能出现一次**，不是要求全部尾图互不重复。缺槽位或源图碰撞先隔离，不能改变完整预览比较放行。
+- 保留全 SKU、价格库存、类目品牌、履约售后、3:4/白底图、审核及上下架状态。在仓策略 `preserve_warehouse_v1` 只允许前后当前状态均为 1、最终审核去向 startSaleType=1，其他字段及独立抖店核验仍须通过；不是上架授权。
+- 上架、修改店铺自动下架规则或其他商业字段属于单独动作，须已有相应明确授权。后续售卖状态变化不通过重存图文修复。
+- 开工交叉检查项目 HANDOFF、当前批量队列、`~/.doudian-auto/jobs/` 和项目实际任务目录中的 `work/miaoshou-jobs/`，按店铺/字符串 product_id 查活动编辑或 submitting/unknown。发现冲突查清归属，保持单一写入者。当前批量 Writer 与直接 CLI 在同一 DATA_ROOT 下共享 browser.lock，但未自动覆盖手工记录；目录查不到不等于无人占用，也不能消除检查后的并发竞争。
+
+## 命令与执行顺序
+
+先确认当前 CLI/项目依赖。浏览器通道未就绪时继续离线准备并记录阻塞，不重复发送写请求。使用 Ego 前读当前 `ego-browser` 技能；`--endpoint ego` 必须放在子命令前。每个批次使用自己的固定 session，不能按域名抢占别的任务页。
 
 ```powershell
-doudian-auto --json batch create --input <products.json> --shop <店铺名>
-doudian-auto --json batch status [batch-id]
-doudian-auto --json --endpoint ego batch preflight --product-id <商品ID> --session <现有任务session> --report-dir <报告目录>
-doudian-auto --json batch quarantine --product-id <商品ID> --reason <核查原因>
-doudian-auto --json batch reconcile --evidence <已有操作state.json> --shop <店铺名>
-doudian-auto --json batch rebaseline --task-id <id> --proof <双端基线及历史结案证据.json>
-
-doudian-auto --json batch recover-prepared --task-id <id> --proof <两轮双端读取证明.json>
-
-doudian-auto --json --endpoint ego batch recover-read --session <原session> --proof <卡住读取的审计证明.json>
-doudian-auto --json agent next --owner <stable-agent-name> [--batch-id <id>]
-doudian-auto --json agent heartbeat --task-id <id> --owner <stable-agent-name> --token <lease-token>
-doudian-auto --json agent complete --task-id <id> --owner <stable-agent-name> --token <lease-token> --artifacts <artifact-manifest.json>
-doudian-auto --json batch resume
-doudian-auto --json batch run --batch-id <id>
-doudian-auto --json batch run --batch-id <id> --product-id <id> --limit 1 --apply
-doudian-auto --json batch run --batch-id <id> --product-id <id> --product-id <id> --product-id <id> --limit 3 --acceptance --apply
-doudian-auto --json batch repair-title --product-id <id> [--apply]
+doudian-auto --json batch create --input '<products.json>' --shop '<店铺>'
+doudian-auto --json batch status '<batch-id>'
+# --product-id 可重复，不能写成 --product-ids 或逗号列表
+doudian-auto --json --endpoint ego batch preflight --product-id '<id1>' --product-id '<id2>' --session '<本任务session>' --report-dir '<报告目录>'
+doudian-auto --json agent next --owner '<稳定Agent名>' --batch-id '<batch-id>' --product-id '<商品ID>'
+doudian-auto --json agent heartbeat --task-id <id> --owner '<稳定Agent名>' --token '<租约token>'
+doudian-auto --json agent complete --task-id <id> --owner '<稳定Agent名>' --token '<租约token>' --artifacts '<manifest.json>'
+doudian-auto --json --endpoint ego batch run --batch-id '<batch-id>' --session '<本任务session>'
+# 预览和能力检查通过、已有对应保存授权后，执行一次受控任务
+doudian-auto --json --endpoint ego batch run --batch-id '<batch-id>' --product-id '<商品ID>' --limit 1 --session '<本任务session>' --apply
+doudian-auto --json --endpoint ego batch resume --batch-id '<batch-id>' --session '<原任务session>'
+# 核对原状态及恢复条件后增加 --apply；未知保存只做双端只读恢复
 ```
 
-Pass `--session <task-session>` to `batch run` or `batch resume` to keep this work in a dedicated browser tab group. Persist resumable state before closing this task's tabs at the end of each turn; leave unrelated and user-owned tabs alone.
+`batch create` 创建本地队列，`agent next/heartbeat/complete` 会修改租约或队列，不是预览。`batch run/resume/repair-title` 省略 `--apply` 才是各自的预览入口；run 仍可能检查浏览器状态，不承诺完全离线。不向这些命令机械添加 `--dry-run`。
 
-For the native Ego channel, run `ego-browser skill` before browser work and put `--endpoint ego` before the subcommand, e.g. `doudian-auto --json --endpoint ego batch resume --apply --session <task-session>`. The program keeps one durable TaskSpace with reusable route pages, stores every command in a unique round file, and captures response events within the action round. It does not inspect profiles or borrow another task's pages. `ego_state_locked` / `ego_transport_unknown` must never trigger a replay of a save or a replacement TaskSpace. Persist the queue and recover by reading. A successful native connection is not fresh-upload/save acceptance. If the exact native Snapshot frame-tree query fails with `EGO_CDP_REQUEST_TIMEOUT: Page.getFrameTree` after the identity read succeeded, readiness may use the separately labeled `dom_text_after_frame_tree_timeout` text read. It contains no refs, does not replace field/SKU verification, and never handles unresponsive evaluation or `mayHaveLateEffects=true`. Navigation and SKU reload wait for documented `domcontentloaded`; this only completes navigation, while exact shop/product, all SKU rows and protected fields still need their own readiness checks. The shop badge can mount after the SKU response; wait on the same page within 30 seconds, never accept a missing badge.
+1. 先 `batch preflight` 精确指定商品及当前 session：不领取/迁移/修改队列行；逐品检查占用、官方全量 SKU、保护字段和必填属性。逐品错误可继续，需人工处理浏览器时停止扫描并记录未处理 ID。结果会过期，领取同一商品/版本后仍需新鲜完整妙手基线。
+2. 输入为 JSON 数组或 `{"products":[...]}`；每行 product_id/productId 为字符串，shop 可逐行或统一提供。记录真实编辑链接、原标题、当前售卖状态、事实、真实参考图及读回来源。已有生成图不能作为唯一事实参考。
+3. `agent next` 原子领取并返回不可变 target_version 和可选课程检索结果；长任务到期前 heartbeat。manifest 必须绑定该字符串版本与同商品 ID、title、五条有序 mains 路径和四条有序 details 路径。过期租约、版本不符、标题/尺寸/哈希/重复图检查失败不能进入 ready。
+4. 准备素材前读 [绑定式视觉审查](references/visual-review.md)。真实查看每张原始参考和九张输出，按精确资产哈希/版本记录身份、颜色、数量、印字及规格。失败槽位最多重做一次，第二次失败隔离该商品，保留其余合格图和失败证据；不能改失败记录为通过。原图上传探针不算完成新图要求。
+5. ready 后计划保持不可变；修改已接受标题/素材需新版本。准备阶段未进入 ready 的失败候选可在原租约内纠正。程序保存 manifest 路径与哈希。不得两 Agent 同时准备同商品或多进程写同 session。
+6. 普通写入由程序 `execution_readiness` 实时要求 writer_ready=true。当前检查基于浏览器状态、WRITER_REVISION 和三品验收证据，不是任意源码变更自动失效。历史验收不直接授权当前环境写入；代码变化时维护者须评估版本及重新验收。
 
-`ego_operation_unsettled` means the prior browser command has no confirmed end: even a new browser observation is held until its local `pending-command.json` and `<token>.result.json` show a complete result without `mayHaveLateEffects`. Inspect those local records; do not delete the marker, switch sessions to bypass it, or replay the command. The narrow `batch recover-read` exception requires an exact current `VISIBLE_DOM(navigation_toggle, params)` request and the SDK’s `EGO_PAGE_EVALUATION_TIMED_OUT` with `executionStopped=false/mayHaveLateEffects=true`. It binds reviewer/session/space/page/product/shop/token and original request/result hashes, persists one close intent, confirms the owned quick-edit Page, closes it once and verifies every other Page remains. Only the complete close receipt settles the marker; request/result evidence and product unknown saves are retained. A lost close reply permits receipt consumption only, never another close or a replacement TaskSpace. A late result unlocks a new observation without changing a product's unknown save status. `ego_cleanup_unknown` similarly blocks a second finish or replacement space. Cleanup records explicitly describe task pages and `browser_exit_requested=false`; their presence does not prove that Ego itself exited.
+新 Writer 的受控验收需用户明确授权三件不同商品，使用 `batch run --product-id <id1> --product-id <id2> --product-id <id3> --limit 3 --acceptance --apply` 并指定原 batch/session/endpoint。该路径用于产生新验收，不能机械要求它先满足正式 writer_ready；也不能绕过商品、视觉、SKU、保存与双端核验闸门。只有三品完整证据通过程序确认才能开启正式 Writer。
 
-Existing sessions retain their measured-viewport compatibility path. The explicit `interaction_mode=native` pilot leaves viewport/focus to Ego, uses the real Page Snapshot and Page click/fill/upload controls, and clicks the guarded save button exactly once. Native scrolling is the default; the proven exceptions are batch-page image boxes and an exact checkbox whose measured center hits that page’s fixed footer. Only those are centered before one native hit-checked click. It never falls back to emulated input after a failed action. Readback/SKU gates remain identical; do not weaken protected-field comparison to tolerate fewer rows. The current writer reads every SKU from the fresh response emitted by one normal official-editor UI reload. It keeps only product/shop identity and SKU/specification values, drops context tokens/actions, rejects unsafe numeric IDs, and cross-checks all SKU IDs, specifications, prices, stock, codes and status with Miaoshou. Missing rows/fields or a draft schema fail closed. Full before/after SKU evidence is required for current writer acceptance, including rows hidden by DOM virtualization.
+## 阻塞状态与恢复入口
 
-Input is a JSON array or `{"products":[...]}`. Rows may use `product_id` or `productId`; `shop` may be on each row or supplied with `--shop`. Include `source_title`, confirmed product facts, actual edit links, current shelf state, image references, and readback provenance when available. `agent next` returns an immutable `target_version`; agent output must copy that exact string into its JSON manifest along with the same string `product_id`, a candidate `title`, exactly five ordered `mains` paths, and exactly four ordered `details` paths. Mismatched or missing versions cannot enter the ready queue.
+先读本地状态及证据。下表定位入口；构造 proof 或执行恢复前必须读 [恢复细则](references/recovery.md)，不能仅靠表格放宽条件。
 
-`agent next` reserves one product with an expiring lease and returns its target version plus optional local course-search results. Heartbeat long preparation tasks before the lease expires. `agent complete` rejects expired leases, wrong product IDs or target versions, invalid title length, missing or duplicate images, non-square main images, and invalid image dimensions. The queue stores the artifact manifest path and its hash.
+| 阻塞或场景 | 入口与必要条件 | 禁止的绕过方式 |
+|---|---|---|
+| submitting / unknown、submitted 待核验 | 原任务只读调查及双端读回；resume 中未知记录只读处理 | 重发保存；以旧标题或中间响应当失败 |
+| ego_operation_unsettled | 查 pending-command.json 和 token.result.json；完整无迟到副作用结果才允许新观察；精确匹配超时例外才可 batch recover-read --session ... --proof ... | 删除标记、换 session/TaskSpace、重复关页 |
+| ego_state_locked / ego_transport_unknown / ego_cleanup_unknown | 保留锁/队列/收据，按原 session 证据调查；未决时先看本地记录 | 重放命令、二次 finish、新建空间掩盖未知 |
+| 外部历史工作 | batch reconcile --evidence ... --shop ...，隔离并保留原事实 | 把 reconcile 当已核验或清 unknown |
+| external_work_requires_rebaseline | batch rebaseline --task-id ... --proof ...；零队列保存、无未知/制品/映射/基线/占用，绑定历史结论和完整双端快照 | 删记录或覆盖未知历史保存 |
+| official_repeat_snapshot_unstable: | batch recover-prepared --task-id ... --proof ...；原 manifest/版本、零上传保存、两轮新鲜完整双端证据 | 手改 ready 或免除后续 preflight |
+| writer_detail_source_collision / 缺事实或必填 | 保留合格素材，batch quarantine --product-id ... --reason ...，按具体证据处理 | 猜属性、弱化比较或第三次生成失败槽 |
+| 历史 ego_target_not_unique 点击前失败 | 仅程序 restore_proven_preclick_failure 核验完整审计链；非通用 CLI 解锁命令 | 只凭 click_issued=false 或旧标题解除未知 |
+| 标题补救 | batch repair-title --product-id ...，核实已知失败及原授权；仅正式路径满足条件才 --apply | 未知提交改走标题页重发、重新上传九图 |
 
-Historical before-images may already include generated pictures. Inspect them and bind product facts to genuine matching source photos; do not use earlier AI pictures as the only factual reference or mistake original-photo copies for qualified generated revisions.
+## 核验、排查与收尾
 
-Every new image also needs the [bound visual review](references/visual-review.md): inspect the original references and all nine outputs, record visible identity/color/quantity/printing/specification evidence, and bind each check to the exact asset hash and target version. Missing review cannot enter upload. A failed slot may be regenerated once; a second failed version quarantines that product while other products continue. Reuse the other approved images. Do not change a failed record to pass without correcting its image. Original-image upload probes never count toward the user's all-new main images.
+程序在保存前持久化提交意图和 submitting/unknown，并串行保存一次；响应丢失只能只读恢复。`saveTempBatchTask` 是中间响应，不能证明商品成功或未提交。旧列表标题、缺字段、部分加载均不能作为重存理由。
 
-## Editing and recovery rules
+核验须覆盖妙手/抖店精确标题、五主四详及未改尾图、全部 SKU/规格/编码/启用状态/价格库存和其他保护字段。缺失/未加载记 not_verified。已合格生成图复用必须重新绑定来源/本地哈希、同槽位及双端远端内容证据；永久资源 ID 相同不自动失败，也不能单凭 ID 相同放行或重存。
 
-- After the task enters `ready`, keep its plan immutable; a changed title or accepted asset set is a new revision. Failed candidates may be corrected within the same leased preparation task before it becomes ready.
-- Before claiming old imported records, reconcile saved/verified work and unknown uploads from their evidence files. `batch reconcile` quarantines them for fresh baselines; it does not mark a whole revision verified or clear an unknown submission.
-- `batch rebaseline` returns only an `external_work_requires_rebaseline` row with zero queue save attempts and no unknown submission, artifacts, mappings, baseline or live occupation to `needs_agent`. Its proof binds the same shop/product/version, fresh hashed complete dual snapshots and every original observation hash plus an explicit reviewed resolution (`no_save_attempted` or historical `verified/accepted`). It retains version and history. Unknown historical saves, missing SKU/required fields, stale/changed evidence, other queue versions and active official jobs remain blocked. Normal writer preflight repeats before any upload.
-- `batch recover-prepared` only restores a blocked `official_repeat_snapshot_unstable:` task with an unchanged approved manifest/version, zero uploads/saves, no baseline/intent/preparation/readback and no active occupation. Its reviewed proof binds product/shop/version, `manifest_sha256`, and exactly two recent `observations` (each `observed_at` plus hashed `miaoshou`/`doudian` files). Both complete SKU/required-attribute/protected reads must pass, including exact image order and raw review state. It records proof history and returns `ready`; normal writer preflight still repeats before uploading. Unknown saves, failed visuals, stale/missing evidence and changed assets remain blocked; never clear them manually.
-- Do not let two agents prepare the same product or more than one process write to the same browser session.
-- Use page controls observed in the current session. Do not guess selectors or replay page write requests.
-- Run `batch preflight` before preparing new assets, passing explicit product IDs and the current task session. It reads an existing queue without claiming/migrating/changing rows, binds each row's shop and immutable version, checks current occupation, and reads fresh complete official SKU/protected/required-attribute evidence. Only five original square mains and at least four ready original details fit the current writer; fewer slots need a separately validated writer change. A result can become stale: claim the same product/version atomically and collect the complete Miaoshou baseline before generating. Unknown saves and verified versions are skipped. Per-product errors continue; browser-required human action stops the scan and leaves unprocessed IDs. Reports stay local, and the caller owns task-page cleanup.
-- The current detail mode replaces every occurrence of a source image, rather than one position. Each of the first four source images must occur exactly once across the entire original detail sequence. `writer_detail_source_collision` stops preparation or upload; preserve approved assets and do not weaken the complete preview comparison. Product49 demonstrated that repeated source positions2/4 otherwise both receive the same target.
-- In a narrow quick-edit page, the program may collapse the observed expanded left navigation when it clips the exact product's edit button. It can also select the exact product dialog's remembered “商品信息” tab. These view changes do not save product fields. Restore a minimized Ego window through its current Page's `Browser.getWindowForTarget` and `Browser.setWindowBounds` when needed; TaskSpace-level Browser lookup may lack web contents. Keep the existing TaskSpace and never confuse restoring a window with recovering a lost space.
-- The writer repeats the official `required_attributes` check before any upload: actual selected values and confirmed 100% required-field progress are required; typed combobox search text does not count. Missing values or an unobserved layout quarantine the product and show field names in desktop status. Check original fields, reference images and any supplier link actually present in that exact product's current row before asking for absent facts such as load capacity or bristle hardness. Continue other products; do not invent values or silently expand allowed field changes.
-- Preserve the product's current on/off-shelf state. Official [product edit documentation](https://op.jinritemai.com/docs/api-docs/14/250?from=list) defines `startSaleType` as the destination after review, not current shelf state: `0` lists immediately and `1` enters the warehouse. For a confirmed warehouse product, `0→1` may preserve the requested state. Accept it only through the explicit `preserve_warehouse_v1` readback policy: both current shelf statuses are `1`, the final destination is `1`, all other fields match, and independent Doudian protected-field verification passes. Keep the raw before/after values and policy proof. Never apply this rule to listed products, missing states, or other commercial changes.
-- **Verified capability (2026-11-02):** writer `multi-field-20261030-v5` has durable three-product acceptance for squeegee `3848317832962113825`, trousers `3850070641327866321`, and stool `3848316155827716392`: each used a fresh form, nine approved new images, one save, full independent Miaoshou/Doudian title/image/tail/SKU/protected-field readback. The local proof is revalidated by `execution_readiness`; require its current `writer_ready=true`, rather than inferring readiness from this text. Basket task18 has real complete content verification but `fresh_form=false`, so it is excluded from the three-product gate. Historical title-only recovery and original-image probes also cannot satisfy it. Missing facts, unstable reads, failed visuals and unknown saves remain isolated even after writer acceptance.
-- Reuse the exact existing browser tab ID for the Miao batch route; do not select by hostname alone because the same host also contains quick-edit routes. Close only the task-owned Miao batch tab after its durable state/readback is recorded; leave unrelated tabs open.
-- If a target is a previously qualified generated image already saved in the same slot, its permanent material ID can legitimately remain equal (the platform derives it from image content). Accept equal IDs only for a full newly validated `existing-qualified` review, a matching exact local/source hash and fresh dual remote content verification; mark that slot as reused. Original reference photos and unreviewed equal images remain rejected. Never resave a product merely because a reused ID stayed equal.
-- Match `batchType=multi_field`, not the title-only route. Main images use `.replace-image-dialog`; detail source/target selection uses `.select-product-filter-dialog`. Already populated source boxes must be read and skipped if identical; clicking one can disable its wrapping checkbox. Reconcile an existing target against local bytes even if its mapping was lost, and never reupload different content blindly. Preview all original details and the four replacement slots plus the complete unchanged tail.
-- Bind a reused form to the exact product ID before inserting new IDs. A different product requires a fresh form; reuse verified upload mappings through the visible image-link control. A same-product image that arrived before its mapping was persisted must pass the local byte/pixel check before it is adopted. Reprepare if the writer revision changed.
-- Compatibility mode uses observed DOM focus plus one native Space for zero-sized Element Plus inputs. The native pilot instead clicks the exact visible small box beside that input; a broad method label contains textareas/images and its center can miss the switch. Confirm checked state with a bounded wait. Its real Snapshot is supplemented with bound shop/scope-tab/title-option counts for page readiness: initial range mode hides the ID/title textareas, and a truncated tree can omit them. Final submission still validates all exact fields/slots. Wait for overlays to disappear and persist intent before one final-button activation (native click, or compatibility focus/revalidate/Enter). Do not assign checked values, dispatch synthetic UI events, or repeat an uncertain save.
-- An image picker may close automatically between observing it and finding its Close button. Read its state once after that error: zero visible pickers means closure completed; an open or ambiguous picker remains an error. Never replay the upload to resolve a close-button error. Retain an explicitly sized original 1x1 detail tail only if it is actually decoded; ordinary loading placeholders remain invalid.
-- Before saving, persist `submitting/unknown`. A lost response permits read-only recovery only; do not click save again without evidence that the previous attempt ended unsuccessfully.
-- A recorded legacy `ego_target_not_unique` final-button failure can be cleared only by `restore_proven_preclick_failure`: audited runtime hash, original unique request/result hashes and arm record, one complete pre-input interval, matching submission intent, and fresh complete dual baseline snapshots are all required. Old titles or an asserted `click_issued=false` are insufficient. Transport errors and any possible dispatched input remain readback-only.
-- Ignore stale cloned list rows, analytics POSTs and intermediate task responses. Read the current actionable exact-ID row and a new non-draft edit response. The list title is a cache, not a saved-content readback. After a save, allow up to three fresh title observations within the readback budget, then run all image and protected-field comparisons. Old titles or missing fields never authorize resaving.
-- Verify the saved version independently in Miaoshou and Doudian. Missing or partially loaded protected fields are `not_verified`.
-- For a separately authorized listing action, inspect conflicting automated delisting rules when a verified listing later returns to the warehouse. In this shop, official rows and Miaoshou cleanup history proved a daily midnight zero-sales delisting rule; that rule was disabled and the affected squeegee separately relisted with complete readback on 2026-10-31. Do not overwrite old successful evidence or repeat content saves to repair a later status change. Read the actual automation scope before changing a shop setting, and preserve other settings. A switch can open a confirmation dialog while its checked value stays unchanged; inspect the dialog before any further input.
-- Never change SKU, price, stock, category, brand, delivery, freight, after-sale settings, 3:4 images, white-background image, review status, or shelf state as part of this workflow.
-- First live acceptance is limited to three explicitly named product IDs. Do not turn on general writer readiness until all three have complete, independent Miaoshou and Doudian readbacks.
-- Treat `batch run --apply` as unavailable until the current writer capability is verified. The explicit three-product `--acceptance` flag narrows scope; it does not override capability guards. A browser connection or historical content readbacks alone do not verify a new upload path.
-- `batch repair-title` uses the observed title-only batch page with one explicit product ID, “use new content”, “fail if too long”, no AI size repair, no timer, and “do not adjust shelf state”. It verifies the original title, target title and rendered count in the one-row preview before persisting intent and clicking the final batch button once. Hidden duplicate inputs must be excluded. Recheck all nine existing target images, detail tail, commercial fields and the warehouse-state policy; do not upload images again.
-- A successful `saveTempBatchTask` response is an intermediate response and cannot establish either product success or absence of a product submission. Unknown results remain readback-only; old titles alone do not prove failure. A completed quick-form rejection with an observed request ID and HTTP response may switch once to the title-only page; bind the failure event hash and never rearm an unknown save. Keep platform rejection details without headers or credentials.
+遇到控件、SKU读取或窗口问题，再读 [Writer 行为与浏览器排查](references/writer-behavior.md)。其中选择器、原生/兼容点击、窗口恢复是实现细节，不是正常任务的额外手工动作。缺属性先查原字段、原图和该商品真实供应商链接，证据不足再问用户；其他合格商品继续。
+
+每轮开工清理本任务遗留项目标签，未完成页先持久化；结束保存队列/读回/可续办状态后关闭本轮用完的自有项目页。未决操作或清理收据未知先按恢复细则处理，不能重复 finish。保留用户及其他用途页面，清理记录存在不证明浏览器进程已退出。按项目要求维护 HANDOFF/T-ID、提交推送及回写 Issue，素材、任务和登录信息留本地。

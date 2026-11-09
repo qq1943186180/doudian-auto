@@ -18,6 +18,12 @@
 
 不要把请求头、Cookie、账户凭据或无关客户数据写入任务证据。商品素材与任务证据留在本地，不提交到代码仓库。
 
+## 保存前的本地写入顺序
+
+先完成 state.json（submitting/unknown）及 submission.json（店铺、字符串商品ID、版本、目标哈希和提交意图）的串行写入，再回读确认两份内容相符，随后才能发送单次浏览器保存点击。不把文件写入和点击放进并发批次。写入失败或回读不完整就停止；点击时间和响应只在实际发生后追加，不能预写成点击成功。此约定不是自动事务或跨进程锁。
+
+开工按店铺/商品ID交叉检查项目 HANDOFF、批量队列、~/.doudian-auto/jobs/ 及已知工作区的 work/miaoshou-jobs/。目录缺失不证明无其他操作者；仍需单一写入者。当前程序未为全部手工目录提供统一互斥，不能仅靠这些记录声称并发已安全解决。
+
 ## 阶段与恢复
 
 阶段用于区分外部事实，不是可以手改来绕过检查的开关。
@@ -58,6 +64,23 @@
 5. 图片上传可能重编码或更换 CDN；结合上传记录、远端内容和顺序核验，不要求本地字节哈希等于远端压缩图哈希。不能只比数量、去重URL后比较，或随意删除全部URL参数。
 6. 未加载/虚拟SKU/缺失状态记 `not_verified`，不当成空值或相等；两边快照结构不同，先明确字段映射、单位及覆盖范围再比较，不能直接复用旧 `sections` 格式 compare 得出通过。
 7. 抖店读回匹配可以记 verified；消费者端生效另看平台审核证据。价格库存等无授权变化，保留证据并停止新写入，不自动反向回滚。
+
+### 双端字段对齐清单
+
+以下是人工核验清单，不是新增的自动比较器。原始妙手响应路径按当前 `src/doudian_auto/miaoshou_editor.py` 核实；原始响应与解析后的快照键不同，不能混写。只使用当前授权页面实际发出的响应或 DOM，不因知道接口名就直接重放请求。
+
+| 核验项 | 妙手原始/解析后来源 | 抖店来源与判定 |
+|---|---|---|
+| 店铺、商品及版本 | 页面店铺；原始 productId 或 productInfo.productId；解析后 product_id/shop；productInfo.draftStatus/checkStatus | 实际编辑URL与页面店铺/ID，草稿加载和审核提示；同店同品，新页草稿/待审/生效版分别记录，不能混成一个基线 |
+| 主标题 | productInfo.name；解析后 title；或商品标题输入值 | #pg-title-input 当前值，与最终计划精确相等，排除导购短标题/备注 |
+| 方主图与详情 | productInfo.pic / productInfo.descriptionImgList；解析后 mains/details | 对应标准主图/详情的实际CDN资源，按槽位比对内容和顺序，保留非目标主图/详情尾图；不去重、不只数张数 |
+| 非目标图片 | productInfo.specPics、mainImageThreeToFour/mainPic34、whiteBackGroundPicUrl；解析后 protected 对应键 | SKU图、3:4图、白底图逐项与各自改前基线比较；隐藏/未加载不当成空数组 |
+| 全量SKU | productInfo.specs/specPrices；解析后 protected.specPrices，每行 skuId/specDetailIds/price/stockNum/stepStockNum/code/skuStatus | 逐SKU ID/规格匹配全部行，再比较现价、现货及阶梯库存、商家编码和启用状态；普通 CLI read 的 DOM 虚拟表可能不全，需补完整证据，缺行就 not_verified |
+| 类目、品牌及属性 | 根 categoryId/brandName；productInfo.cid/brandId/standardBrandId/categoryDetail 和当前属性控件；解析后 protected 中 root.categoryId/root.brandName 等 | 基础信息类目路径、品牌和实际属性；对应键/值及来源记录在比较结果。仅已授权、有证据的具体补项可单独列差异，不能豁免其他属性 |
+| 运费、履约与售后 | productInfo.freightId、deliveryMethod/deliveryDelayDay、afterSaleService/afterSaleServiceV2 等；解析后 protected | 服务履约分区的实际控件及模板/服务标识，按改前基线检查；缺字段或隐藏未渲染标记 unobserved/not_verified |
+| 当前上下架与审核后去向 | productInfo.status/startSaleType，以及审核原始字段；解析后 protected 同名键 | 商品状态单选框与实际审核信息，不能用SKU启用开关代替。startSaleType是审核后去向，不等于当前上下架；单独授权上架则单独取证 |
+
+价格/库存使用各自实际字段与单位，不臆测分/元换算；记录规范化过程，编码/ID按字符串，ID不经 JS Number 丢精度。完整 SKU 响应证明可对照 `src/doudian_auto/official_skus.py`，但它属于程序正式采集与校验路径，不表示人工单品已自动具备全量证据。妙手和官方各自的 before→after 保护字段比较，也不能被跨平台“看起来相同”替代。
 
 ## 已发生的编辑窗口丢失与验收范围
 

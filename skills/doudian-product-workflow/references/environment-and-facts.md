@@ -12,6 +12,7 @@ $skill = '<本技能实际目录>'
 $projectPython = Join-Path $repo '.venv/Scripts/python.exe'
 & $projectPython -c 'import doudian_auto, PIL; print(doudian_auto.__file__)'
 & $projectPython (Join-Path $skill 'scripts/doudian_check.py') assets '<素材目录>' --title '<标题>' --out '<检查.json>'
+# 仅用于旧版手工 sections 快照；CLI read 的 protected 快照按原 CLI 任务 verify 核验
 & $projectPython (Join-Path $skill 'scripts/doudian_check.py') compare '<旧sections快照.json>' '<新sections快照.json>' --title '<标题>' --details 4 --out '<比较.json>'
 ```
 

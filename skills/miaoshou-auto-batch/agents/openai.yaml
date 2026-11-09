@@ -1,0 +1,4 @@
+interface:
+  display_name: "妙手批量商品优化"
+  short_description: "通过持久队列处理抖店在仓商品标题和五主四详，绑定视觉审查并完成双端核验"
+  default_prompt: "使用 $miaoshou-auto-batch 按已授权的批次处理抖店在仓商品标题与五主四详，保留商业字段并遵守程序恢复闸门。"
