@@ -1,9 +1,20 @@
 # 抖店本地上传
 
-更新：2026-11-09（Asia/Shanghai）；Agent：workbuddy-skill-optimize。
+更新：2026-11-10（Asia/Shanghai）；Agent：workbuddy-skill-optimize。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261110-001 · 194-155 · Ego 默认通道只读验收（商品 3848322422084337743）
+
+- 状态：done（只读验收通过，**0 写入 0 保存**）；用户指定该商品验证新默认通道。因该商品队列为 `verified` / `submission_attempts=3`，按「已 verified 不重存不重传」硬约束，**改为只读读回验收**，不跑 upload/submit。
+- 通道实测：不传 `--endpoint` 即为 `ego-native`，`browser_ready=true`（ego-browser 0.6.1.13）。`products --limit 100` 成功打开抖店列表页并读回 9 行真实数据；`read` 成功打开该商品编辑页。
+- 逐项比对（本次实读 vs 10-28 已核验证据）：标题一致；方主图 5 张**顺序+内容完全一致**；详情 17 张，前 4 张等于当时替换目标（4/4），尾图 5–17 与基线完全一致未被误改；`shop_confirmed=true`、`draft_loaded=false`、`rejected=false`。**判定 PASS**。
+- 反面证据：`batch preflight --product-id 3848322422084337743` 返回 `eligible=false`、`state=skipped`、`reason=already_verified`、`elapsed_seconds=0.0`——未开页面即被程序挡住，证明重存路径在程序层已封闭。
+- 历史轨迹（task_id=24）：10-28 15:23 提交受理 success 但读回不匹配→blocked；21:15 title-only 修复被平台明确驳回；21:52 title_batch_success_requires_readback 再 blocked；**22:05 blocked→verified**（readback 1ead7546）。三次提交才成功，属高价值成品。
+- 边界：**只证明了 Ego 默认通道的只读链路**（开页/认店/认品/完整读回）。**未证明写入链路**（upload/submit/保存后读回），不得据此宣称「Ego 通道线上写入已验收」。
+- 证据：work/ego/default-channel-check-20261110/{before-readonly.json, products-list.json, RESULT.json, REPORT.md, preflight-20261110-005702-b84e9c51/}。本轮无代码改动，无新增离线测试。
+- 下一步：若要验写入，须另选**非 verified 且素材齐**的商品并单独授权，走 prepare→upload→submit→verify。
 
 ### T-20261109-003 · 194-155 · 浏览器通道默认切到 Ego 原生
 

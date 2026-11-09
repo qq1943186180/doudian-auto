@@ -2,6 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
+| T-20261110-001 | [194-155](https://linear.app/1943186180/issue/194-155) | done | 指定商品 3848322422084337743 验证 Ego 默认通道：因队列已 verified/attempts=3，按不重存约束改为**只读验收**（0 写入 0 保存）。实读标题一致、5 主图顺序内容全同、17 详前4等于替换目标且尾图5–17保持、`shop_confirmed=true`/无草稿无驳回，判定 PASS；preflight 返回 `already_verified`/0秒证明重存路径程序层已封闭。仅证明只读链路，未证明写入链路。证据 work/ego/default-channel-check-20261110/。 |
 | T-20261109-003 | [194-155](https://linear.app/1943186180/issue/194-155) | done | 浏览器通道默认改 Ego 原生：`bridge.DEFAULT_ENDPOINT='ego'`，CLI/GUI/doctor 提示及 miaoshou_editor docstring 同步，Kimi 保留为显式兼容通道（传本机HTTP地址）。修受默认值影响的 stalled-read CLI 测试并新增默认值断言；554Python/93JS通过，doctor 实测 `transport=ego-native`/`browser_ready=true`；补回 missing 的 miaoshou-product-workflow WorkBuddy 副本，三技能×两安装处哈希全一致。无页面/队列/商品写入，不据此宣称 Ego 线上写入验收。 |
 | T-20261109-002 | [194-156](https://linear.app/1943186180/issue/194-156) | done | 采纳核实后的Gemini审阅：批量入口/恢复表与Writer参考拆分，25条CLI解析、路由/锁覆盖/保存落盘及真实双端字段说明，3套源码/5份安装同步结构与哈希验证；运行代码及线上未动。 |
 | T-20261109-001 | [194-155](https://linear.app/1943186180/issue/194-155) | done | 优化抖店/妙手skill：授权范围、状态路由、title生命周期与事实JSON、实际环境路径、RAG降级、Ego/Kimi路由和关页；妙手单品纳入当前分支；三份安装副本同步，离线CLI/缺依赖/结构/引用/哈希验证通过，未操作线上商品。 |
