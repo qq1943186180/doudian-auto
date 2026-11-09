@@ -1,9 +1,19 @@
 # 抖店本地上传
 
-更新：2026-11-09（Asia/Shanghai）；Agent：codex-skill-optimize。
+更新：2026-11-09（Asia/Shanghai）；Agent：workbuddy-skill-optimize。
 源码：C:/Users/19431/Documents/ChatGPT/抖店/doudian-auto；当前分支 codex/miaoshou-reliability-20261029；私有 origin https://github.com/qq1943186180/doudian-auto。
 
 ## 给人的说明
+
+### T-20261109-003 · 194-155 · 浏览器通道默认切到 Ego 原生
+
+- 状态：done；代码+文档+技能三处同步，无浏览器页面操作、无队列领取、无商品写入。用户明确要求「用 ego 不用 kimiweb」。
+- 改动：`bridge.py` 新增 `DEFAULT_ENDPOINT = 'ego'`，`Bridge.__new__/__init__` 默认值由 `http://127.0.0.1:10086` 改为 `ego`；`cli.py --endpoint` 默认取该常量、帮助文案改为「浏览器通道：默认ego走Ego原生通道；Kimi兼容通道用本机HTTP地址」；`gui.py launch()` 默认同源；`doctor` 的 next 提示与 `require_ready` 人类提示去掉「Edge Kimi扩展」，改为 Ego 原生连接。`miaoshou_editor.py` 模块 docstring 同步（原文写死「uses Kimi's browser controls」）。
+- 兼容保留：Kimi WebBridge 未删除，传 `--endpoint http://127.0.0.1:10086`（或 `DOUDIAN_BRIDGE_URL`）仍是完整可用路径，仍走 `Bridge` 的只允许本机HTTP地址校验。
+- 测试：`tests/test_stalled_read_cli.py` 的 `test_stalled_read_cli_rejects_non_native_endpoint` 原依赖「不传--endpoint会落到Kimi」才拒绝，默认改 ego 后不再拒绝；改法是显式传 Kimi 地址再断言 `ego_endpoint_required`，并新增 `test_default_endpoint_is_native_ego` 锁住默认值。
+- 验证：`doctor` 不传 `--endpoint` 实测 `bridge.running=true / transport=ego-native / browser_ready=true`（`ego-browser 0.6.1.13`，chromium 156.0.8078.48，node v24.22.1）；显式传 Kimi 地址仍返回 `browser_ready=false`（服务未启动，符合预期，非回归）。全量 **554 Python passed**（179.79s）、**93 JS passed**（npm test）。三技能 canonical / `~/.codex/skills` / `~/.workbuddy/skills` 逐文件 SHA256 全部一致。
+- 顺手修复：`miaoshou-product-workflow` 此前在 `~/.workbuddy/skills` 缺失（上一轮 HANDOFF 声称三处同步，实际只有另两个技能齐），本轮已补齐并校验。
+- 边界：本轮只改默认选择和文档，未跑真实 upload/submit/verify，不据此宣称线上写入已用 Ego 验收。此前所有业务结论（17 verified / 44 blocked）来自旧通道与既存证据，不回改。
 
 ### T-20261109-002 · 194-156 · 采纳 Gemini 审阅并整理批量技能
 
@@ -178,7 +188,7 @@ T-20261029-001 原文见 [批量技能重构前归档](docs/handoff-history/2026
 
 ## 数据与算法
 
-命令全局参数置于子命令前：`--json`、`--endpoint`、`--version`。连接优先级为命令参数 > DOUDIAN_BRIDGE_URL > http://127.0.0.1:10086。只允许本机HTTP地址。
+命令全局参数置于子命令前：`--json`、`--endpoint`、`--version`。**默认通道为 Ego 原生（`ego`）**；连接优先级为命令参数 > DOUDIAN_BRIDGE_URL > `ego`。Kimi WebBridge 仅作显式兼容通道，需传本机HTTP地址（如 `http://127.0.0.1:10086`），且只允许本机地址。
 
 | 命令 | 行为 |
 |---|---|
@@ -209,7 +219,7 @@ doudian-auto --json verify '<返回的job_dir>'
 - upload/submit省略--apply或指定--dry-run只返回计划，不连接或写商品；prepare只读本地图片。read/products会打开页签，但不改商品字段。
 - 素材命名main_01～05各一张，detail_01起连续编号1～50张，按数字排序。JPEG/PNG小于5MB；方主图至少600px；详情宽620～1290px；SHA256禁止重复图片，标题16～60平台字符（汉字计2）。
 - ~/.doudian-auto/jobs/<商品ID>-<内容哈希前12位>/保存manifest/state、before/ uploaded/readback JSON及成功截图。manifest绑定绝对路径、文件哈希、商品、店铺、标题；文件改动后须重新准备任务。
-- 每次操作串行持有browser.lock及job.lock；取得锁后重读状态，防止旧进程状态导致重复发布。每个不可变任务使用独立、固定的Kimi session，按商品ID重新选取重定向后的真实编辑页，保留未保存预览。
+- 每次操作串行持有browser.lock及job.lock；取得锁后重读状态，防止旧进程状态导致重复发布。每个不可变任务使用独立、固定的浏览器 session（默认Ego原生TaskSpace；Kimi兼容通道同样按session隔离），按商品ID重新选取重定向后的真实编辑页，保留未保存预览。
 - 状态：prepared → editing → uploaded → submitting → submitted → saved。上传中断时跳过已有远程URL记录且页面相符的部分；来源不明的部分先清空，再按原素材重传。
 - 发布前保存submitting，超时后禁止自动重发。只运行verify；若读回不符，保留submitted/错误及证据，人工确认真实页面后再处理，不能擅自改state绕过。
 - 发布前后比较实际加载的保留字段：文本/数值、checkbox/radio、switch、选择项、静态属性及SKU/3:4/白底图地址。只写标题、方主图和标准详情，类目/品牌/售后必填变化一律停止；不套用以前商品的属性。
