@@ -425,3 +425,19 @@ test('attribute scope excludes only the exact category field, retaining all othe
   base.insertAdjacentHTML('beforeend','<div class="categoryPropertiesItem"><div attr-field-id="尺寸"><input></div></div>');
   assert.equal(call('snapshot',{attribute_names:['尺寸']}).error,'attribute_not_unique');
 });
+
+test('a selected option reads back as its label, not the hidden option id',()=>{
+  // The select wraps a hidden numeric value, so reading the control's whole text yielded
+  // "466329 免打孔式". Every readback then differed from the plain value, so each write
+  // was reported incomplete even though the page had accepted it.
+  const {page,call}=fixture();
+  const base=page.window.document.querySelector('#goodsEditScrollContainer-基础信息');
+  base.insertAdjacentHTML('beforeend','<div class="categoryPropertiesItem"><div attr-field-id="安装方式">' +
+    '<div class="ecom-g-select ecom-g-select-single">' +
+    '<span class="ecom-g-select-selection-item">免打孔式</span>' +
+    '<input type="search" class="ecom-g-select-selection-search-input" value="">' +
+    '</div></div></div>');
+  const result=call('attribute_control',{name:'安装方式'});
+  assert.equal(result.kind,'single');
+  assert.equal(result.current,'免打孔式');
+});

@@ -302,7 +302,23 @@
     const kind = textInputs.length === 1 && selects.length === 0 ? 'text'
       : selects.length === 1 && textInputs.length === 0 ? (multi ? 'multi' : 'single')
       : 'unknown';
-    const current = textInputs.length ? (textInputs[0].value || '') : (selects.length ? text(selects[0]) : '');
+    // For a select, read the selected item's own label rather than the control's whole
+    // text. The control wraps a hidden option id, so text(selects[0]) yields
+    // "466329 免打孔式" and every readback then looks different from the plain value.
+    const selectedLabel = (sel) => {
+      const item = sel.querySelector('.ecom-g-select-selection-item');
+      if (item) return text(item);
+      const holders = [sel.querySelector('.ecom-g-select-selection-overflow'),
+                       sel.querySelector('.ecom-g-select-selector')];
+      for (const h of holders) {
+        if (!h) continue;
+        const t = text(h).replace(/^\s*\d{4,}\s+/, '').trim();
+        if (t) return t;
+      }
+      return text(sel).replace(/^\s*\d{4,}\s+/, '');
+    };
+    const current = textInputs.length ? (textInputs[0].value || '')
+      : (selects.length ? selectedLabel(selects[0]) : '');
     return {name:p.name, kind, required:/^\s*[*＊]/.test(label), current:current.slice(0,60),
       disabled: inputs.some(i=>i.disabled),
       target: textInputs.length ? 'input' : (selects.length ? '.ecom-g-select' : null),

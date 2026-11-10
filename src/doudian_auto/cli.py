@@ -89,6 +89,21 @@ def parser():
     title_abandon.add_argument('--confirm-unverified', action='store_true',
                                help='任务已被平台受理但未核验内容时，仍确认结案（会解除版本互斥）')
     sub.add_parser('gui', help='打开中文桌面窗口')
+    # Category attributes are a separate write surface from images and title. It gets its
+    # own entry point so a single product can be accepted on its own, instead of the only
+    # route being a whole facts file fed through batch auto.
+    attr = sub.add_parser('attributes', help='补类目属性：只填明确给出且当前为空的文本/单选')
+    attr.add_argument('--product-id', required=True, help='明确的一件商品')
+    attr.add_argument('--shop', required=True, help='商品所属店铺，用于核验页面身份')
+    attr.add_argument('--set', action='append', dest='sets', required=True,
+                      help='属性名=值，可重复；值必须是真实的商品事实')
+    attr.add_argument('--apply', action='store_true',
+                      help='真正填写并发布一次；省略时只读预览，不写任何字段')
+    attr.add_argument('--abandon', action='store_true',
+                      help='在页面确认未写入后结束一个停在 editing 的属性任务')
+    attr.add_argument('--reason', help='放弃原因，会落盘留存')
+    attr.add_argument('--operator', default=os.environ.get('USERNAME') or 'unknown')
+    attr.add_argument('--session', default='doudian-auto')
     batch = sub.add_parser('batch', help='批量全套优化任务队列')
     batch_sub = batch.add_subparsers(dest='batch_command', required=True)
     batch_create = batch_sub.add_parser('create', help='从JSON商品清单创建持久化批次')
@@ -710,6 +725,58 @@ def run(args):
         return {'job_dir': str(Path(args.job).resolve()), 'product_id': data['product_id'], 'state':read_json(Path(args.job) / 'state.json')}
     if args.command == 'unlock':
         return unlock(args.job)
+    if args.command == 'attributes':
+        from .attribute_workflow import publish_attributes
+        # Bridge and Editor are imported at module scope; re-importing either here turned
+        # it into a local name in run() and broke the unrelated title branches.
+        values = {}
+        for item in args.sets:
+            if '=' not in item:
+                raise DoudianError('attribute_set_invalid', f'--set 需要 属性名=值 形式：{item}')
+            name, _, value = item.partition('=')
+            name, value = name.strip(), value.strip()
+            if not name or not value:
+                raise DoudianError('attribute_set_invalid', f'属性名和值都不能为空：{item}')
+            values[name] = value
+        identity = {'product_id': args.product_id, 'shop': args.shop,
+                    'edit_url': f'https://fxg.jinritemai.com/ffa/g/create?product_id={args.product_id}'}
+        # Abandon is checked before the preview shortcut: releasing a stalled job is an
+        # explicit action, not a read-only preview, so it must not fall into that branch.
+        if args.abandon:
+            from .attribute_workflow import abandon_attributes
+            if not args.reason:
+                raise DoudianError('reason_required', '放弃属性任务必须说明原因。')
+            editor = Editor(Bridge(args.endpoint, session=args.session))
+            return abandon_attributes(editor, identity, values, reason=args.reason,
+                                      operator=args.operator)
+        if not args.apply:
+            # Preview reads the current control state so a wrong target is caught before
+            # anything is typed; it never fills, checks or publishes.
+            from .attributes import _control
+            editor = Editor(Bridge(args.endpoint, session=args.session))
+            editor.open(identity, fresh=True)
+            preview = {}
+            for name, value in values.items():
+                control = _control(editor, identity, name)
+                current = (control.get('current') or '').strip()
+                preview[name] = {
+                    'kind': control.get('kind'), 'current': current, 'wanted': value,
+                    'writable': control.get('kind') in ('text', 'single')
+                                and not control.get('disabled')
+                                and current in ('', '请选择', value),
+                }
+            return {'dry_run': True, 'product_id': args.product_id, 'shop': args.shop,
+                    'attributes': preview,
+                    'next': '确认无误后加 --apply 填写并发布一次；受理后会重新打开核验。'}
+        if args.abandon:
+            from .attribute_workflow import abandon_attributes
+            if not args.reason:
+                raise DoudianError('reason_required', '放弃属性任务必须说明原因。')
+            editor = Editor(Bridge(args.endpoint, session=args.session))
+            return abandon_attributes(editor, identity, values, reason=args.reason,
+                                      operator=args.operator)
+        editor = Editor(Bridge(args.endpoint, session=args.session))
+        return publish_attributes(editor, identity, values)
     if args.command == 'title':
         # Handled before the bridge is constructed: title work is offline and must
         # not require a browser session.

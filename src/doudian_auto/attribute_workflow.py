@@ -41,6 +41,48 @@ def _compare(before, after, values, *, preview=False):
         raise DoudianError('attribute_non_target_changed', '非目标类目属性发生变化。')
 
 
+def abandon_attributes(editor, identity, values, *, reason, operator, root=None):
+    """Release an attribute job that stopped before publishing, after checking the page.
+
+    A job that died in `editing` holds the product against every later attempt, and the
+    contract rightly forbids silently re-filling it. But if the values are still empty on a
+    fresh page, nothing was saved and there is nothing to preserve. This releases that one
+    job when, and only when, the page proves it: any target already carrying a different
+    value, or any stage that reached submitting or beyond, refuses and keeps the hold.
+    """
+    root = Path(root or DATA_ROOT)
+    values = {k: v.strip() for k, v in values.items() if isinstance(v, str) and v.strip()}
+    plan = {'mode': 'attributes_only', **identity, 'attributes': values}
+    digest = hashlib.sha256(json.dumps(plan, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    job = root / 'jobs' / ('attributes-' + identity['product_id'] + '-' + digest[:12])
+    state_path = job / 'state.json'
+    if not state_path.exists():
+        raise DoudianError('attribute_job_missing', '没有对应的属性任务。')
+    with Lock(root / 'browser.lock'), Lock(job / 'job.lock'):
+        state = read_json(state_path)
+        stage = state.get('stage')
+        if stage == 'saved':
+            return {'product_id': identity['product_id'], 'abandoned': False, 'stage': stage,
+                    'reason': '任务已完成，无需放弃。'}
+        if stage in ('submitting', 'submitted'):
+            raise DoudianError('attribute_abandon_refused',
+                               '任务已进入提交，只能核查不能放弃。')
+        editor.open(identity, fresh=True)
+        unsafe = {}
+        for name, want in values.items():
+            got = (_control(editor, identity, name).get('current') or '').strip()
+            if got not in ('', '请选择', want):
+                unsafe[name] = got
+        if unsafe:
+            raise DoudianError('attribute_abandon_refused',
+                               f'目标属性已有不同值 {unsafe}，保留现场，需人工判断。')
+        state.update(stage='abandoned', abandoned_at=time.time(), abandon_reason=reason,
+                     operator=operator, page_verified_empty=True)
+        write_json(state_path, state)
+        return {'product_id': identity['product_id'], 'job_dir': str(job), 'stage': 'abandoned',
+                'abandoned': True, 'page_verified_empty': True, 'reason': reason}
+
+
 def publish_attributes(editor, identity, values, *, root=None, queue_check=None):
     """Save once; later calls with the same facts only verify an uncertain submission.
 
@@ -71,7 +113,10 @@ def publish_attributes(editor, identity, values, *, root=None, queue_check=None)
             return {'product_id': identity['product_id'], 'job_dir': str(job), 'persisted': True,
                     'stage': 'saved', 'skipped': True}
         recovering = state['stage'] in ('submitting', 'submitted')
-        if state['stage'] not in ('prepared', 'submitting', 'submitted'):
+        # `abandoned` means an operator already checked the page and confirmed nothing was
+        # saved, so starting over cannot overwrite anything. Anything else unfinished keeps
+        # the hold, because a half-finished edit must not be silently re-filled.
+        if state['stage'] not in ('prepared', 'submitting', 'submitted', 'abandoned'):
             raise DoudianError('attribute_edit_incomplete', '原属性编辑尚未终结；保留页面与证据，不能自动重新填写。')
         editor.open(identity, fresh=True)
         current = _snapshot(editor, identity, values)
