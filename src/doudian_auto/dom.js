@@ -61,7 +61,15 @@
   const main = field('主图');
   const detail = field('商品详情');
   if (!main || !detail) return {...identity, error:'editor_layout_changed'};
-  const target = e => e.id === 'pg-title-input' || main.contains(e) || detail.contains(e);
+  const attributeTargets=[];
+  for(const name of (p.attribute_names||[])) {
+    const found=all('[attr-field-id]').filter(e=>e.getAttribute('attr-field-id')===name && visible(e) &&
+      e.closest('[class*="categoryPropertiesItem"]') && !e.querySelector('[attr-field-id]'));
+    if(found.length!==1)return {...identity,error:'attribute_not_unique'};
+    attributeTargets.push(found[0]);
+  }
+  const target = e => e.id === 'pg-title-input' || main.contains(e) || detail.contains(e) ||
+    attributeTargets.some(root=>root===e||root.contains(e));
   const canonical = value => {try {const u = new URL(value); return u.origin + u.pathname;} catch {return value;}};
   const images = root => [...new Set(all('img', root).filter(visible).map(e => e.currentSrc || e.src).filter(s => /^https:\/\//.test(s) && s.includes('ecom-shop-material/') && !/\.svg(?:\?|$)/.test(s)).map(canonical))];
   const material = e => {const s = e.currentSrc || e.src; return /^https:\/\//.test(s) && s.includes('ecom-shop-material/') && !/\.svg(?:\?|$)/.test(s);};

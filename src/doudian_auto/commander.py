@@ -1,15 +1,7 @@
-"""One-command commander: decide what each queue product needs, do the safe parts.
+"""Survey fresh preflight evidence and dispatch existing guarded queue operations.
 
-The point of this module is that the user stops reading dashboards. It walks the queue,
-classifies every product from live evidence, performs the actions that are provably safe
-and fully automatic, and returns one human-readable list of what still needs a person.
-
-It deliberately never invents product facts. A missing 安装方式 or 尺寸 stops that product
-and becomes a checklist line, because guessing a specification is a false advertisement to
-the platform, not a shortcut.
-
-Nothing here writes to a product unless the caller asks for it and every gate in
-`WRITE_GATES` is satisfied; see `decide()` for the per-product routing.
+Queue-only planning is labeled explicitly. Supplied missing attributes use their own
+durable publication jobs; assets, historical resolutions and facts are never invented.
 """
 
 from __future__ import annotations
@@ -20,6 +12,7 @@ from pathlib import Path
 
 from . import batch
 from .errors import DoudianError
+from .jobs import read_json, write_json
 
 # Outcomes a single product can end an auto run with.
 SKIP_VERIFIED = 'skip_verified'          # already accepted, never re-save
@@ -40,7 +33,7 @@ ASSET_ERRORS = ('writer_image_slots_incomplete', 'visual_quality_failed_after_re
 
 GROUP_LABELS = {
     SKIP_VERIFIED: '已核验，跳过（不重存）',
-    READ_ONLY: '只读确认，正常',
+    READ_ONLY: '待只读核查或预检结果（非完成）',
     WAIT_FACTS: '需要你提供资料',
     WAIT_DECISION: '需要你决定',
     WAIT_REBASELINE: '可自动取证，待你确认历史提交',
@@ -95,7 +88,23 @@ def decide(row):
     return HOLD_ERROR, (row.get('last_error') or '未分类阻塞')[:100]
 
 
-def survey(*, endpoint='ego', session='doudian-auto', db_path=None):
+def _ensure_session(endpoint, session):
+    """Initialize a genuinely new native session; never replace lost/finished state."""
+    from .bridge import Bridge, is_native_endpoint
+    from .jobs import DATA_ROOT, Lock
+    if not is_native_endpoint(endpoint):
+        return
+    bridge = Bridge(endpoint, session=session)
+    with Lock(DATA_ROOT / 'browser.lock'):
+        root = bridge.session_dir
+        if not root.exists():
+            # Preflight intentionally cannot create sessions. This explicit initial
+            # navigation does so once, before handing control to read-only preflight.
+            bridge.command('navigate', {'url': 'https://fxg.jinritemai.com/ffa/g/list'})
+        # Existing directories, even without state.json, are never reset here.
+
+
+def survey(*, endpoint='ego', session='doudian-auto', db_path=None, live=False, report_dir=None):
     """Classify the whole queue and return the per-outcome buckets plus a fact checklist."""
     status = batch.batch_status(db_path=db_path)
     products = status.get('products') or []
@@ -103,11 +112,31 @@ def survey(*, endpoint='ego', session='doudian-auto', db_path=None):
     # is unusable for someone who has to decide which product to go look at.
     titled = _titles_by_product(db_path)
 
+    observations = {}
+    if live:
+        from .preflight import preflight_products
+        ids = [p['product_id'] for p in products if decide(p)[0] != SKIP_VERIFIED]
+        if ids:
+            _ensure_session(endpoint, session)
+        for offset in range(0, len(ids), 20):
+            read = preflight_products(endpoint, product_ids=ids[offset:offset+20],
+                                      session=session, db_path=db_path, report_dir=report_dir)
+            observations.update({p['product_id']: p for p in read['products']})
+            if any(p.get('waiting_human') for p in read['products']):
+                break
     buckets: dict[str, list] = {}
     checklist = []
     sku_waiting = []
     for row in products:
         outcome, reason = decide(row)
+        observation = observations.get(row['product_id'])
+        if observation and observation.get('evidence', {}).get('snapshot_read'):
+            if observation.get('eligible'):
+                outcome, reason = READ_ONLY, '新鲜预检通过；是否可写仍由队列状态、素材和Writer决定'
+            else:
+                updated = dict(row, last_error=observation.get('reason'), submission_state=row.get('submission_state'))
+                outcome, reason = decide(updated)
+                reason = observation.get('message') or reason
         title = titled.get(row.get('product_id')) or _product_title(row)
         buckets.setdefault(outcome, []).append({
             'product_id': row.get('product_id'),
@@ -115,9 +144,11 @@ def survey(*, endpoint='ego', session='doudian-auto', db_path=None):
             'submission_state': row.get('submission_state'),
             'title': title,
             'reason': reason,
+            'observation': 'fresh' if observation and observation.get('evidence', {}).get('snapshot_read') else 'queue_record',
         })
         if outcome == WAIT_FACTS:
-            missing = _missing_fields(row.get('last_error'))
+            missing = (observation.get('missing_fields', []) if observation and observation.get('evidence', {}).get('snapshot_read')
+                       else _missing_fields(row.get('last_error')))
             # SKU code problems carry no attribute names; asking for an empty attribute
             # block would be a dead line in the checklist, so they are listed separately.
             if missing:
@@ -126,6 +157,7 @@ def survey(*, endpoint='ego', session='doudian-auto', db_path=None):
                     'title': title,
                     'fields': missing,
                     'queue_reason': (row.get('last_error') or '')[:160],
+                    'observation': 'fresh' if observation and observation.get('evidence', {}).get('snapshot_read') else 'queue_record',
                 })
             else:
                 sku_waiting.append({
@@ -135,6 +167,8 @@ def survey(*, endpoint='ego', session='doudian-auto', db_path=None):
                 })
 
     return {
+        'observation_mode': 'live_preflight' if live else 'queue_only',
+        'observations': list(observations.values()),
         'total': len(products),
         'buckets': {k: v for k, v in buckets.items() if v},
         'counts': {k: len(v) for k, v in buckets.items() if v},
@@ -221,16 +255,18 @@ def render(report, *, as_markdown=False):
     if as_markdown:
         lines.append('# 自动巡检结果\n')
         lines.append(f"共 {report['total']} 件商品。\n")
+        lines.append('以下分类为本轮开始时的观察；实际动作及最终队列另列。\n')
+        lines.append('数据来源：' + report.get('observation_mode', 'queue_only') + '；未重新读取的条目只表示队列记录。\n')
         for outcome, n in sorted(counts.items(), key=lambda kv: -kv[1]):
             lines.append(f"- **{GROUP_LABELS.get(outcome, outcome)}**：{n} 件")
         checklist = report.get('facts_checklist') or []
         if checklist:
             lines.append('\n## 需要你提供的资料\n')
-            lines.append('下表每件商品，请填上真实值。**不知道就写「待确认」，不要猜。**\n')
+            lines.append('fresh为本轮实查缺项，queue_record仅旧队列待核实；不要把旧记录当当前缺项。只填有依据的真实值。\n')
             for item in checklist:
                 fields = '、'.join(item['fields']) or '（见队列原因）'
                 lines.append(f"- `{item['product_id']}` {item.get('title') or ''}"
-                             f" → 缺：{fields}")
+                             f" → 待核实字段：{fields}（来源：{item.get('observation', 'queue_record')}）")
         sku = report.get('sku_waiting') or []
         if sku:
             lines.append('\n## 需要你确认的商家编码\n')
@@ -244,6 +280,12 @@ def render(report, *, as_markdown=False):
             lines.append(f"- 原因：{readiness['reason']}")
         if readiness.get('acceptance_products'):
             lines.append(f"- 已验收商品：{', '.join(readiness['acceptance_products'])}")
+        if report.get('queue_after') is not None:
+            lines.append('\n最终队列：' + json.dumps(report['queue_after'], ensure_ascii=False))
+        if report.get('actions'):
+            lines.append('\n## 本轮实际执行\n')
+            for item in report['actions']:
+                lines.append('- ' + json.dumps(item, ensure_ascii=False))
         return '\n'.join(lines)
 
     lines.append(f'共 {report["total"]} 件商品')
@@ -270,13 +312,31 @@ def write_facts_template(report, path):
             for item in report.get('facts_checklist') or []
         ],
     }
-    Path(path).write_text(json.dumps(template, ensure_ascii=False, indent=1), encoding='utf-8')
+    path = Path(path)
+    if path.exists():
+        previous = read_json(path)  # Malformed input must survive unchanged, not be replaced.
+        if not isinstance(previous, dict) or not isinstance(previous.get('items'), list):
+            raise DoudianError('invalid_facts', '已有资料文件格式错误，已保留原文件。')
+        merged = {str(item.get('product_id')): item for item in previous['items']}
+        for item in template['items']:
+            pid = str(item['product_id'])
+            if pid in merged:
+                existing = merged[pid]
+                existing.setdefault('attributes', {})
+                for name in item['attributes']:
+                    existing['attributes'].setdefault(name, '')
+            else:
+                merged[pid] = item
+        template['items'] = list(merged.values())
+    write_json(path, template)
     return template
 
 
 def load_facts(path):
     """Read the filled-in facts file, dropping blanks and '待确认' placeholders."""
-    data = json.loads(Path(path).read_text(encoding='utf-8'))
+    data = read_json(path)
+    if not isinstance(data, dict) or not isinstance(data.get('items'), list):
+        raise DoudianError('invalid_facts', '资料文件必须包含 items 数组。')
     usable = {}
     for item in data.get('items') or []:
         pid = str(item.get('product_id') or '')
@@ -285,3 +345,88 @@ def load_facts(path):
         if pid and attrs:
             usable[pid] = attrs
     return usable
+
+
+def auto(args):
+    """Survey fresh evidence and dispatch only existing, explicitly authorized paths."""
+    confirmed = load_facts(args.facts) if args.facts else {}  # before any template write
+    report = survey(endpoint=args.endpoint, session=args.session, live=not args.plan,
+                    report_dir=args.report_dir)
+    report['facts_loaded'] = len(confirmed)
+    report['actions'] = []
+    def checkpoint():
+        if args.report_dir:
+            write_json(Path(args.report_dir) / 'auto-result.json', report)
+    checkpoint()
+    budget = args.limit
+    halted = False
+    if args.apply:
+        if not args.shop:
+            raise DoudianError('shop_required', '自动写入必须明确 --shop；不会默认选择店铺。')
+        from .bridge import Bridge
+        from .editor import Editor
+        from .attribute_workflow import publish_attributes
+        def queue_check(pid):
+            rows = [p for p in batch.batch_status()['products'] if p['product_id'] == pid]
+            if len(rows) != 1 or rows[0]['shop'] != args.shop:
+                raise DoudianError('auto_identity_conflict', '资料商品必须唯一且属于明确店铺。')
+            row = rows[0]
+            if (row['state'] in ('verified', 'ready', 'editing', 'uploaded', 'submitting', 'submitted', 'agent_claimed') or
+                    row.get('submission_state') not in (None, 'not_attempted') or row.get('submission_attempts', 0)):
+                raise DoudianError('auto_product_occupied', '已有编辑/提交/已完成任务，自动补属性不得覆盖。')
+        if confirmed:
+            editor = Editor(Bridge(args.endpoint, session=args.session))
+            for pid, values in confirmed.items():
+                if budget <= 0:
+                    break
+                budget -= 1
+                try:
+                    queue_check(pid)
+                    identity = {'product_id': pid, 'shop': args.shop,
+                                'edit_url': f'https://fxg.jinritemai.com/ffa/g/create?product_id={pid}'}
+                    result = publish_attributes(editor, identity, values, queue_check=queue_check)
+                    report['actions'].append({'kind': 'attributes', **result})
+                    checkpoint()
+                except DoudianError as exc:
+                    report['actions'].append({'kind': 'attributes', 'product_id': pid,
+                                              'error': exc.code, 'persisted': False})
+                    checkpoint()
+                    if exc.waiting or exc.code.startswith(('ego_', 'transport_', 'attribute_fill_', 'attribute_submission_')):
+                        halted = True
+                        break
+        # Queue execution is already durable and enforces images, full SKU and unknown guards.
+        products = batch.batch_status()['products']
+        uncertain = [p['product_id'] for p in products if p['shop'] == args.shop and
+                     p.get('submission_state') in ('unknown', 'accepted') and p['state'] != 'verified']
+        def dispatch(kind, **kwargs):
+            nonlocal halted
+            try:
+                report['actions'].append({'kind': kind, 'result': batch.run_batch(
+                    args.endpoint, session=args.session, **kwargs)})
+            except DoudianError as exc:
+                report['actions'].append({'kind': kind, 'error': exc.code})
+                halted = True  # No further browser actions after an unsettled failure.
+            checkpoint()
+        if uncertain and not halted:
+            dispatch('readback', product_ids=uncertain[:args.limit], limit=args.limit,
+                     readback_only=True, resume_only=True)
+        if not halted:
+            readiness = batch.execution_readiness(args.endpoint)
+            ready = [p['product_id'] for p in batch.batch_status()['products']
+                     if p['shop'] == args.shop and p['state'] == 'ready']
+            if ready and budget > 0 and readiness.get('writer_ready'):
+                dispatch('batch_write', product_ids=ready[:budget], limit=budget)
+            elif ready and not readiness.get('writer_ready'):
+                report['actions'].append({'kind': 'batch_write', 'blocked': 'writer_not_accepted'})
+    report['queue_after'] = batch.batch_status().get('counts')
+    persisted = {a['product_id'] for a in report['actions'] if a.get('kind') == 'attributes' and a.get('persisted')}
+    report['facts_checklist'] = [item for item in report['facts_checklist'] if item['product_id'] not in persisted]
+    if args.report_dir:
+        out = Path(args.report_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        if report['facts_checklist']:
+            write_facts_template(report, out / 'facts-needed.json')
+        (out / 'auto-report.md').write_text(render(report, as_markdown=True), encoding='utf-8')
+        write_json(out / 'auto-result.json', report)
+    report['summary'] = render(report)
+    return report

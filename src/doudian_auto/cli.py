@@ -140,13 +140,14 @@ def parser():
     batch_auto = batch_sub.add_parser(
         'auto', help='一条命令巡检全队列：自动做安全的部分，列出需要你补的资料')
     batch_auto.add_argument('--plan', action='store_true',
-                            help='只巡检并出清单，不写任何商品（默认行为）')
+                            help='只按本地队列规划，不做逐品页面预检；默认运行新鲜只读预检')
     batch_auto.add_argument('--apply', action='store_true',
                             help='在通过全部门槛时自动写入并读回')
     batch_auto.add_argument('--facts', help='已填好的资料清单 JSON；提供后把里面的真实值用于对应商品')
     batch_auto.add_argument('--report-dir', help='把巡检报告和资料清单模板写到这里')
     batch_auto.add_argument('--session', default='doudian-auto',
                             help='浏览器任务组，默认沿用主会话')
+    batch_auto.add_argument('--limit', type=int, default=1, help='每轮实际处理的最大商品数，1至20')
     batch_auto.add_argument('--shop', help='店铺名；补属性时用于核验页面身份')
     batch_repair = batch_sub.add_parser('repair-title', help='受理后标题仍旧时，仅在双端证据及货架模式通过后补救一次')
     batch_repair.add_argument('--product-id', action='append', dest='product_ids', required=True,
@@ -722,39 +723,11 @@ def run(args):
                 return batch_queue.batch_status(args.batch_id)
             if args.batch_command == 'auto':
                 from . import commander
-                report = commander.survey(endpoint=args.endpoint, session=args.session)
-                if args.report_dir:
-                    out = Path(args.report_dir)
-                    out.mkdir(parents=True, exist_ok=True)
-                    (out / 'auto-report.md').write_text(
-                        commander.render(report, as_markdown=True), encoding='utf-8')
-                    if report.get('facts_checklist'):
-                        commander.write_facts_template(report, out / 'facts-needed.json')
-                if args.facts:
-                    confirmed = commander.load_facts(args.facts)
-                    report['facts_loaded'] = len(confirmed)
-                    if args.apply and confirmed:
-                        # Only fill attributes the user actually supplied; nothing is guessed.
-                        from .attributes import apply_attributes, verify_after_reopen
-                        from .ego_bridge import EgoBridge
-                        bridge = EgoBridge(session=args.session) if is_native_endpoint(args.endpoint) \
-                            else Bridge(args.endpoint, session=args.session)
-                        editor = Editor(bridge)
-                        applied = []
-                        for pid, values in confirmed.items():
-                            manifest = {'product_id': pid, 'shop': args.shop or '销霁百货',
-                                        'edit_url': f'https://fxg.jinritemai.com/ffa/g/create?product_id={pid}'}
-                            try:
-                                editor.open(manifest, fresh=True)
-                                filled = apply_attributes(editor, manifest, values)
-                                applied.append({'product_id': pid, 'fields': filled,
-                                                'verified': verify_after_reopen(editor, manifest, values)
-                                                if any(f.get('written') for f in filled) else []})
-                            except DoudianError as exc:
-                                applied.append({'product_id': pid, 'error': exc.code})
-                        report['applied'] = applied
-                report['summary'] = commander.render(report)
-                return report
+                if args.plan and args.apply:
+                    raise DoudianError('invalid_arguments', '--plan 与 --apply 不能同时使用。')
+                if not 1 <= args.limit <= 20:
+                    raise DoudianError('invalid_limit', '自动处理每轮限制1至20件。')
+                return commander.auto(args)
             if args.batch_command == 'preflight':
                 from .preflight import preflight_products
                 return preflight_products(args.endpoint, product_ids=args.product_ids, batch_id=args.batch_id,

@@ -409,3 +409,32 @@ for(const mode of ['footer','other','clear','wrong-route','lost'])test('native c
   assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|dispatchMouse/.test(x)),false);
   dom.window.close();
 });
+
+for(const staleRoute of [false,true])test('closed active/cache only creates a Page for explicit navigation: '+staleRoute,async t=>{
+  const f=await fixture(t);
+  const url='https://v2-dd.chengji-inc.com/product/quick_edit';
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,active:'closed',pages:staleRoute?{'v2-dd.chengji-inc.com/product/quick_edit':'closed'}:{},requests:{}}));
+  let created=0, navigated=0;
+  const next={...f.page,label:'p2',goto:async()=>{navigated++;}};
+  f.task.page=label=>{assert.notEqual(label,'closed');return f.page;};
+  f.task.newPage=async()=>{created++;return next;};
+  await f.run('navigate',{url});
+  assert.equal(created,1);assert.equal(navigated,1);
+  const state=JSON.parse(await fs.readFile(f.statePath));
+  assert.equal(state.active,'p2');assert.equal(state.pages['v2-dd.chengji-inc.com/product/quick_edit'],'p2');
+});
+test('lost active Page never retargets a write to a surviving Page',async t=>{
+  const f=await fixture(t);
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,active:'closed',pages:{},requests:{}}));
+  f.task.page=()=>{throw Error('must not obtain a closed handle');};
+  await assert.rejects(f.run('click',{selector:'#save'}),{code:'ego_active_page_missing'});
+  assert.ok(!f.calls.includes('click'));
+});
+test('stale route does not navigate a different surviving active page',async t=>{
+  const f=await fixture(t);let fresh=0;
+  await fs.writeFile(f.statePath,JSON.stringify({spaceId:8,active:'p1',pages:{'v2-dd.chengji-inc.com/product/quick_edit':'closed'},requests:{}}));
+  f.page.goto=async()=>{throw Error('must not reuse unrelated Page');};
+  f.task.newPage=async()=>({...f.page,label:'p2',goto:async()=>{fresh++;}});
+  await f.run('navigate',{url:'https://v2-dd.chengji-inc.com/product/quick_edit'});
+  assert.equal(fresh,1);
+});

@@ -411,3 +411,17 @@ test('the draft banner is reported so a draft readback is never taken for the li
   assert.equal(result.draft_loaded,true);
   page.window.close();
 });
+
+test('attribute scope excludes only the exact category field, retaining all other protection',()=>{
+  const {page,call}=fixture();
+  const base=page.window.document.querySelector('#goodsEditScrollContainer-基础信息');
+  base.insertAdjacentHTML('beforeend','<div class="categoryPropertiesItem"><div attr-field-id="尺寸"><input value="30cm"></div><div attr-field-id="材质"><input value="PP"></div></div>');
+  const full=call('snapshot');
+  const scoped=call('snapshot',{attribute_names:['尺寸']});
+  const inputs=s=>s.protected.find(x=>x.section==='goodsEditScrollContainer-基础信息').inputs.map(x=>x.value);
+  assert.ok(inputs(full).includes('30cm'));
+  assert.ok(!inputs(scoped).includes('30cm'));
+  assert.ok(inputs(scoped).includes('PP'));
+  base.insertAdjacentHTML('beforeend','<div class="categoryPropertiesItem"><div attr-field-id="尺寸"><input></div></div>');
+  assert.equal(call('snapshot',{attribute_names:['尺寸']}).error,'attribute_not_unique');
+});

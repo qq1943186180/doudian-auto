@@ -1,52 +1,33 @@
 @echo off
 chcp 65001 >nul
-setlocal enabledelayedexpansion
+setlocal
 cd /d "%~dp0"
-
-echo ==========================================
-echo   抖店自动处理
-echo ==========================================
-echo.
-
+set "PY=.venv\Scripts\python.exe"
 set "REPORT_DIR=work\auto-pilot-20261110\report"
 set "FACTS=%REPORT_DIR%\facts-needed.json"
-set "PY=.venv\Scripts\python.exe"
-
 if not exist "%PY%" (
-  echo [错误] 找不到虚拟环境 .venv
-  echo 请确认在项目根目录运行。
+  echo 找不到项目Python，请检查安装。
   pause
   exit /b 1
 )
-
-rem 如果资料表已经填过真实值，就带上 --apply 去写；否则只巡检。
-set "HAS_FACTS="
+echo 1. 新鲜只读预检和报告
+echo 2. 执行已授权任务：发布已填属性、核查未知提交、处理已就绪图文
+choice /C 12 /N /M "请选择 1 或 2："
+if errorlevel 2 goto apply
+"%PY%" -X utf8 -m doudian_auto.cli batch auto --report-dir "%REPORT_DIR%"
+goto result
+:apply
 if exist "%FACTS%" (
-  "%PY%" -X utf8 -c "import json,sys;d=json.load(open(r'%FACTS%',encoding='utf-8'));ok=any(v.strip() and v.strip()!='待确认' for i in d.get('items',[]) for v in (i.get('attributes') or {}).values());sys.exit(0 if ok else 1)" >nul 2>&1
-  if !errorlevel!==0 set "HAS_FACTS=1"
-)
-
-if defined HAS_FACTS (
-  echo 检测到已填写的资料，将写入商品并核对...
-  echo.
   "%PY%" -X utf8 -m doudian_auto.cli batch auto --apply --facts "%FACTS%" --shop 销霁百货 --report-dir "%REPORT_DIR%"
 ) else (
-  echo 正在巡检全店商品，只读不改...
-  echo.
-  "%PY%" -X utf8 -m doudian_auto.cli batch auto --report-dir "%REPORT_DIR%"
+  "%PY%" -X utf8 -m doudian_auto.cli batch auto --apply --shop 销霁百货 --report-dir "%REPORT_DIR%"
 )
-
-echo.
-echo ==========================================
-if exist "%FACTS%" (
-  echo 需要你填写的资料表：
-  echo   %FACTS%
-  echo.
-  echo 在空引号里填真实值，不知道就写 待确认。
-  echo 填完保存，再双击本文件。
+:result
+if errorlevel 1 (
+  echo 本轮发生错误，请查看终端与已有任务证据，不能据此认为未提交。
 ) else (
-  echo 没有需要你补的资料，全部处理完毕。
+  echo 本轮已结束；是否完成请看 auto-report.md 的实际动作和最终队列。
 )
-echo ==========================================
-echo.
+echo 报告目录：%REPORT_DIR%
+echo 已填写的资料会保留。只有被报告核验通过的项目才算完成。
 pause

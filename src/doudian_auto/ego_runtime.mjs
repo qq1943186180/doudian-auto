@@ -111,14 +111,19 @@ export async function runEgo(request) {
     state.cleanup.phase='finished';state.cleanup.finished_at=Date.now();await save();
     return {closed:count,scope:'task_pages',browser_exit_requested:false};
   }
-  let page=task.page(state.active);
+  // A Page handle can outlive its actual tab. Never retarget a write after loss.
+  const liveTabs=await task.tabs();
+  const owned=new Set(liveTabs.filter(t=>t.openedBy==='agent').map(t=>t.label));
+  const lostRoutes=new Set();
+  for(const [key,label] of Object.entries(state.pages))if(!owned.has(label)){lostRoutes.add(key);delete state.pages[key];}
+  let page=owned.has(state.active)?task.page(state.active):null;
   if(action==='navigate') {
     const u=new URL(args.url);
     if(!['v2-dd.chengji-inc.com','fxg.jinritemai.com'].includes(u.hostname)||u.protocol!=='https:')
       fail('ego_navigation_scope','Only the current shop project sites are supported.');
     const key=u.hostname+u.pathname+(u.searchParams.has('batchType')?'?batchType='+u.searchParams.get('batchType'):'');
     if(state.pages[key]) page=task.page(state.pages[key]);
-    else if(Object.keys(state.pages).length) page=await task.newPage();
+    else if(lostRoutes.has(key)||!page||Object.keys(state.pages).length) page=await task.newPage();
     state.pages[key]=page.label;state.active=page.label;await save();
     await ensureViewport(page);
     // The official editor can stay interactive while unrelated resources keep
@@ -133,6 +138,7 @@ export async function runEgo(request) {
     for(const [key,label]of Object.entries(state.pages))if(label===state.active)delete state.pages[key];
     state.active=(await task.pages())[0]?.label;await save();return {closed:true};
   }
+  if(!page) { await save(); fail('ego_active_page_missing','Owned active Page closed; only an explicit navigation may create a replacement.'); }
   if(action==='network') {
     if(args.cmd==='start'||args.cmd==='stop'){state.capture=args.cmd==='start';await save();return {success:true};}
     if(args.cmd==='list')return {requests:Object.values(state.requests).filter(r=>!args.filter||r.url.includes(args.filter)).map(({body,requestBody,...r})=>r)};

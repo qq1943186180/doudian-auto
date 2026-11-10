@@ -146,3 +146,117 @@ def test_text_write_that_does_not_stick_is_reported():
     out = attributes.apply_attributes(editor, {'product_id': '1'}, {'尺寸': '30cm'})
     assert out[0]['written'] is False
     assert '读回值' in out[0]['reason']
+
+
+def test_existing_facts_survive_template_refresh(tmp_path):
+    path = tmp_path / 'facts.json'
+    path.write_text(json.dumps({'items':[{'product_id':'1','attributes':{'尺寸':'30cm'},
+                                         'confirmed_by':'owner'}]}), encoding='utf-8')
+    report = {'facts_checklist':[{'product_id':'1','title':'t','fields':['尺寸','材质']},
+                                {'product_id':'2','title':'u','fields':['厚度']}]}
+    commander.write_facts_template(report, path)
+    assert commander.load_facts(path) == {'1':{'尺寸':'30cm'}}
+    data = json.loads(path.read_text(encoding='utf-8'))
+    assert data['items'][0]['confirmed_by'] == 'owner'
+    assert data['items'][0]['attributes']['材质'] == ''
+    assert data['items'][1]['product_id'] == '2'
+
+
+def test_broken_existing_facts_never_overwritten(tmp_path):
+    path = tmp_path / 'facts.json'
+    path.write_text('invalid', encoding='utf-8')
+    with pytest.raises(ValueError):
+        commander.write_facts_template({'facts_checklist':[]}, path)
+    assert path.read_text() == 'invalid'
+
+
+def test_survey_uses_live_missing_fields_not_old_queue(monkeypatch):
+    monkeypatch.setattr(commander,'_ensure_session',lambda *a:None)
+    from doudian_auto import preflight
+    monkeypatch.setattr(commander.batch,'batch_status',lambda **kw:{'products':[
+        row(last_error='required_attributes_missing; missing_fields=["尺寸"]')]})
+    monkeypatch.setattr(commander,'_titles_by_product',lambda *a:{})
+    monkeypatch.setattr(commander,'_readiness',lambda *a,**k:{})
+    monkeypatch.setattr(preflight,'preflight_products',lambda *a,**k:{'products':[
+        {'product_id':'1','eligible':True,'evidence':{'snapshot_read':True}}]})
+    result=commander.survey(live=True)
+    assert result['facts_checklist']==[]
+    assert result['buckets'][commander.READ_ONLY][0]['observation']=='fresh'
+
+
+def test_auto_reads_facts_before_refresh_and_does_not_claim_write_on_plan(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    facts=tmp_path/'facts-needed.json'
+    facts.write_text(json.dumps({'items':[{'product_id':'1','attributes':{'尺寸':'30cm'}}]}))
+    monkeypatch.setattr(commander,'survey',lambda **kw:{'total':1,'facts_checklist':[
+        {'product_id':'1','fields':['尺寸'],'title':'t'}]})
+    monkeypatch.setattr(commander.batch,'batch_status',lambda:{'counts':{'blocked':1}})
+    result=commander.auto(SimpleNamespace(facts=str(facts),endpoint='ego',session='test',plan=True,
+                         report_dir=str(tmp_path),apply=False,shop=None,limit=1))
+    assert result['facts_loaded']==1
+    assert commander.load_facts(facts)=={'1':{'尺寸':'30cm'}}
+    assert result['actions']==[]
+
+@pytest.mark.parametrize('ready_writer',[False,True])
+def test_auto_unknown_is_readback_only_and_ready_obeys_writer(monkeypatch,ready_writer):
+    from types import SimpleNamespace
+    products=[row(product_id='1',shop='shop',submission_state='unknown'),
+              row(product_id='2',shop='shop',state='ready')]
+    monkeypatch.setattr(commander,'survey',lambda **kw:{'total':2,'facts_checklist':[]})
+    monkeypatch.setattr(commander.batch,'batch_status',lambda:{'products':products,'counts':{}})
+    monkeypatch.setattr(commander.batch,'execution_readiness',lambda endpoint:{'writer_ready':ready_writer})
+    calls=[]
+    monkeypatch.setattr(commander.batch,'run_batch',lambda endpoint,**kw:calls.append(kw) or {'run':[]})
+    commander.auto(SimpleNamespace(facts=None,endpoint='ego',session='same',plan=False,
+                     report_dir=None,apply=True,shop='shop',limit=1))
+    assert calls[0]['product_ids']==['1'] and calls[0]['readback_only'] is True
+    assert len(calls)==(2 if ready_writer else 1)
+    if ready_writer:assert calls[1]['product_ids']==['2']
+
+
+def test_auto_stops_dispatch_after_unknown_transport_failure(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    products=[row(product_id='1',shop='shop',submission_state='unknown'),row(product_id='2',shop='shop',state='ready')]
+    monkeypatch.setattr(commander,'survey',lambda **kw:{'total':2,'facts_checklist':[]})
+    monkeypatch.setattr(commander.batch,'batch_status',lambda:{'products':products,'counts':{}})
+    monkeypatch.setattr(commander.batch,'execution_readiness',lambda endpoint:pytest.fail('must stop'))
+    calls=[]
+    def fail(endpoint,**kw):
+        calls.append(kw);raise DoudianError('ego_operation_unsettled','pending')
+    monkeypatch.setattr(commander.batch,'run_batch',fail)
+    result=commander.auto(SimpleNamespace(facts=None,endpoint='ego',session='same',plan=False,
+                     report_dir=str(tmp_path),apply=True,shop='shop',limit=1))
+    assert len(calls)==1
+    assert result['actions'][0]['error']=='ego_operation_unsettled'
+    assert json.loads((tmp_path/'auto-result.json').read_text())['actions'][0]['error']=='ego_operation_unsettled'
+
+def test_auto_attribute_consumes_write_budget_and_does_not_dispatch_ready(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    from doudian_auto import attribute_workflow,bridge,editor
+    facts=tmp_path/'facts.json';facts.write_text(json.dumps({'items':[{'product_id':'1','attributes':{'尺寸':'30cm'}}]}))
+    products=[row(product_id='1',shop='shop'),row(product_id='2',shop='shop',state='ready')]
+    monkeypatch.setattr(commander,'survey',lambda **kw:{'total':2,'facts_checklist':[]})
+    monkeypatch.setattr(commander.batch,'batch_status',lambda:{'products':products,'counts':{}})
+    monkeypatch.setattr(commander.batch,'execution_readiness',lambda *a:{'writer_ready':True})
+    monkeypatch.setattr(commander.batch,'run_batch',lambda *a,**k:pytest.fail('write budget exhausted'))
+    monkeypatch.setattr(bridge,'Bridge',lambda *a,**k:object())
+    monkeypatch.setattr(editor,'Editor',lambda *a:object())
+    monkeypatch.setattr(attribute_workflow,'publish_attributes',lambda *a,**k:{'product_id':'1','persisted':True})
+    result=commander.auto(SimpleNamespace(facts=str(facts),endpoint='ego',session='same',plan=False,
+                     report_dir=None,apply=True,shop='shop',limit=1))
+    assert len(result['actions'])==1 and result['actions'][0]['kind']=='attributes'
+
+
+@pytest.mark.parametrize('existing',[False,True])
+def test_auto_initializes_only_genuinely_new_session(tmp_path,monkeypatch,existing):
+    from doudian_auto import bridge,jobs
+    from types import SimpleNamespace
+    root=tmp_path/'native-session'
+    if existing:
+        root.mkdir();(root/'pending-command.json').write_text('unsettled')
+    calls=[]
+    monkeypatch.setattr(bridge,'Bridge',lambda *a,**k:SimpleNamespace(session_dir=root,command=lambda *a:calls.append(a)))
+    monkeypatch.setattr(jobs,'DATA_ROOT',tmp_path)
+    commander._ensure_session('ego','isolated')
+    assert len(calls)==(0 if existing else 1)
+    if calls:assert calls[0][0]=='navigate'
