@@ -1,29 +1,30 @@
 # 抖店本地上传
 
-更新：2026-11-10（Asia/Shanghai）；当前执行：codex-live-one。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。
+更新：2026-11-11（Asia/Shanghai）；当前执行：codex-live-one。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。
 
 ## 给人的说明
 
-### T-20261110-009 · 194-76 · Codex实跑一件（等待妙手授权）
+### T-20261110-009 · 194-76 · Codex实跑：属性发布及双端读回通过
 
-- 状态：blocked；Agent codex-live-one。用户要求亲跑验证，当前Space20/session=codex-live-one-20261110，p3妙手授权页已handOff给用户，p1/p2为本轮官方只读页面；不得新建空间绕过授权，用户完成后takeOverTaskSpace(20)续办。
-- 正式preflight对22/41/28因blocked全部零耗时跳过，实际未读页面。这暴露auto的预检候选限制，不能把整体live_preflight标签当逐品实查；后续需另核对该只读路由，不改blocked来放行。
-- 现有_stable_doudian_snapshot在共享browser.lock内三品实读：22收纳盒3848323678446157900无草稿/驳回、必填100%、5主19详、全部4SKU；41/28分别必填66%/50%，仍缺安装方式。22作为待继续核验候选，不是已发布或已完成商品。
-- 妙手open_product打开22前转至fuwu.jinritemai.com/authorize?service_id=234（销霁百货/妙手），miaoshou_authorization_required；页面确认需重新授权，已交用户。0商品字段写入、0保存、0发布；原队列、unknown及WorkBuddy商品50的editing记录未动。
-- 证据work/codex-live-one-20261110/{session,RESULT}.json、三份*-official.json及preflight/；只证明官方采集通过，不证明双端或写入闭环成功。本轮无代码修改、未跑离线测试；必要授权现场保留，用户确认后原空间继续，结束再关闭自有页。
-- Linear194-76已记录阶段证据，HANDOFF/映射提交并推送后回写读回；父运营任务仍in_progress。
+- 状态：review（属性阶段完成，整套换图/上架未验收）；Agent codex-live-one，2026-11-10→11。用户完成授权后接回原Space20，销霁百货商品41/3848316465015030183依据原标题及20个贴片款SKU补安装方式=免打孔式。
+- 修复3个实页缺陷：SKU重载后详情预览不挂载；蓝色info被当成表单错误；CDN地址轮换被当成换图。新增notices、沿用有序resource_key比较、失败读回先落盘；未知/错误alert及真实图片变化仍阻断。代码49e2f24。
+- 正常属性任务仅发布一次受理，submitted后恢复只读→saved/verified_by_readback；官方新页必填100%，妙手新页同属性，原标题、5主12详及全20SKU一致。status仍1下架；startSaleType 0→1按既有preserve_warehouse_v1记录，checkStatus 1→7/页面审核通过，其他保护字段匹配。
+- 原队列仍44 blocked/17 verified，两件unknown及WorkBuddy50的editing未动；本轮没有换图或上架，不计入三品新上传Writer验收。22官方可读但妙手精确ID/店铺查询及单品同步后仍0条，暂不编辑。
+- 正式preflight对blocked的22/41/28全部跳过，不能把live_preflight总标签当逐品实读；独立官方原读22必填100%/5主19详/4SKU、28仍缺安装方式。下一步需明确正式恢复路由，再验收完整9图；不手改队列状态放行。
+- 验证：591 Python、101 JS通过；[验收说明](docs/live-attribute-acceptance-20261110.md)，本机原证据work/codex-live-one-20261110/及~/.doudian-auto/jobs/attributes-3848316465015030183-f4eb30ca5f9b/。
+- 现场已持久化RESULT及双端证据，Space20自有p1/p2/p3已finish关闭，不再续该已结束空间；其他用户页保留。Linear194-76记录及读回、代码/交接分提交并push，父任务保持in_progress。
 
 ### T-20261110-008 · 194-76 · 属性发布首次实页验收（修复3个缺陷）
 
-- 状态：**部分完成**。属性写入链路已跑通并修复；**发布被平台新增必填项拦住**，属资料待补，非程序缺陷。
+- 状态：**部分完成**。属性填写成功；2026-11-11纠正：旧check把蓝色未来必填info误判为错误，当时未点击发布，不能断言平台拒绝，后续修复及商品41实跑见T-009。商品50仍保留原editing现场。
 - 验收商品：`3848315275342643596`（免打孔吸盘抹布架，销霁百货）。**未改动其他商品，未动队列状态。**
 - 🔴 **缺陷1（致命）读回值带 option id**：`dom.js` 用 `text(selects[0])` 读控件全文，把隐藏 option id 也读进来，读回是 `"466329 免打孔式"`，而调用方比对 `"免打孔式"`，永远不等 → 每件都卡在 `attribute_fill_incomplete`。**这就是该路径此前从未验收通过的真正原因**。改为优先读 `.ecom-g-select-selection-item`，退路用正则去掉前导数字。实测修复后 `readback="免打孔式"`、`written=true`。
 - 🔴 **缺陷2 单品无入口**：`publish_attributes()` 只能经 `batch auto --facts` 间接调用，无法对单件做验收。新增 `doudian-auto attributes --product-id X --shop Y --set 名=值 [--apply]`，缺省 dry-run，写前先读控件报可写性。
 - 🔴 **缺陷3 editing 无出口**：任务停在 `editing` 后既不能重跑也不能释放，商品被永久占用。新增 `--abandon --reason`，**仅当重开页面确认目标属性仍为空**才放行；已有不同值或已进入提交则拒绝并保留现场。
 - 附带修复：新增分支内多余的 `from .bridge import Bridge` / `from .editor import Editor` 使二者变成 `run()` 局部名，导致全部 title 分支 `UnboundLocalError`（3 个测试失败）。已删除，模块级导入已足够。
-- **平台实际拦截**：5 项被标记「2天后变更为必填」，已从 DOM 精确读出：是否可接触食品、是否进口、材质类型（多选）、型号、生产企业地址。这些是商品事实，不猜。该商品已填 品牌=无品牌、材质=ABS。
+- **平台未来规则提示**：5 项被标记「2天后变更为必填」：是否可接触食品、是否进口、材质类型（多选）、型号、生产企业地址；尚不能当作当日发布失败证据。这些是商品事实，不猜。该商品已填 品牌=无品牌、材质=ABS。
 - 验证：**587 Python 通过**（167.25s）、**99 JS 通过**（含新增回归测试：选中项读回为纯标签）。证据 `work/optimizer-20261110/`（含 ACCEPTANCE-REPORT.md、ATTR-OPTIONS.json、apply-*.json）。
-- 未做：未点发布（平台校验已拦，点了不会成功）；未改其他商品；`材质类型` 为多选，程序暂不支持自动写。
+- 未做：未点发布，不能据未来必填提示推定必败；本任务未改其他商品；`材质类型` 为多选，程序暂不支持自动写。
 
 ### T-20261110-006 · 194-160 · 自动入口与Ego标签修复
 
