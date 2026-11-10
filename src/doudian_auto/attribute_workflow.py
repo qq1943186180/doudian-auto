@@ -8,14 +8,30 @@ import time
 from .attributes import apply_attributes, _control
 from .errors import DoudianError
 from .jobs import DATA_ROOT, Lock, read_json, write_json
-from .workflow import compare_protected, guard_siblings
+from .workflow import compare_protected, guard_siblings, resource_key
 
 
 def _snapshot(editor, identity, values, *, fresh_skus=True):
     # Official SKU collection reloads the form: never invoke it on unsaved inputs.
     sku = editor.read_skus(identity) if fresh_skus else None
-    editor.wait_details(identity)
-    snap = editor.dom('snapshot', identity, attribute_names=list(values))
+    from .batch import _scroll_details_after_schema_reload
+    focused = False
+    try:
+        # The SKU reload also resets the lazy detail preview. Waiting alone leaves
+        # background pages at pending forever; restore normal layout before reading.
+        editor.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
+                                      'params': {'enabled': True}})
+        focused = True
+        _scroll_details_after_schema_reload(editor, identity)
+        editor.wait_details(identity)
+        snap = editor.dom('snapshot', identity, attribute_names=list(values))
+    finally:
+        if focused:
+            try:
+                editor.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
+                                              'params': {'enabled': False}})
+            except DoudianError:
+                pass
     if (snap.get('draft_loaded') or snap.get('rejected') or snap.get('success') or
             snap.get('product_id') != identity['product_id'] or not snap.get('shop_confirmed') or
             snap.get('detail_status') not in ('ready', 'empty')):
@@ -31,8 +47,13 @@ def _compare(before, after, values, *, preview=False):
         left.pop("sku_evidence", None)
         right.pop("sku_evidence", None)
     compare_protected(left, right)
-    for key in ('title', 'mains', 'details'):
-        if before.get(key) != after.get(key):
+    if before.get('title') != after.get('title'):
+        raise DoudianError('attribute_non_target_changed', '属性任务的标题或图片发生变化。')
+    for key in ('mains', 'details'):
+        # Material CDN hosts/renditions rotate across fresh reads; ordered material
+        # identities must still match exactly, including duplicate slots and counts.
+        if ([resource_key(x) for x in before.get(key, [])] !=
+                [resource_key(x) for x in after.get(key, [])]):
             raise DoudianError('attribute_non_target_changed', '属性任务的标题或图片发生变化。')
     def others(snap):
         return [f for f in snap.get('required_attributes', {}).get('fields', [])
@@ -122,6 +143,7 @@ def publish_attributes(editor, identity, values, *, root=None, queue_check=None)
         current = _snapshot(editor, identity, values)
         if recovering:
             baseline = read_json(job / 'before.json')
+            write_json(job / 'observed-readback.json', current)
             _compare(baseline, current, values)
             if not all((_control(editor, identity, k).get('current') or '').strip() == v for k, v in values.items()):
                 return {'product_id': identity['product_id'], 'job_dir': str(job), 'stage': state['stage'],
@@ -159,6 +181,7 @@ def publish_attributes(editor, identity, values, *, root=None, queue_check=None)
         save('submitted', submission_status='accepted')
         editor.open(identity, fresh=True)
         after = _snapshot(editor, identity, values)
+        write_json(job / 'observed-readback.json', after)
         _compare(before, after, values)
         if not all((_control(editor, identity, k).get('current') or '').strip() == v for k, v in values.items()):
             return {'product_id': identity['product_id'], 'stage': 'submitted', 'job_dir': str(job), 'persisted': False}

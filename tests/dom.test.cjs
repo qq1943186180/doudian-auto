@@ -62,6 +62,28 @@ test('a page without observed category attribute controls never reports an obser
   assert.deepEqual(fixture().call('snapshot').required_attributes,{observed:false,completion_percent:null,fields:[],missing:[]});
 });
 
+test('future attribute info remains observable without falsely failing validation',()=>{
+  const {page,call}=fixture();
+  const notice='因平台运营规则更新，5 个属性项即将调整为必填，请查看变更';
+  page.window.document.body.insertAdjacentHTML('beforeend',`<div role="alert" class="ecom-g-alert ecom-g-alert-info">${notice}</div>`);
+  assert.deepEqual(call('snapshot').errors,[]);
+  assert.deepEqual(call('snapshot').notices,[notice]);
+  assert.equal(call('publish_state').state,'pending');
+  page.window.document.body.insertAdjacentHTML('beforeend','<div class="ecom-g-form-item-explain-error">请选择安装方式</div>');
+  assert.deepEqual(call('snapshot').errors,['请选择安装方式']);
+  assert.equal(call('publish_state').state,'validation_failed');
+});
+
+test('unknown alerts and explicit error alerts remain blocking beside informational alerts',()=>{
+  const {page,call}=fixture();
+  page.window.document.body.insertAdjacentHTML('beforeend',`
+    <div role="alert" class="ecom-g-alert-info">2天后新增必填</div>
+    <div role="alert">提交失败</div>
+    <div role="alert" class="ecom-g-alert-error ecom-g-alert-info">已有错误</div>`);
+  assert.deepEqual(call('snapshot').errors,['提交失败','已有错误']);
+  assert.equal(call('publish_state').state,'validation_failed');
+});
+
 // Current real page shape: the visible strip keeps permanent 1x1 placeholders, the
 // hidden decorate canvas is a page-load snapshot that never syncs with edits, and the
 // right-hand phone preview panel is the only live-synced mirror of the detail field.

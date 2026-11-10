@@ -22,10 +22,17 @@
         .map(e => e.textContent.replace(/\s+/g, ' ').trim())
         .filter(t => t.length < 600))].slice(0, 6)
     : [];
-  const errorsSeen = all('[class*="form-item-explain-error"],[role="alert"]').filter(visible).map(text).filter(Boolean).slice(0, 20);
+  const feedback = all('[class*="form-item-explain-error"],[role="alert"]').filter(visible);
+  // The platform's blue info alert announces future required attributes even when
+  // today's form is complete. ARIA alert denotes an announcement, not an error.
+  // Only this observed info shape is nonblocking; field errors and unknown alerts stay errors.
+  const information = e => e.matches('[role="alert"].ecom-g-alert-info')
+    && !e.matches('[class*="form-item-explain-error"],.ecom-g-alert-error');
+  const notices = feedback.filter(information).map(text).filter(Boolean).slice(0, 20);
+  const errorsSeen = feedback.filter(e => !information(e)).map(text).filter(Boolean).slice(0, 20);
   const business = {draft_loaded: draftLoaded, rejected,
     rejection_count: rejectionMatch ? Number(rejectionMatch[1]) : null,
-    rejection_reasons: rejectionReasons};
+    rejection_reasons: rejectionReasons, notices};
   const identity = {url: location.href, product_id: url.searchParams.get('product_id'), success, ...business};
   if (url.hostname !== 'fxg.jinritemai.com') return {...identity, error: 'wrong_host'};
   // A dedicated, non-throwing read for the window right after "发布商品" is clicked. The
