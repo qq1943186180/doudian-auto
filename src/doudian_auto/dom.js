@@ -276,5 +276,54 @@
     if (buttons.length !== 1) return {error:'button_not_unique',count:buttons.length};
     buttons[0].click(); return {ok:true};
   }
+  if (op === 'attribute_control') {
+    // Identify exactly one category attribute and describe how to drive it. This op only
+    // observes; every click and keystroke stays in the caller so a write cannot hide here.
+    const xs = all('[attr-field-id]').filter(el =>
+      el.getAttribute('attr-field-id') === p.name &&
+      el.closest('[class*="categoryPropertiesItem"]') &&
+      !el.querySelector('[attr-field-id]') && visible(el));
+    if (xs.length !== 1) return {error:'attribute_not_unique', count:xs.length, name:p.name};
+    const box = xs[0];
+    const label = text(box).slice(0,80);
+    const inputs = [...box.querySelectorAll('input,textarea')].filter(visible);
+    const selects = [...box.querySelectorAll('.ecom-g-select')].filter(visible);
+    const textInputs = inputs.filter(x => !['hidden','search','checkbox','radio'].includes(x.type)
+      && !x.readOnly && x.getAttribute('role') !== 'combobox');
+    const multi = selects.some(s => /multiple/.test((s.className||'').toString()));
+    const kind = textInputs.length === 1 && selects.length === 0 ? 'text'
+      : selects.length === 1 && textInputs.length === 0 ? (multi ? 'multi' : 'single')
+      : 'unknown';
+    const current = textInputs.length ? (textInputs[0].value || '') : (selects.length ? text(selects[0]) : '');
+    return {name:p.name, kind, required:/^\s*[*＊]/.test(label), current:current.slice(0,60),
+      disabled: inputs.some(i=>i.disabled),
+      target: textInputs.length ? 'input' : (selects.length ? '.ecom-g-select' : null),
+      // Mark the exact node so the caller can fill or click this one and nothing else.
+      marked: (() => {
+        const node = textInputs.length ? textInputs[0] : (selects.length ? selects[0] : null);
+        if (!node) return null;
+        box.querySelectorAll('[data-doudian-attr]').forEach(e=>e.removeAttribute('data-doudian-attr'));
+        node.setAttribute('data-doudian-attr', p.name);
+        return `[data-doudian-attr="${p.name}"]`;
+      })()};
+  }
+  if (op === 'attribute_options') {
+    // Read the open dropdown for one attribute and mark the option matching p.value.
+    const box = all('[attr-field-id]').filter(el =>
+      el.getAttribute('attr-field-id') === p.name &&
+      el.closest('[class*="categoryPropertiesItem"]') &&
+      !el.querySelector('[attr-field-id]') && visible(el))[0];
+    if (!box) return {error:'attribute_not_found', name:p.name};
+    const dds = [...document.querySelectorAll('.ecom-g-select-dropdown')]
+      .filter(e => e.getBoundingClientRect().width > 0);
+    if (!dds.length) return {error:'dropdown_not_open'};
+    const items = [...dds[dds.length-1].querySelectorAll('.ecom-g-select-item-option-content')]
+      .filter(e => e.getBoundingClientRect().width > 0);
+    const labels = items.map(e => (e.innerText||'').trim()).filter(Boolean);
+    const hit = items.filter(e => (e.innerText||'').trim() === p.value);
+    if (hit.length !== 1) return {error:'option_not_unique', value:p.value, candidates:labels.slice(0,40)};
+    hit[0].setAttribute('data-doudian-option', p.value);
+    return {ok:true, selector:`[data-doudian-option="${p.value}"]`, candidates:labels.slice(0,40)};
+  }
   return {error:'unknown_operation'};
 })
