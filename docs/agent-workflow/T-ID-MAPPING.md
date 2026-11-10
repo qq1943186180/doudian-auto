@@ -2,6 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
+| T-20261110-009 | [194-76](https://linear.app/1943186180/issue/194-76) | blocked | Codex亲跑：blocked预检跳过非实读；独立官方三品采集通过，22必填100%/5主19详/4SKU。妙手需重新授权，Space20/p3已handOff；0字段写入/保存/发布，等用户授权后原空间续办，证据work/codex-live-one-20261110。 |
 | T-20261110-008 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 属性发布首次实页验收（商品 3848315275342643596）。修 3 缺陷：①**读回值带 option id**（`text(selects)` 含隐藏 id，读回 `"466329 免打孔式"` 永不等于目标 → 该路径此前不可能成功的真因）改为读 `.ecom-g-select-selection-item`；②新增 `attributes` 单品入口（原只能经 `batch auto --facts`，无法单件验收）；③新增 `--abandon --reason`（仅页面确认目标属性为空才释放 editing 僵局）。附带修 title 分支 `UnboundLocalError`（分支内重复 import Bridge/Editor 造成局部名）。实测填写成功 `written=true`，发布被平台拦：**5 项 2 天后变必填**（是否可接触食品/是否进口/材质类型多选/型号/生产企业地址），属资料待补。587 Python / 99 JS 通过。`7e0fd74`。 |
 | T-20261110-006 | [194-160](https://linear.app/1943186180/issue/194-160) | done | 修资料模板覆盖、真实preflight与受控调度/预算/未决停止，新增独立属性一次发布及只读恢复，Ego活动页/路由存活校验；585Python/98JS，报告标记及首次会话初始化另31项专项通过。手册、skill两安装副本和交接同步；无线上写入，新增属性路径待真实验收。 |
 | T-20261110-005 | [194-155](https://linear.app/1943186180/issue/194-155) | done | HANDOFF 重写 309→181 行。Codex 起草，我逐条核实：修 BOM、修路径错误（environment-and-facts 实际在 skills 下）、测试商品状态经 Ego 实测确认已下架（旧文档只是留了建稿与下架两个时点快照，非真冲突）、补「全局参数须在子命令前」。Codex 反审指出我压过头，补回 17 子命令分类（只读/写入/恢复）与输出契约、素材规格、锁语义、读回判据。所有数字回查代码与 SQLite。`db5c339`。 |

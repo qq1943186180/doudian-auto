@@ -1,8 +1,17 @@
 # 抖店本地上传
 
-更新：2026-11-10（Asia/Shanghai）；当前执行：codex-auto-repair。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。
+更新：2026-11-10（Asia/Shanghai）；当前执行：codex-live-one。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。
 
 ## 给人的说明
+
+### T-20261110-009 · 194-76 · Codex实跑一件（等待妙手授权）
+
+- 状态：blocked；Agent codex-live-one。用户要求亲跑验证，当前Space20/session=codex-live-one-20261110，p3妙手授权页已handOff给用户，p1/p2为本轮官方只读页面；不得新建空间绕过授权，用户完成后takeOverTaskSpace(20)续办。
+- 正式preflight对22/41/28因blocked全部零耗时跳过，实际未读页面。这暴露auto的预检候选限制，不能把整体live_preflight标签当逐品实查；后续需另核对该只读路由，不改blocked来放行。
+- 现有_stable_doudian_snapshot在共享browser.lock内三品实读：22收纳盒3848323678446157900无草稿/驳回、必填100%、5主19详、全部4SKU；41/28分别必填66%/50%，仍缺安装方式。22作为待继续核验候选，不是已发布或已完成商品。
+- 妙手open_product打开22前转至fuwu.jinritemai.com/authorize?service_id=234（销霁百货/妙手），miaoshou_authorization_required；页面确认需重新授权，已交用户。0商品字段写入、0保存、0发布；原队列、unknown及WorkBuddy商品50的editing记录未动。
+- 证据work/codex-live-one-20261110/{session,RESULT}.json、三份*-official.json及preflight/；只证明官方采集通过，不证明双端或写入闭环成功。本轮无代码修改、未跑离线测试；必要授权现场保留，用户确认后原空间继续，结束再关闭自有页。
+- Linear194-76已记录阶段证据，HANDOFF/映射提交并推送后回写读回；父运营任务仍in_progress。
 
 ### T-20261110-008 · 194-76 · 属性发布首次实页验收（修复3个缺陷）
 
