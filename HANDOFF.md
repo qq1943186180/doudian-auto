@@ -1,8 +1,18 @@
 # 抖店本地上传
 
-更新：2026-11-10（Asia/Shanghai）。由 Codex 独立起草、WorkBuddy 逐条核实后落盘。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。
+更新：2026-11-10（Asia/Shanghai）；当前执行：codex-auto-repair。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。
 
 ## 给人的说明
+
+### T-20261110-006 · 194-160 · 自动入口与Ego标签修复
+
+- 状态：done（代码及离线回归）；新属性发布路径与失效页恢复尚待指定商品/实页验收，不能冒称已线上验证。未操作浏览器或真实商品，原61件队列未改状态。
+- commander/CLI：先读facts再按已有内容合并模板，格式坏则保留；默认正式preflight分批实读，--plan仅队列分类；旧记录与fresh区分，未知任务readback-only、ready走原Writer，门槛不放宽；--apply明确shop，每轮写入预算生效，未决错误停调度、动作后写检查点及最终报告。
+- attribute_workflow.py：独立不可变属性任务，同browser/job锁及同商品占用检查；仅已确认的空文本/单选，完整SKU在填前/提交后采集；精确屏蔽目标属性后比较其他保护字段、标题/图片及非目标属性，先落submitting/unknown再发布一次，受理后新页核验；同资料未知只读，不同资料不能绕过占用，editing中断保留现场。
+- ego_runtime.mjs：活动页及路由缓存按实时自有tabs校验；显式navigate可建新页，已关闭活动页的写动作直接失败，不转移到其他存活页、不重放写入。dom.js默认采集不变，属性任务才按唯一类目字段排除目标。
+- 启动run.bat改明确选择只读/执行，不按资料文件非空擅自发布；使用说明与批量skill新增auto-commander参考，不再宣称全部卡点均非程序问题或无人值守已完成。Codex/WorkBuddy批量skill同步、结构/链接/改动文件SHA256通过。
+- 验证：最终完整585 Python通过（170.34s），98 JS通过；随后报告来源标记及首次会话初始化补充31项专项通过；新会话只初始化一次，已有状态/目录不重建。覆盖资料覆盖、错误资料保留、新鲜预检、未知只读、写入预算、属性一次发布/丢响应恢复/非目标变化、失效缓存及不误写他页。证据work/auto-repair-20261110/。
+- 收尾：运行修复142ae0c，交接单独提交并push origin；HANDOFF/T-ID映射及194-160回写读回。真实验收需明确单品对象和动作后进行，不重存既有verified或unknown商品。
 
 ### 项目目标与设计
 
@@ -15,7 +25,7 @@
 - **浏览器通道**：`src/doudian_auto/bridge.py` 中 `DEFAULT_ENDPOINT='ego'`，CLI 未传 `--endpoint` 时走 Ego 原生通道。Kimi 仅通过显式本机 HTTP endpoint 兼容接入。`is_native_endpoint()` / `normalize_endpoint()` 是原生通道判定入口。
 - **队列快照**：查询 `C:\Users\19431\.doudian-auto\batch.sqlite3` 的 `products` 表，共 61 件。`state`：`blocked=44`、`verified=17`。`submission_state`：`not_attempted=42`、`unknown=2`、`verified_by_readback=17`。两件 `submission_state='unknown'` 同时为 `state='blocked'`；`state='unknown'` 为 0。后续执行前重查。
 - **测试商品**：`3853110071722639434`（「测试商品请勿购买-自动生成勿下单」）是 Ego 写入/发布验收的产物。**已于 2026-11-10 01:45 下架并复核**：列表行显示「已下架」、行内按钮为「上架」、列表仍计 57 件（下架不删除）。它在 01:27 建成草稿、01:36 发布提交受理、01:45 下架。**须待办**：是否删除该测试品。注：旧 HANDOFF 里「未发布未上架」是建稿当时的状态快照，已过时。
-- **已知缺陷**：`src/doudian_auto/ego_runtime.mjs` 仍通过 `task.page(state.active)` 取活动页。活动标签已关闭时可能得到失效页对象，后续导航报 `page ... was closed`。代码中仍可见此路径；勿把直接改运行时 `state.json` 当通用恢复方式。旧 HANDOFF 的修复建议为先用实时 tabs 校验标签，不存在则 `task.newPage()`，并同步校验路由缓存；尚未落地。
+- **本轮修复**：活动标签及路由缓存已按实时自有tabs校验；导航可建立替代页，写动作丢失活动页则停止，不重放。资料文件保留、自动调度与独立属性发布见下方T-20261110-006；本轮仅离线回归，未执行线上商品写入。
 - **验收边界**：旧 HANDOFF 记有 Ego 只读验收通过、测试商品写入/发布提交链路跑通；这不证明审核最终通过，也不能外推到所有商品和类目。证据索引见历史摘要。
 
 ### 关键约束：保护什么
@@ -87,7 +97,7 @@ doudian-auto --json verify '<job_dir>'
 
 | 命令 | 什么时候用 |
 |---|---|
-| `batch quarantine` | 商品已有编辑或保存结果未知，先隔离 |
+| `batch quarantine` | 商品已有编辑或保存结果未知，保留原占用并按正式隔离规则处理 |
 | `batch reconcile` | 导入已有操作证据并隔离，防止重复写入 |
 | `batch rebaseline` | 外部改动让基线过期，需用双端完整证据核清 |
 | `batch recover-prepared` | 尚未上传/保存的合格素材任务，用两轮只读证据恢复 |
@@ -111,7 +121,7 @@ doudian-auto --json verify '<job_dir>'
 - 成功：`{"ok":true,"data":{...}}`；失败：`{"ok":false,"error":{"code":"...","message":"...","waiting_human":false}}`
 - 退出码：**0** 成功 / **1** 一般错误 / **3** 需用户连接或验证（别把 3 当 1 处理，那是要人去登录）
 - `--json` 只写 stdout；帮助走标准 argparse 输出
-- 省略 `--apply` 或加 `--dry-run` 只返回计划：不连浏览器、不写商品。`prepare` 只读本地图片。
+- dry-run按具体命令契约：upload/submit可用--dry-run，其他命令不可机械套用。batch auto --plan不逐品预检但会检查连接；默认auto只读预检，--apply才执行对应授权动作。
 - `read` / `products` 会**打开页签**但不改商品字段——别因为「开了页面」就以为要写入了
 
 ### 素材规格（`materials.py` / `jobs.py` 实测）
@@ -139,7 +149,7 @@ doudian-auto --json verify '<job_dir>'
 
 ### 浏览器层注意
 
-- 传输走本机 `POST /command` 的 ok/data 协议，`GET /status` 做诊断；**绝不自动重试可能已送达的写请求**
+- 默认Ego原生TaskSpace/Page；显式Kimi兼容端点走本机POST /command与GET /status。绝不自动重试可能已送达的写请求。
 - 不访问 Cookie、框架内部状态或未公开业务接口
 - `dom.js` 依赖实测字段：`#pg-title-input`、`attr-field-id` 的「主图」/「商品详情」、`goodsEditScrollContainer` 分区。布局变化时优先修这里，别改判据标准。
 - 兼容旧素材校验脚本 `skills/.../scripts/doudian_check.py`；其 compare 读旧 `sections` 格式，CLI 读回用 `protected` 格式，**两者不能混用**
@@ -164,8 +174,8 @@ doudian-auto --json verify '<job_dir>'
 **没证到的**：
 - ❌ **审核最终通过**（要等 1-2 个工作日，未观测）
 - ❌ **妙手双端读回比对**（测试商品不在妙手队列，无法比对）
-- ❌ **全仓写入**。不是通道问题——队伍里 17 件已 verified 不许重存、44 件 blocked 卡在属性/图槽/基线，**换通道解决不了任何一件**。
-- ❌ **writer_ready 三品门槛仍未满足**
+- ❌ **全仓写入**。不是通道问题——队伍里 17 件已 verified 不许重存、44 件 blocked 卡在属性/图槽/基线，通道切换不会补齐商品事实或证据；当前也存在运行时与调度缺陷，不能把全部阻塞都归因为缺资料。
+- **Writer状态以当前execution_readiness为准**：历史三品证据与运行时就绪分别记录，不能沿用旧“未满足”快照，也不能凭文档断言实时已就绪。
 
 ### 全仓只读实测（2026-11-10）
 
@@ -183,7 +193,7 @@ doudian-auto --json verify '<job_dir>'
 🔴 **采集方法教训**：详情图是异步渲染的。直接用 `editor.read()` 会读到假的「详情 0 张」——实测同一件商品 `read()` 读 8 张、`wait_details()` 读 14 张。**必须用项目自带的 `editor.wait_details()`**（轮询 `detail_status` 到 `ready`/`empty`），别自己写采集循环。证据见 `work/ego/all-queue-readonly-20261110/`。
 
 **已修**：端点判定收敛（全仓 6 处裸比较 → 统一走 `is_native_endpoint`）。Codex 三轮复核结论「可交付」。
-**未修**：`ego_runtime.mjs` 活动标签失效缺陷。Codex 给的方案要点是——先 `await task.tabs()` 取实时标签判断 `state.active` 是否存活，不存活则 `task.newPage()`；**并且**路由缓存 `state.pages[key]` 也要用同一份 tabs 校验，否则仍会通过过期缓存取回已关闭标签。
+**已离线修复，待实页回归**：本轮活动页与路由缓存都按实时自有tabs校验；只在显式navigate建立新页，失效页写动作停止，不转移或重放。见T-20261110-006的98项JS回归记录。
 
 <!-- 核对说明（Codex 起草，WorkBuddy 核实并修正）
 - Codex 核对过：HANDOFF.md、AGENTS.md、docs/handoff-history/ 清单、bridge.py、batch.py、workflow.py、ego_runtime.mjs、rebaseline.py、materials.py、title.py、pyproject.toml、package.json。
