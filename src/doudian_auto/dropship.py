@@ -22,6 +22,18 @@ from .jobs import DATA_ROOT, Lock, read_json, write_json
 # 铺货结果只有三种终态：明确成功、明确失败、未知。未知不是失败，也不许当成成功。
 COPY_OUTCOMES = ('copied', 'failed', 'unknown')
 
+# 这些阶段一律禁止再触发写入（贴链接、抓取、写配置、点复制）。
+# 注意 unknown 也在其中：它禁止的是写入，但**不禁止只读核查**——
+# 读复制历史、读官方页正是 unknown 阶段唯一该做的事。
+WRITE_FORBIDDEN_STAGES = frozenset({
+    'unknown',
+    'copying_after_intent',
+    'verification_pending',
+    'copied',
+    'verified',
+    'blocked',
+})
+
 
 def _decimal(value, label):
     try:
@@ -188,8 +200,22 @@ def record_configuration_audit(job, before, target, after):
     return audit
 
 
+def require_copy_write_allowed(state):
+    """写入闸门：unknown 只禁写入，不禁只读核查。
+
+    早期版本在 unknown 阶段直接 raise，把「读复制历史」这条唯一的恢复路径也堵死了，
+    任务会永久卡死。写入和读回是两种不同权限，必须分开判断。
+    """
+    if state.get('stage') in WRITE_FORBIDDEN_STAGES or state.get('submission_status') == 'unknown':
+        raise DoudianError(
+            'dropship_readback_only',
+            '复制状态未知或已进入只读阶段；禁止贴链接、抓取、写配置或再次点击复制。')
+    if state.get('stage') != 'settings_verified':
+        raise DoudianError('dropship_stage_invalid', '搬家配置尚未核验，不能开始复制。')
+
+
 def mark_copy_intent(job):
-    """在触发一次复制前持久化 unknown 意图，防止超时后再次点击。
+    """写入前持久化 unknown，防止进程中断后重复触发复制。
 
     先落 unknown 再点按钮：哪怕进程在点击后被杀，重启后读到的也是 unknown，
     于是只能只读核查，不会重复铺一次货。
@@ -197,10 +223,7 @@ def mark_copy_intent(job):
     job = Path(job)
     state_path = job / 'state.json'
     state = read_json(state_path)
-    if state.get('stage') == 'unknown' or state.get('submission_status') == 'unknown':
-        raise DoudianError('dropship_readback_only', '复制结果未知；只允许只读核查。')
-    if state.get('stage') != 'settings_verified':
-        raise DoudianError('dropship_stage_invalid', '搬家配置尚未核验，不能开始复制。')
+    require_copy_write_allowed(state)
     state.update(stage='unknown', submission_status='unknown',
                  copy_intent_at=time.time(), updated_at=time.time())
     write_json(state_path, state)
@@ -244,21 +267,39 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
     return {'stage': 'copied', 'target_product_id': str(target_product_id)}
 
 
-def verify_target_readback(job, *, sku_rows, review_status):
-    """报告官方页观察值；价格由页面适配器从 input.value 读回后传入。"""
+def verify_target_readback(job, *, sku_rows, review_status, sku_total_count=None):
+    """报告官方页观察值；价格由页面适配器从 input.value 读回后传入。
+
+    sku_total_count 是完整性依据：官方页表格可能虚拟滚动，读到的行数少于实际 SKU 数时，
+    绝不能把部分行当成完整结果。没有可靠总数计数就停在 verification_pending。
+    """
     job = Path(job)
     state_path = job / 'state.json'
     state = read_json(state_path)
-    if state.get('stage') not in ('copied', 'warehouse_created'):
+    if state.get('stage') not in ('copied', 'warehouse_created', 'verification_pending'):
         raise DoudianError('dropship_stage_invalid', '没有可核验的铺货结果。')
     if not isinstance(sku_rows, list) or not sku_rows:
         raise DoudianError('dropship_sku_missing', '官方编辑页没有读到 SKU 行。')
+
+    if sku_total_count is None or len(sku_rows) != sku_total_count:
+        state.update(stage='verification_pending', sku_rows_observed=len(sku_rows),
+                     sku_total_count=sku_total_count,
+                     last_error='sku_total_count_unverified', updated_at=time.time())
+        write_json(state_path, state)
+        return {
+            'stage': 'verification_pending',
+            'sku_rows_observed': len(sku_rows),
+            'sku_total_count': sku_total_count,
+            'reason': 'SKU 行数与页面总数计数不一致或缺少总数计数，不标 verified。',
+        }
+
     if not isinstance(review_status, str) or not review_status.strip():
         raise DoudianError('dropship_review_unknown', '审核状态无法读取；不作推断。')
 
     report = {
         'product_id': state.get('target_product_id'),
         'sku_rows': sku_rows,
+        'sku_total_count': sku_total_count,
         'review_status_read_only': review_status,
         'verified_at': time.time(),
     }

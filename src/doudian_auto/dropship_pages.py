@@ -160,47 +160,68 @@ return {status:'ok',clicked:'立即铺货',
 
         不能要求「含商品ID的行唯一」：历史里会累积多次铺货记录，实测今天就有多条。
         必须用来源 ID 把范围收窄到本次任务，否则永远定位失败。
+
+        空白用码点构造而非转义序列：Python 三引号会把 \t 变成真实 tab，
+        写进 JS 字符串就成了一个制表符而不是正则的 \t，这类错误只有真跑才会暴露。
         """
         code = """(()=>{const u=new URL(location.href);
 if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move_history')
  return {status:'wrong_page'};
 const p=__PAYLOAD__;
+// 空白变体：半角/全角空格、制表、换行，用码点拼，避免转义层级错误
+const WS=String.fromCharCode(32,9,10,13,12288,160);
+const srcRe=new RegExp('源ID[:：]['+WS+']*'+p.source_product_id);
+const idRe=new RegExp('商品ID[:：]['+WS+']*([0-9]{16,22})');
 const rows=[...document.querySelectorAll('tr')]
- .filter(x=>(x.innerText||'').includes('源ID： '+p.source_product_id))
- .filter(x=>/商品ID：\\s*\\d{16,22}/.test(x.innerText||''));
+ .filter(x=>srcRe.test(x.innerText||''))
+ .filter(x=>idRe.test(x.innerText||''));
 if(rows.length!==1)return {status:'layout_changed',reason:'history_row',count:rows.length};
-const match=(rows[0].innerText||'').match(/商品ID：\\s*(\\d{16,22})/);
+const match=(rows[0].innerText||'').match(idRe);
 if(!match)return {status:'layout_changed',reason:'product_id_missing'};
 return {status:'ok',product_id:match[1],row_text:(rows[0].innerText||'').trim().slice(0,400)};
 })()""".replace('__PAYLOAD__', _js({'source_product_id': str(source_product_id)}))
         return self._evaluate(code, page_name='复制历史页')
 
-    # ---------- 抖店官方商品编辑页 ----------
+    def read_sku_prices(self, *, product_id):
+        """读官方页可见 SKU 行：行文本首段作 SKU 名，价格只取 input.value。
 
-    def read_sku_prices(self, *, product_id, sku_names):
-        """按 SKU 行名唯一定位；价格只读 input.value，不读行文本。
+        不接收调用方预填的 sku_names：那会用「我期望看到什么」代替「页面实际有什么」。
+        行文本里的 888888 是库存显示值，读它当价格就会误报异常。
 
-        SKU 行的 innerText 形如「极氪车门限位器-4个装 ￥ 888888 增 减 888888 清空 …」，
-        其中的 888888 是库存显示值。把它当价格会误报异常，所以价格一律取
-        input[placeholder="请输入"] 的 value。
+        sku_total_count 留 null：官方页表格可能虚拟滚动，而目前没有实抓到的独立总数计数。
+        「价格填写进度 100%」只证明价格都填了，证明不了行已读全，不能当完整性依据。
+        完整性交给任务层 verify_target_readback 把关，读不全就停在 verification_pending。
         """
         code = """(()=>{const u=new URL(location.href);
 if(u.hostname!=='fxg.jinritemai.com'||u.pathname!=='/ffa/g/create'||
  u.searchParams.get('product_id')!==String(__PAYLOAD__.product_id))
  return {status:'wrong_page'};
-const p=__PAYLOAD__,out=[];
-for(const name of p.sku_names){
- const rows=[...document.querySelectorAll('tr')].filter(x=>(x.innerText||'').includes(name));
- if(rows.length!==1)return {status:'layout_changed',reason:'sku_row',sku:name,count:rows.length};
- const inputs=[...rows[0].querySelectorAll('input[placeholder="请输入"]')];
- if(inputs.length!==1)return {status:'layout_changed',reason:'price_input',sku:name,count:inputs.length};
+// 用字符码点构造，避免把控制字符写进源码
+const CHARSET=new RegExp('[\\t\\r\\n]+','g'), YEN=String.fromCharCode(65509);
+const rows=[...document.querySelectorAll('tr')]
+ .map(row=>({row,text:row.innerText.replace(CHARSET,' ').trim()}))
+ .filter(x=>x.text.indexOf(YEN)>=0);
+const out=[];
+for(const item of rows){
+ const at=item.text.indexOf(YEN);
+ if(at<0)return {status:'layout_changed',reason:'sku_name_prefix'};
+ const name=item.text.slice(0,at).trim();
+ const inputs=[...item.row.querySelectorAll('input[placeholder=\"请输入\"]')];
+ if(inputs.length!==1)
+  return {status:'layout_changed',reason:'price_input',sku:name,count:inputs.length};
  out.push({sku:name,price:inputs[0].value});
 }
-return {status:'ok',product_id:String(p.product_id),sku_rows:out};
-})()""".replace('__PAYLOAD__', _js({
-            'product_id': str(product_id), 'sku_names': list(sku_names),
-        }))
-        return self._evaluate(code, page_name='抖店官方商品编辑页')
+if(!out.length)return {status:'layout_changed',reason:'no_sku_rows'};
+return {status:'ok',product_id:String(__PAYLOAD__.product_id),
+ sku_rows:out,sku_row_count:out.length,sku_total_count:null,
+ completeness:'unverified',completeness_reason:'缺少实抓的 SKU 总数计数'};
+})()""".replace('__PAYLOAD__', _js({'product_id': str(product_id)}))
+        result = self._evaluate(code, page_name='抖店官方商品编辑页')
+        # status 保持 'ok'：页面读到了。完整性是另一个维度，用 completeness 表达，
+        # 覆盖 status 会污染 _evaluate 的失败关闭契约。
+        result['completeness'] = 'unverified'
+        result['completeness_reason'] = '缺少实抓的 SKU 总数计数'
+        return result
 
     def read_review_status(self, *, product_id):
         """只读官方页可见的审核/上下架文案，原样返回，不推断。"""

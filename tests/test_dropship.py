@@ -53,7 +53,7 @@ def test_unknown_copy_result_blocks_any_retry(tmp_path):
     mark_copy_intent(job)
     result = record_copy_observation(job, outcome='unknown', evidence={'timeout': True})
     assert result['readback_only'] is True
-    with pytest.raises(DoudianError, match='只允许只读核查'):
+    with pytest.raises(DoudianError, match='禁止贴链接、抓取、写配置或再次点击复制'):
         mark_copy_intent(job)
 
 
@@ -147,7 +147,8 @@ def test_verify_reports_review_status_without_inferring(tmp_path):
     job = _job(tmp_path, stage='copied')
     write_json(job / 'state.json', {'stage': 'copied', 'target_product_id': '3853454064050373417'})
     report = verify_target_readback(
-        job, sku_rows=[{'sku': '1个装', 'price': '15.48'}], review_status='待审核')
+        job, sku_rows=[{'sku': '1个装', 'price': '15.48'}],
+        review_status='待审核', sku_total_count=1)
     assert report['review_status_read_only'] == '待审核'
     assert report['sku_rows'][0]['price'] == '15.48'
 
@@ -232,14 +233,102 @@ def test_stale_old_value_blocks_the_write():
 def test_sku_price_comes_from_input_value_not_row_text():
     """价格必须来自 input.value；行文本里的 888888 是库存，读它就会误报。"""
     bridge = FakeBridge([{'status': 'ok', 'product_id': '3853454064050373417',
-                          'sku_rows': [{'sku': '1个装', 'price': '15.48'}]}])
-    result = DropshipPages(bridge).read_sku_prices(
-        product_id='3853454064050373417', sku_names=['1个装'])
+                          'sku_rows': [{'sku': '1个装', 'price': '15.48'}],
+                          'sku_total_count': None}])
+    result = DropshipPages(bridge).read_sku_prices(product_id='3853454064050373417')
     assert result['sku_rows'][0]['price'] == '15.48'
     # 价格取自 input 的 value
-    assert 'placeholder="请输入"' in bridge.calls[0]
     assert 'inputs[0].value' in bridge.calls[0]
-    # 行文本只用于定位 SKU 行，不作为价格来源
-    assert '.includes(name)' in bridge.calls[0]
-    # 不能出现把行文本当价格读的写法
-    assert 'rowText' not in bridge.calls[0].replace('.includes(name)', '')
+    # 不再按调用方给的名单定位行，而是读页面上所有可见行
+    assert 'sku_names' not in bridge.calls[0]
+    assert 'querySelectorAll' in bridge.calls[0]
+    # 行文本只用于取 SKU 名，不作为价格来源
+    assert result['sku_total_count'] is None
+
+
+# ---------- unknown 阶段：禁写入，但必须放行只读核查 ----------
+
+def test_unknown_stage_allows_readback_but_forbids_write(tmp_path):
+    """早期版本在 unknown 直接 raise，把唯一的恢复路径也堵死了，任务永久卡死。"""
+    from doudian_auto.dropship import require_copy_write_allowed
+
+    unknown = {'stage': 'unknown', 'submission_status': 'unknown'}
+    with pytest.raises(DoudianError, match='禁止贴链接、抓取、写配置或再次点击复制'):
+        require_copy_write_allowed(unknown)
+
+    # 只读核查不受该闸门约束：它检查的是写入许可，不是读回许可
+    settings_verified = {'stage': 'settings_verified', 'submission_status': 'not_attempted'}
+    require_copy_write_allowed(settings_verified)  # 不抛异常即通过
+
+
+def test_terminal_stages_forbid_further_write():
+    from doudian_auto.dropship import require_copy_write_allowed
+
+    for stage in ('copied', 'verified', 'blocked', 'verification_pending'):
+        with pytest.raises(DoudianError, match='禁止'):
+            require_copy_write_allowed({'stage': stage})
+
+
+def test_prepared_stage_cannot_start_copy():
+    from doudian_auto.dropship import require_copy_write_allowed
+
+    with pytest.raises(DoudianError, match='搬家配置尚未核验'):
+        require_copy_write_allowed({'stage': 'prepared'})
+
+
+# ---------- SKU 完整性：行数对不上就不标 verified ----------
+
+def test_sku_count_mismatch_stays_verification_pending(tmp_path):
+    """读到的行数少于总数时必须停在 verification_pending，不能标 verified。"""
+    job = _job(tmp_path, stage='copied')
+    write_json(job / 'state.json',
+               {'stage': 'copied', 'target_product_id': '3853454064050373417'})
+    result = verify_target_readback(
+        job,
+        sku_rows=[{'sku': '1个装', 'price': '15.48'}],
+        review_status='待审核',
+        sku_total_count=20,
+    )
+    assert result['stage'] == 'verification_pending'
+    assert result['sku_rows_observed'] == 1
+    assert result['sku_total_count'] == 20
+
+
+def test_missing_total_count_stays_verification_pending(tmp_path):
+    """没有实抓到的总数计数时，不得把部分行冒充完整结果。"""
+    job = _job(tmp_path, stage='copied')
+    write_json(job / 'state.json',
+               {'stage': 'copied', 'target_product_id': '3853454064050373417'})
+    result = verify_target_readback(
+        job,
+        sku_rows=[{'sku': '1个装', 'price': '15.48'}, {'sku': '4个装', 'price': '27.48'}],
+        review_status='待审核',
+        sku_total_count=None,
+    )
+    assert result['stage'] == 'verification_pending'
+    assert '总数计数' in result['reason']
+
+
+def test_matching_sku_count_reaches_verified(tmp_path):
+    job = _job(tmp_path, stage='copied')
+    write_json(job / 'state.json',
+               {'stage': 'copied', 'target_product_id': '3853454064050373417'})
+    rows = [{'sku': '1个装', 'price': '15.48'}, {'sku': '4个装', 'price': '27.48'}]
+    report = verify_target_readback(job, sku_rows=rows, review_status='待审核',
+                                    sku_total_count=2)
+    assert report['sku_total_count'] == 2
+    assert report['review_status_read_only'] == '待审核'
+
+
+def test_sku_adapter_reads_visible_rows_without_a_preset_list():
+    """不再要求调用方预填 sku_names：那会用期望代替页面实际。"""
+    bridge = FakeBridge([{'status': 'ok', 'product_id': '3853454064050373417',
+                          'sku_rows': [{'sku': '1个装', 'price': '15.48'}],
+                          'sku_total_count': None}])
+    result = DropshipPages(bridge).read_sku_prices(product_id='3853454064050373417')
+    assert result['sku_total_count'] is None
+    # 完整性是独立维度，不覆盖 status 的失败关闭语义
+    assert result['completeness'] == 'unverified'
+    assert 'sku_names' not in bridge.calls[0]
+    # 价格取自 input 的 value，不是行文本
+    assert 'inputs[0].value' in bridge.calls[0]
