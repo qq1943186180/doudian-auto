@@ -528,3 +528,39 @@ div.module-od-sku-selection            ← 规格选择区
 
 `tr` 里「颜色」一行写着：`极氪车门限位器-4个装、极氪车门限位器-1个装`，
 与规格选择区一致。
+
+---
+
+## 十轮实抓：复制历史是虚拟滚动，基线无法从 DOM 证明完整
+
+Codex 四轮指出「基线只扫当前 DOM 行」是阻断问题。实抓证实：
+
+| 项 | 实测值 |
+|---|---|
+| 页面明写的总记录数 | **「共 59 条」**（另有 `来源商品名称/保存类目 (59)`） |
+| DOM 中的 `div.pro-table-custom-body-row` | **8 行** |
+| 差额 | **51 条未渲染** |
+
+`div.vue-recycle-scroller__item-view` 是虚拟滚动容器，只挂载视口内的行。
+
+### 🔴 结论：当前版本不能自动点复制
+
+只要历史记录超过一屏，`read_history_baseline` 就读不到全量，
+本来源的旧记录可能落在未渲染的 51 条里，复制后会被误认成「本次新增」。
+
+已落地的安全底线：
+- `read_history_baseline` 读页面「共 N 条」与渲染行数，返回
+  `total_records` / `rendered_rows` / `baseline_complete`。
+- 实测返回 `total_records: 59, rendered_rows: 8, baseline_complete: false`。
+- `_stage_copy` 遇到 `baseline_complete: false` 直接抛
+  `dropship_baseline_incomplete` 拒绝复制。
+
+### 要让自动化真正可用，还差什么
+
+页面上有筛选表单（18 个 input，其中两个 placeholder 是
+「多个用","或空格分隔，支持Excel复制粘贴」，对应「商品ID」「来源ID」）。
+**按来源 ID 筛选**能让本来源的所有行都进视口，届时
+「渲染行数 == 筛选后总数」就能证明基线完整。
+
+但这需要再实抓：筛选框的稳定定位、点「查询」后的即时读回、
+筛选后「共 N 条」是否同步变化。没有这些证据之前不能猜选择器。
