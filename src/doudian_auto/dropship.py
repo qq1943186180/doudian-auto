@@ -20,6 +20,9 @@ from .cli import process_alive
 from .errors import DoudianError
 from .jobs import DATA_ROOT, Lock, read_json, write_json
 
+# 页面跳转后需要等待渲染完成再读，否则读到的是上一页的残留。
+SETTLE_SECONDS = 12
+
 # 铺货结果只有三种终态：明确成功、明确失败、未知。未知不是失败，也不许当成成功。
 COPY_OUTCOMES = ('copied', 'failed', 'unknown')
 
@@ -311,6 +314,19 @@ def require_copy_write_allowed(state):
         raise DoudianError('dropship_stage_invalid', '搬家配置尚未核验，不能开始复制。')
 
 
+def require_no_pending_history(job, pending_rows):
+    """同来源存在「有源ID、还没商品ID」的历史行时，不许开始新的复制。
+
+    那种行是上一次复制卡在中间态的痕迹。这次再复制一遍，
+    可能产生两个商品。所以先停下交人工核对。
+    """
+    if pending_rows:
+        raise DoudianError(
+            'dropship_history_pending',
+            f'该来源有 {pending_rows} 条未完成的历史行（上一次复制可能卡住了），'
+            '请先人工核对再继续。')
+
+
 def mark_copy_intent(job, *, expected_skus=None, history_baseline=None):
     """写入前持久化 unknown，防止进程中断后重复触发复制。
 
@@ -318,7 +334,9 @@ def mark_copy_intent(job, *, expected_skus=None, history_baseline=None):
     于是只能只读核查，不会重复铺一次货。
 
     同时落盘两样东西：
-    - expected_skus：复制时页面上读到的 SKU 名与价格，核验时只跟它比。
+    - expected_skus：复制**前**从 1688 来源页读到的规格名与批发价。
+      这是复制前唯一存在的先验（官方页上此时还没有这个商品），
+      核验时拿官方页的 SKU 名与它比对，才能证明铺出去的是同一批规格。
       不落盘的话，核验就成了调用方自己给自己出标准。
     - history_baseline：点击复制前复制历史里的既有行。核验时只认基线之后
       新增的行——否则一条旧记录也会被当成本次复制成功。
@@ -351,13 +369,25 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
     state_path = job / 'state.json'
     state = read_json(state_path)
 
+    # 终态不可回退：verified / blocked 的任务不能再被改成 unknown。
+    if state.get('stage') in ('verified', 'blocked'):
+        raise DoudianError(
+            'dropship_terminal_state',
+            f"任务已处于终态 {state.get('stage')}，不接受新的复制观察结果。")
+
     if outcome == 'unknown':
+        # unknown 也要求已落盘复制意图：没有意图就不该出现 unknown 观察
+        if state.get('stage') != 'unknown' and state.get('submission_status') != 'unknown':
+            if state.get('stage') != 'settings_verified':
+                raise DoudianError('dropship_stage_invalid', '没有待核查的复制意图，不能记录未知结果。')
         state.update(stage='unknown', submission_status='unknown',
                      last_readback=evidence, updated_at=time.time())
         write_json(state_path, state)
         return {'stage': 'unknown', 'readback_only': True}
 
     if outcome == 'failed':
+        if state.get('stage') not in ('unknown', 'settings_verified'):
+            raise DoudianError('dropship_stage_invalid', '没有待核查的复制意图，不能记录失败结果。')
         state.update(stage='blocked', submission_status='failed',
                      last_readback=evidence, last_error='copy_failed',
                      updated_at=time.time())
@@ -376,9 +406,14 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
     baseline = state.get('history_baseline')
     if baseline is None:
         raise DoudianError('dropship_copy_unverified', '缺少复制历史基线，无法区分新旧记录。')
-    row_key = str(evidence.get('history_row_key') or evidence.get('row_text') or '')
-    if row_key and row_key in set(map(str, baseline)):
+    row_key = str(evidence.get('history_row_key') or '')
+    if not row_key:
+        raise DoudianError('dropship_copy_unverified', '缺少历史行的稳定标识，无法与基线比对。')
+    if row_key in set(map(str, baseline)):
         raise DoudianError('dropship_copy_unverified', '该历史行在复制前就已存在，不是本次新增。')
+    # 稳定键必须与读回的目标商品一致，否则说明键与行不是一回事
+    if not row_key.endswith('@' + str(target_product_id or '')):
+        raise DoudianError('dropship_copy_unverified', '历史行的稳定标识与目标商品 ID 不一致。')
     if not re.fullmatch(r'\d{16,22}', str(target_product_id or '')):
         state.update(stage='blocked', last_readback=evidence,
                      last_error='copy_readback_invalid', updated_at=time.time())
@@ -422,6 +457,9 @@ def verify_target_readback(job, *, product_id, sku_rows,
         observed[row['sku']] = str(row.get('price') or '')
 
     # 预期 SKU 只从状态里读，不接受调用方现传：调用方现传就等于自己给自己出标准。
+    # 它的值是来源批发价，比对的是**规格名集合**：
+    # 官方页的售价含运费与尾数，与来源批发价不相等是正常的，
+    # 但规格名必须一一对应，少一个规格就说明没铺全。
     expected = dict(state.get('expected_skus') or {})
     reasons = []
     if not expected:
@@ -432,8 +470,15 @@ def verify_target_readback(job, *, product_id, sku_rows,
         reasons.append(f'读回行数 {len(sku_rows)} 与页面总数 {sku_total_count} 不一致')
     if price_progress != 100:
         reasons.append(f'页面价格填写进度为 {price_progress}%，不是 100%')
-    if expected and observed != expected:
-        reasons.append('读回的 SKU 名与价格与预期不一致')
+    if expected and set(observed) != set(expected):
+        missing = sorted(set(expected) - set(observed))
+        extra = sorted(set(observed) - set(expected))
+        detail = []
+        if missing:
+            detail.append('缺少规格 ' + '、'.join(missing))
+        if extra:
+            detail.append('多出规格 ' + '、'.join(extra))
+        reasons.append('读回的规格名与来源不一致：' + '；'.join(detail))
 
     if reasons:
         state.update(stage='verification_pending', sku_rows_observed=len(sku_rows),
@@ -451,6 +496,7 @@ def verify_target_readback(job, *, product_id, sku_rows,
         raise DoudianError('dropship_review_unknown', '审核状态无法读取；不作推断。')
 
     report = {
+        'stage': 'verified',
         'product_id': str(product_id),
         'sku_rows': sku_rows,
         'sku_total_count': sku_total_count,
@@ -508,16 +554,123 @@ def run_task(args):
             return _readback_only(args, job, state, manifest)
 
     with _acquire_task_lock(root / 'browser.lock'):
-        # v1 只做到「读搬家配置」：写入配置、点复制、读历史都留给后续阶段，
-        # 每个阶段都要先在真实页面验收即时读回再接进状态机。
-        observation = _settings_observation(args)
-        return {
-            'task_id': args.task_id,
-            'stage': read_json(state_path).get('stage'),
-            'phase': 'settings_observation',
-            'page_observation': observation,
-            'next': '页面读回需由人确认；复制结果未知时仅使用只读核查。',
-        }
+        return _advance(args, job, state, manifest)
+
+
+def _advance(args, job, state, manifest):
+    """按阶段推进任务。每个阶段的推进都由页面证据支撑，不靠推断。
+
+    阶段：
+      prepared → 写搬家配置 → 独立重新读回 → settings_verified
+      settings_verified → 读来源 SKU → 采历史基线 → 贴链接 → 抓取 → 落复制意图 → 点复制
+      unknown → 读复制历史 → copied
+      copied → 读官方页 → verified / verification_pending
+    """
+    from .dropship_pages import DropshipPages
+    from .ego_bridge import EgoBridge
+
+    bridge = EgoBridge(session=args.session)
+    bridge.require_ready()
+    pages = DropshipPages(bridge)
+    stage = state.get('stage')
+
+    if stage == 'prepared':
+        return _stage_settings(args, job, state, manifest, pages)
+    if stage == 'settings_verified':
+        return _stage_copy(args, job, state, manifest, pages)
+    if stage in ('unknown', 'copied', 'verification_pending'):
+        return _readback_only(args, job, state, manifest)
+    raise DoudianError('dropship_stage_invalid', f'任务处于无法推进的阶段：{stage}。')
+
+
+def _stage_settings(args, job, state, manifest, pages):
+    """写搬家配置，然后**独立重新进入页面**读回，读回一致才推进。"""
+    from .dropship_pages import PRICE_FIELDS, SETTING_PATH
+
+    job_state_path = job / 'state.json'
+    pages.navigate_miaoshou(SETTING_PATH)
+    time.sleep(SETTLE_SECONDS)
+
+    before = pages.read_settings()
+    target = dict(before.get('values') or {})
+    # 只改任务明确指定的字段：倍数换算成百分比，加价写成金额
+    price_input = manifest.get('price_input') or {}
+    target['pricePercent'] = price_input.get('multiplier')
+    target['priceAdd'] = price_input.get('addition')
+    target['shelf_mode'] = '放入仓库'
+
+    written = pages.set_price_formula(
+        before=before.get('values') or {},
+        target={k: v for k, v in target.items() if k in PRICE_FIELDS})
+    if written.get('persistence') != 'unverified':
+        raise DoudianError('dropship_config_invalid', '写配置的即时读回语义不对。')
+
+    # 独立读回：重新进入页面再读，不是同一次 evaluate 里的二次读取
+    pages.navigate_miaoshou(SETTING_PATH)
+    time.sleep(SETTLE_SECONDS)
+    after = pages.read_settings()
+    persisted = dict(after.get('values') or {})
+    persisted['shelf_mode'] = after.get('shelf_mode')
+
+    audit = record_verified_configuration(job, before=before.get('values') or {},
+                                          target=target, persisted_after=persisted)
+    return {
+        'task_id': args.task_id,
+        'stage': read_json(job_state_path).get('stage'),
+        'phase': 'settings_verified',
+        'configuration_audit': audit,
+        'note': '配置已在重新进入页面后独立读回一致，货架模式为放入仓库。',
+    }
+
+
+def _stage_copy(args, job, state, manifest, pages):
+    """贴链接 → 抓取 → 落复制意图 → 点复制。"""
+    from .dropship_pages import HISTORY_PATH, MOVE_PATH
+
+    job_state_path = job / 'state.json'
+    offer_url = manifest['offer_url']
+    source_id = manifest['source_product_id']
+
+    # 1) 读来源商品的规格：复制前唯一的先验
+    pages.navigate_source(offer_url)
+    time.sleep(SETTLE_SECONDS)
+    source_skus = pages.read_source_skus(offer_url=offer_url)
+    expected = {row['sku']: row['source_price']
+                for row in source_skus.get('sku_rows') or []}
+    if not expected:
+        raise DoudianError('dropship_source_sku_missing',
+                           '来源商品没有读到规格，无法建立预期。')
+
+    # 2) 采历史基线：点击复制前已有的行
+    pages.navigate_miaoshou(HISTORY_PATH)
+    time.sleep(SETTLE_SECONDS)
+    baseline = pages.read_history_baseline(source_product_id=source_id)
+    require_no_pending_history(job, baseline.get('pending_rows'))
+
+    # 3) 贴链接并抓取
+    pages.navigate_miaoshou(MOVE_PATH)
+    time.sleep(SETTLE_SECONDS)
+    pages.paste_offer_and_fetch(offer_url=offer_url)
+    fetch = pages.read_fetch_result()
+    if fetch.get('success_count') != '1' or fetch.get('skipped_count') != '0':
+        raise DoudianError(
+            'dropship_fetch_incomplete',
+            f"抓取结果不干净（成功 {fetch.get('success_count')} / 跳过 "
+            f"{fetch.get('skipped_count')}），未点复制。")
+
+    # 4) 先落复制意图，再点按钮
+    mark_copy_intent(job, expected_skus=expected,
+                     history_baseline=baseline.get('baseline_keys'))
+    pages.click_start_copy(expected_success=1)
+
+    return {
+        'task_id': args.task_id,
+        'stage': read_json(job_state_path).get('stage'),
+        'phase': 'copy_intent_clicked',
+        'expected_skus': expected,
+        'fetch': fetch,
+        'note': '已点下一步开始复制；结果未知，只允许只读核查。',
+    }
 
 
 def _readback_only(args, job, state, manifest):
@@ -540,9 +693,12 @@ def _readback_only(args, job, state, manifest):
         history = pages.read_history_product_id(
             source_product_id=manifest['source_product_id'])
         result['history'] = history
+        # 必须传稳定键 history_row_key：基线里存的是 <源ID>@<商品ID>，
+        # 拿整段行文本去比永远对不上，基线检查会被静默绕过。
         record_copy_observation(
             job, outcome='copied',
             evidence={'history_row': history.get('row_text'),
+                      'history_row_key': history.get('row_key'),
                       'source_product_id': manifest['source_product_id']},
             target_product_id=history.get('product_id'))
         result['stage'] = 'copied'

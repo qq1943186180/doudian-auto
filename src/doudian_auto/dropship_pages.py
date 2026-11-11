@@ -17,8 +17,10 @@ MIAOSHOU_HOST = 'v2-dd.chengji-inc.com'
 OPPORTUNITY_PATH = '/selection/opportunity_product'
 SETTING_PATH = '/move/move_setting'
 HISTORY_PATH = '/move/move_history'
+MOVE_PATH = '/move/move'
 OFFICIAL_HOST = 'fxg.jinritemai.com'
 OFFICIAL_PATH = '/ffa/g/create'
+SOURCE_HOST = 'detail.1688.com'
 
 # 价格公式字段用 name 定位：这页有近百个 input，靠邻近文本匹配既脆又不唯一。
 PRICE_FIELDS = (
@@ -69,6 +71,36 @@ class DropshipPages:
             'group_title': '铺货流程',
         })
         return {'status': 'ok', 'path': path}
+
+    def navigate_source(self, offer_url):
+        """进入 1688 来源商品页。
+
+        detail.1688.com 不在 navigate 白名单里，所以用 location.assign：
+        适配器里随后会用 URL 校验确认落位的就是任务指定的那个 offer。
+        """
+        self.bridge.evaluate(
+            '(()=>{location.assign(' + json.dumps(offer_url) + ');return 1;})()')
+        return {'status': 'ok', 'offer_url': offer_url}
+
+    def navigate_source(self, offer_url):
+        """进入 1688 来源商品页。
+
+        detail.1688.com 不在 navigate 白名单里，所以用 location.assign：
+        适配器随后会用 URL 校验确认落位的就是任务指定的那个 offer。
+        """
+        self.bridge.evaluate(
+            '(()=>{location.assign(' + json.dumps(offer_url) + ');return 1;})()')
+        return {'status': 'ok', 'offer_url': offer_url}
+
+    def navigate_source(self, offer_url):
+        """进入 1688 来源商品页。
+
+        detail.1688.com 不在 navigate 白名单里，所以用 location.assign：
+        适配器随后会用 URL 校验确认落位的就是任务指定的那个 offer。
+        """
+        self.bridge.evaluate(
+            '(()=>{location.assign(' + json.dumps(offer_url) + ');return 1;})()')
+        return {'status': 'ok', 'offer_url': offer_url}
 
     def navigate_official(self, product_id):
         """进入抖店官方商品编辑页。
@@ -160,6 +192,56 @@ return {status:ok?'ok':'readback_mismatch',values,
  persistence:'unverified'};
 })()""".replace('__PAYLOAD__', _js({'before': before, 'target': target}))
         return self._evaluate(code, page_name='搬家设置页')
+
+    # ---------- 1688 来源页 ----------
+
+    def read_source_skus(self, *, offer_url):
+        """读 1688 来源商品的规格名与批发价，作为复制前的预期 SKU 集合。
+
+        这是「预期 SKU」的合法来源：复制**之前**官方页上还没有这个商品，
+        唯一的先验就是来源商品的规格。复制后拿官方页的 SKU 名与它比对，
+        才能证明铺出去的是同一个规格。
+
+        实测结构（detail.1688.com）：
+          div.module-od-sku-selection
+            div.expand-view-item           每个规格
+              span.item-label[title]       规格名（极氪车门限位器-4个装）
+              span.item-price-stock        批发价（¥6）；第二个是「库存888888个」
+
+        取第一个 item-price-stock 作为价格：第二个是库存文本，不是钱。
+        """
+        code = """(()=>{
+const u=new URL(location.href);
+if(u.hostname!=='detail.1688.com'||!/^[/]offer[/][0-9]+[.]html$/.test(u.pathname))
+ return {status:'wrong_page'};
+const p=__PAYLOAD__;
+// 链接必须就是任务指定的那一个，否则读到的是别的商品
+const m=u.pathname.match(new RegExp('^[/]offer[/]([0-9]+)[.]html$'));
+if(!m||m[1]!==String(p.source_product_id))
+ return {status:'wrong_page',reason:'offer_id_mismatch'};
+const sel=document.querySelector('div.module-od-sku-selection');
+if(!sel)return {status:'layout_changed',reason:'sku_selection_missing'};
+const items=[...sel.querySelectorAll('div.expand-view-item')];
+if(!items.length)return {status:'layout_changed',reason:'sku_item_missing'};
+const out=[];
+for(const item of items){
+ const label=item.querySelector('span.item-label');
+ if(!label)return {status:'layout_changed',reason:'sku_label_missing'};
+ const name=(label.getAttribute('title')||label.innerText||'').trim();
+ if(!name)return {status:'layout_changed',reason:'sku_label_empty'};
+ const prices=[...item.querySelectorAll('span.item-price-stock')];
+ if(!prices.length)return {status:'layout_changed',reason:'sku_price_missing',sku:name};
+ // 第一个是批发价，第二个是「库存888888个」这类库存文本
+ const priceText=(prices[0].innerText||'').trim();
+ const pm=priceText.match(/([0-9]+(?:\\.[0-9]+)?)/);
+ if(!pm)return {status:'layout_changed',reason:'sku_price_unparsable',sku:name,raw:priceText};
+ out.push({sku:name,source_price:pm[1]});
+}
+return {status:'ok',source_product_id:String(p.source_product_id),
+ sku_rows:out,sku_count:out.length};
+})()""".replace('__PAYLOAD__', _js({'offer_url': offer_url,
+                                   'source_product_id': str(offer_url).split('/offer/')[-1].split('.')[0]}))
+        return self._evaluate(code, page_name='1688来源商品页')
 
     # ---------- 机会商品页 ----------
 
@@ -358,26 +440,35 @@ return {status:'ok',product_id:match[1],row_key:rowKey,
 })()""".replace('__PAYLOAD__', _js({'source_product_id': str(source_product_id)}))
         return self._evaluate(code, page_name='复制历史页')
 
-    def read_history_baseline(self):
-        """读复制历史里全部来源行，作为点击复制前的基线。
+    def read_history_baseline(self, *, source_product_id=None):
+        """读复制历史里本任务来源的行，作为点击复制前的基线。
 
         用途：复制之后只认基线里没有的新行。少了这一步，
         「历史里本来就有的那条记录」会被当成本次复制成功。
+
+        只收本任务来源的行：不同任务之间不该互相干扰。
+        同时收「只有源ID、还没商品ID」的行——那正是复制进行中的形态，
+        漏掉它就分不清「本次还在复制」和「本次已复制完」。
         """
         code = """(()=>{const u=new URL(location.href);
 if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move_history')
  return {status:'wrong_page'};
+const p=__PAYLOAD__;
 const WS=String.fromCharCode(32,9,10,13,12288,160);
 const srcRe=new RegExp('源ID[:：]['+WS+']*([0-9]{1,24})(?![0-9])');
 const idRe=new RegExp('商品ID[:：]['+WS+']*([0-9]{16,22})');
-const keys=[];
+const keys=[]; let srcOnly=0;
 for(const row of document.querySelectorAll('div.pro-table-custom-body-row')){
  const t=row.innerText||'';
  const sm=t.match(srcRe); const im=t.match(idRe);
- if(sm&&im) keys.push(sm[1]+'@'+im[1]);
+ if(!sm) continue;
+ // 只看本任务来源的行
+ if(p.source_product_id&&sm[1]!==String(p.source_product_id)) continue;
+ if(im) keys.push(sm[1]+'@'+im[1]);
+ else { srcOnly++; keys.push(sm[1]+'@pending'); }
 }
-return {status:'ok',baseline_keys:[...new Set(keys)]};
-})()"""
+return {status:'ok',baseline_keys:[...new Set(keys)],pending_rows:srcOnly};
+})()""".replace('__PAYLOAD__', _js({'source_product_id': str(source_product_id or '')}))
         return self._evaluate(code, page_name='复制历史页')
 
     def read_sku_prices(self, *, product_id):

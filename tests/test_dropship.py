@@ -84,8 +84,8 @@ def test_copy_observation_needs_a_plausible_product_id(tmp_path):
     with pytest.raises(DoudianError, match='商品 ID 读回不完整'):
         record_copy_observation(job, outcome='copied', target_product_id='123',
                                 evidence={'history_row': 'x',
+                                          'history_row_key': '965251097615@123',
                                           'source_product_id': '965251097615'})
-
 
 def test_copy_observation_rejects_a_history_row_from_another_source(tmp_path):
     """历史行的来源商品必须与本任务一致，否则读到的是别人的记录。"""
@@ -404,19 +404,22 @@ def test_verify_rejects_a_product_id_that_is_not_the_copied_one(tmp_path):
                                price_progress=100, review_status='待审核')
 
 
-def test_verify_stays_pending_when_prices_do_not_match_the_expectation(tmp_path):
-    """行数对得上但价格对不上，也不能算核验通过。"""
+def test_verify_stays_pending_when_a_spec_is_missing(tmp_path):
+    """规格名少一个就说明没铺全，不能算核验通过。
+
+    官方页的**售价**与来源批发价本来就不相等（售价含运费与尾数），
+    所以比的是规格名集合，不是价格。
+    """
     job = _job(tmp_path, stage='copied')
     write_json(job / 'state.json',
                {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '15.48'}})
+                'expected_skus': {'1个装': '2', '4个装': '6'}})
     result = verify_target_readback(
         job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '888888'}], sku_total_count=1,
+        sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
         price_progress=100, review_status='待审核')
     assert result['stage'] == 'verification_pending'
-    assert '与预期不一致' in result['reason']
-
+    assert '缺少规格' in result['reason']
 
 def test_verify_stays_pending_when_the_page_progress_is_not_complete(tmp_path):
     """页面价格填写进度不到 100% 时，可能还有 SKU 没被读到。"""
@@ -488,123 +491,6 @@ def test_price_preview_states_that_it_excludes_shipping_and_tail(tmp_path):
 
 # ---------- Codex 复核指出的盲区 ----------
 
-def test_copied_requires_a_recorded_copy_intent(tmp_path):
-    """没有落盘的复制意图，谁都能宣布成功——之前只校验商品 ID 的位数。"""
-    job = _job(tmp_path, stage='prepared', submission='not_attempted')
-    write_json(job / 'state.json', {'stage': 'prepared',
-                                    'submission_status': 'not_attempted',
-                                    'source_product_id': '965251097615'})
-    with pytest.raises(DoudianError, match='没有待核查的复制意图'):
-        record_copy_observation(job, outcome='copied',
-                                target_product_id='3853454064050373417',
-                                evidence={'history_row': 'x',
-                                          'source_product_id': '965251097615'})
-
-
-def test_copied_requires_evidence_that_links_source_and_target(tmp_path):
-    """缺证据时不能标 copied：否则一次调用就能把任务写成已完成。"""
-    job = _job(tmp_path, stage='unknown', submission='unknown')
-    write_json(job / 'state.json', {'stage': 'unknown', 'submission_status': 'unknown',
-                                    'source_product_id': '965251097615',
-                                    'history_baseline': []})
-    with pytest.raises(DoudianError, match='缺少复制历史行证据'):
-        record_copy_observation(job, outcome='copied',
-                                target_product_id='3853454064050373417')
-
-
-def test_verify_rejects_a_product_id_that_is_not_the_copied_one(tmp_path):
-    """官方页商品 ID 必须与复制历史一致，否则核验的是别人的商品。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417'})
-    with pytest.raises(DoudianError, match='与复制历史不一致'):
-        verify_target_readback(job, product_id='9999999999999999999',
-                               sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
-                               price_progress=100, review_status='待审核')
-
-
-def test_verify_stays_pending_when_prices_do_not_match_the_expectation(tmp_path):
-    """行数对得上但价格对不上，也不能算核验通过。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '15.48'}})
-    result = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '888888'}], sku_total_count=1,
-        price_progress=100, review_status='待审核')
-    assert result['stage'] == 'verification_pending'
-    assert '与预期不一致' in result['reason']
-
-
-def test_verify_stays_pending_when_the_page_progress_is_not_complete(tmp_path):
-    """页面价格填写进度不到 100% 时，可能还有 SKU 没被读到。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '15.48'}})
-    result = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
-        price_progress=50, review_status='待审核')
-    assert result['stage'] == 'verification_pending'
-    assert '进度' in result['reason']
-
-
-def test_offer_url_must_name_the_source_product(tmp_path):
-    """URL 里的 offer ID 与来源 ID 不一致时，来源绑定是假的。"""
-    with pytest.raises(DoudianError, match='来源一致'):
-        prepare_task(source_product_id='965251097615',
-                     offer_url='https://detail.1688.com/offer/999.html',
-                     shop='销霁百货', source_price='57', multiplier='3', addition='5',
-                     root=str(tmp_path))
-
-
-def test_offer_url_must_be_a_1688_offer_page(tmp_path):
-    with pytest.raises(DoudianError, match='来源一致'):
-        prepare_task(source_product_id='965251097615',
-                     offer_url='https://example.com/offer/965251097615.html',
-                     shop='销霁百货', source_price='57', multiplier='3', addition='5',
-                     root=str(tmp_path))
-
-
-def test_task_id_may_not_escape_the_task_root(tmp_path):
-    """任务 ID 来自命令行，越界会让流程在根目录外读写状态。"""
-    root = tmp_path / 'root'
-    root.mkdir()
-    with pytest.raises(DoudianError, match='格式无效'):
-        resolve_job_dir(root, '../../etc')
-    with pytest.raises(DoudianError, match='格式无效'):
-        resolve_job_dir(root, 'dropship-1-zzz')
-
-
-def test_configuration_only_advances_after_a_complete_persisted_readback(tmp_path):
-    """目标配置必须覆盖全部价格字段，缺一个就说明漏改了。"""
-    job = _job(tmp_path, stage='prepared')
-    partial = {'pricePercent': '300', 'priceAdd': '5'}
-    with pytest.raises(DoudianError, match='缺少价格字段'):
-        record_verified_configuration(job, before={}, target=partial,
-                                      persisted_after=partial)
-
-
-def test_verified_configuration_advances_the_stage(tmp_path):
-    job = _job(tmp_path, stage='prepared')
-    full = {name: '1' for name in PRICE_FIELD_NAMES}
-    full['shelf_mode'] = '放入仓库'
-    record_verified_configuration(job, before={}, target=full, persisted_after=full)
-    state = (job / 'state.json')
-    assert '"settings_verified"' in state.read_text(encoding='utf-8')
-
-
-def test_price_preview_states_that_it_excludes_shipping_and_tail(tmp_path):
-    """试算是简化公式，必须自己说明它不代表页面最终售价。"""
-    preview = calculate_price('2', '3', '5')
-    assert preview['final_price'] == '11.00'
-    assert '不含运费' in preview['note']
-    # 页面 pricePercent 是百分比，倍数要 ×100
-    assert preview['page_price_percent'] == '300'
-
-
 def test_readback_only_reports_the_review_status_as_unavailable(tmp_path):
     """编辑页读不到商品审核状态，只能如实报 unavailable。
 
@@ -658,62 +544,6 @@ def test_readback_only_reports_the_review_status_as_unavailable(tmp_path):
     assert out['sku_status_tokens'] == ['已上架']
     assert out['sku_rows'][0]['price'] == '15.48'
 
-
-def test_readback_only_reports_the_review_status_as_unavailable(tmp_path):
-    """编辑页读不到商品审核状态，只能如实报 unavailable。
-
-    「已上架」是 SKU 状态，「上架/下架」是表单选项——把它们当审核状态就是误报。
-    """
-    from doudian_auto.dropship import _readback_only
-
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'source_product_id': '965251097615'})
-
-    class FakePages:
-        def __init__(self, bridge):
-            pass
-
-        def navigate_official(self, product_id):
-            return {'status': 'ok'}
-
-        def read_sku_prices(self, *, product_id):
-            return {'status': 'ok', 'sku_rows': [{'sku': '1个装', 'price': '15.48'}],
-                    'price_progress': 100, 'completeness': 'unverified'}
-
-        def read_review_status(self, *, product_id):
-            return {'status': 'ok', 'review_status': None,
-                    'review_status_reason': '商品审核状态不在编辑页',
-                    'sku_status_tokens': ['已上架']}
-
-    class FakeBridge:
-        def require_ready(self):
-            return True
-
-    import doudian_auto.dropship as ds
-    import doudian_auto.dropship_pages as dp
-    import doudian_auto.ego_bridge as eb
-
-    orig = (dp.DropshipPages, eb.EgoBridge)
-    dp.DropshipPages = FakePages
-    eb.EgoBridge = lambda session=None: FakeBridge()
-    try:
-        out = _readback_only(
-            type('A', (), {'task_id': 'dropship-1-abcdef0123456789',
-                           'session': 's'})(),
-            job, {'stage': 'copied', 'target_product_id': '3853454064050373417'},
-            {'source_product_id': '965251097615'})
-    finally:
-        dp.DropshipPages, eb.EgoBridge = orig
-
-    assert out['readback_only'] is True
-    assert out['review_status'] is None
-    assert out['sku_status_tokens'] == ['已上架']
-    assert out['sku_rows'][0]['price'] == '15.48'
-
-
-# ---------- Codex 二轮复核指出的盲区 ----------
 
 def test_offer_url_accepts_http_but_normalises_to_https(tmp_path):
     """现存 42 条源链接全是 http，一刀切只收 https 会把它们全拒掉。"""
@@ -799,85 +629,3 @@ def test_copy_intent_records_the_expected_skus_and_history_baseline(tmp_path):
 
 
 # ---------- Codex 二轮复核指出的盲区 ----------
-
-def test_offer_url_accepts_http_but_normalises_to_https(tmp_path):
-    """现存 42 条源链接全是 http，一刀切只收 https 会把它们全拒掉。"""
-    task = prepare_task(source_product_id='965251097615',
-                        offer_url='http://detail.1688.com/offer/965251097615.html',
-                        shop='销霁百货', source_price='57', multiplier='3', addition='5',
-                        root=str(tmp_path))
-    manifest = read_json(Path(task['job_dir']) / 'manifest.json')
-    assert manifest['offer_url'] == 'https://detail.1688.com/offer/965251097615.html'
-    # 原链接保留，便于追溯
-    assert manifest['offer_url_original'].startswith('http://')
-
-
-def test_copied_requires_a_history_baseline(tmp_path):
-    """没有基线就无法区分「本次新增」与「历史里本来就有的那条」。"""
-    job = _job(tmp_path, stage='unknown', submission='unknown')
-    write_json(job / 'state.json', {'stage': 'unknown', 'submission_status': 'unknown',
-                                    'source_product_id': '965251097615'})
-    with pytest.raises(DoudianError, match='缺少复制历史基线'):
-        record_copy_observation(job, outcome='copied',
-                                target_product_id='3853454064050373417',
-                                evidence={'history_row': 'x',
-                                          'source_product_id': '965251097615'})
-
-
-def test_copied_rejects_a_row_that_existed_before_the_copy(tmp_path):
-    """基线里已有的行不能当成本次复制的成果。"""
-    job = _job(tmp_path, stage='unknown', submission='unknown')
-    write_json(job / 'state.json',
-               {'stage': 'unknown', 'submission_status': 'unknown',
-                'source_product_id': '965251097615',
-                'history_baseline': ['965251097615@3853454064050373417']})
-    with pytest.raises(DoudianError, match='复制前就已存在'):
-        record_copy_observation(job, outcome='copied',
-                                target_product_id='3853454064050373417',
-                                evidence={'history_row': 'x',
-                                          'history_row_key': '965251097615@3853454064050373417',
-                                          'source_product_id': '965251097615'})
-
-
-def test_verify_requires_the_expected_skus_recorded_at_copy_time(tmp_path):
-    """预期 SKU 必须是复制时落盘的，不能核验时现传。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417'})
-    result = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '15.48'}],
-        sku_total_count=1, price_progress=100, review_status='待审核')
-    assert result['stage'] == 'verification_pending'
-    assert '预期 SKU' in result['reason']
-
-
-def test_configuration_requires_an_explicit_warehouse_shelf_mode(tmp_path):
-    """只对齐价格却没确认「放入仓库」，等于没确认商品不会直接开卖。"""
-    job = _job(tmp_path, stage='prepared')
-    full = {name: '1' for name in PRICE_FIELD_NAMES}
-    with pytest.raises(DoudianError, match='放入仓库'):
-        record_verified_configuration(job, before={}, target=full, persisted_after=full)
-
-
-def test_configuration_rejects_a_shelf_mode_that_is_not_warehouse(tmp_path):
-    job = _job(tmp_path, stage='prepared')
-    full = {name: '1' for name in PRICE_FIELD_NAMES}
-    full['shelf_mode'] = '立即上架'
-    with pytest.raises(DoudianError, match='放入仓库'):
-        record_verified_configuration(job, before={}, target=full, persisted_after=full)
-
-
-def test_copy_intent_records_the_expected_skus_and_history_baseline(tmp_path):
-    """点击复制前必须把预期 SKU 与历史基线落盘，否则事后无从比对。"""
-    job = _job(tmp_path, stage='settings_verified')
-    write_json(job / 'state.json',
-               {'stage': 'settings_verified', 'submission_status': 'not_attempted',
-                'source_product_id': '965251097615'})
-    mark_copy_intent(job,
-                     expected_skus={'1个装': '15.48'},
-                     history_baseline=['965251097615@3850072322857894188'])
-    state = read_json(job / 'state.json')
-    assert state['stage'] == 'unknown'
-    assert state['expected_skus'] == {'1个装': '15.48'}
-    assert state['history_baseline'] == ['965251097615@3850072322857894188']

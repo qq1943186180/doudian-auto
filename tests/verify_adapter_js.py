@@ -186,6 +186,37 @@ STUB_MOVE_TWO = STUB_MOVE_OK.replace('跳过： 0 详情 成功： 1', '跳过�
 # 商品上货页：成功 1 / 跳过 1（成功数对但有跳过，仍不许复制）
 STUB_MOVE_SKIPPED = STUB_MOVE_OK.replace('跳过： 0 详情 成功： 1', '跳过： 1 详情 成功： 1')
 
+# 1688 来源页：规格选择区
+# 这段结构是从实抓页面抄的：div.module-od-sku-selection > div.expand-view-item，
+# 规格名在 span.item-label[title]，价格在第一个 span.item-price-stock，
+# 第二个是「库存888888个」这种库存文本，不是钱。
+STUB_SOURCE = r"""
+const mkItem = (name, price) => ({
+  innerText: name + ' ' + price + ' 库存888888个 ',
+  querySelector: s => {
+    if (s === 'span.item-label') return {getAttribute: () => name, innerText: name};
+    return null;
+  },
+  querySelectorAll: s => {
+    if (s === 'span.item-price-stock')
+      return [{innerText: price}, {innerText: '库存888888个'}];
+    return [];
+  },
+});
+const skuItems = [
+  mkItem('极氪车门限位器-4个装', '¥6'),
+  mkItem('极氪车门限位器-1个装', '¥2'),
+];
+const skuSelection = {
+  querySelectorAll: s => (s === 'div.expand-view-item' ? skuItems : []),
+};
+globalThis.document = {
+  querySelector: s => (s === 'div.module-od-sku-selection' ? skuSelection : null),
+  querySelectorAll: () => [],
+  body: {innerText: ''},
+};
+"""
+
 # 机会商品页：一张卡片 + 立即铺货
 STUB_OPPORTUNITY = r"""
 const action = {innerText: '立即铺货', click: () => {}};
@@ -438,6 +469,35 @@ globalThis.document = {
                                {'card_text': '不存在的标题'}), check_card_ambiguous,
                        page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
                        stub=STUB_OPPORTUNITY))
+
+    # ---------- read_source_skus ----------
+    def check_source(d):
+        rows = d.get('sku_rows') or []
+        return (d.get('status') == 'ok' and len(rows) == 2
+                and rows[0]['sku'] == '极氪车门限位器-4个装'
+                and rows[0]['source_price'] == '6'
+                and rows[1]['sku'] == '极氪车门限位器-1个装'
+                and rows[1]['source_price'] == '2')
+
+    results.append(run('read_source_skus',
+                       extract(pages.read_source_skus,
+                               {'offer_url': 'https://detail.1688.com/offer/965251097615.html',
+                                'source_product_id': '965251097615'}),
+                       check_source,
+                       page=('detail.1688.com', '/offer/965251097615.html', ''),
+                       stub=STUB_SOURCE))
+
+    def check_source_wrong_offer(d):
+        """页面上的 offer ID 与任务指定的不一致时必须拒绝，不能读成别人的规格。"""
+        return d.get('status') == 'wrong_page'
+
+    results.append(run('read_source_skus_wrong_offer',
+                       extract(pages.read_source_skus,
+                               {'offer_url': 'https://detail.1688.com/offer/965251097615.html',
+                                'source_product_id': '999999'}),
+                       check_source_wrong_offer,
+                       page=('detail.1688.com', '/offer/965251097615.html', ''),
+                       stub=STUB_SOURCE))
 
     # ---------- read_review_status ----------
     def check_review(d):
