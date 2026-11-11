@@ -476,3 +476,55 @@ cell[7] = 操作链接（商品快速编辑 / 去抖店编辑 / 更多）
 实抓核对：`source-links.json` 42 条**全部**是 `http://detail.1688.com/offer/<ID>.html`，
 无查询参数。校验器若只收 https 会把全部现有关联拒掉。
 现在 http 与 https 都接受，写入 manifest 前统一规范成 https，并保留原链接供追溯。
+
+---
+
+## 九轮实抓：1688 来源商品的规格（预期 SKU 的合法来源）
+
+Codex 指出一个循环依赖：`mark_copy_intent` 要求复制**前**就落盘 expected_skus，
+但读 SKU 的适配器读的是抖店官方编辑页，那里此时还没有这个商品。
+
+**解法**：预期 SKU 来自 **1688 来源页**的规格选择区。
+
+### 实测结构（detail.1688.com）
+
+```
+div.module-od-sku-selection            ← 规格选择区
+  div.feature-item
+    div.feature-item-label > h3         ← 规格维度名（这里是「颜色」）
+    div.expand-view-list-wrapper
+      div.expand-view-list
+        div.expand-view-item.v-flex     ← 每个规格
+          div.v-flex
+            span.item-label[title]      ← 规格名（极氪车门限位器-4个装）
+          span.item-price-stock         ← 批发价 ¥6
+          span.item-price-stock         ← 库存888888个（不是钱！）
+```
+
+实测读出：
+
+| 规格名 | 批发价 |
+|---|---|
+| 极氪车门限位器-4个装 | 6 |
+| 极氪车门限位器-1个装 | 2 |
+
+与官方页完全对应（官方页 SKU 名相同，售价 27.48 / 15.48 = 源价×3+5+运费 4.48）。
+
+### 🔴 两个必须注意的点
+
+1. **同一行有两个 `span.item-price-stock`**：第一个是价格，第二个是「库存888888个」。
+   取第二个会把库存当价格。适配器固定取**第一个**。
+2. **规格名优先取 `title` 属性**：`span.item-label` 的 `title` 与 innerText 一致，
+   但 title 更稳（不受空白影响）。
+
+### 核验语义随之确定
+
+预期集合的值是**来源批发价**，比对时比的是**规格名集合**，不是价格：
+
+- 官方页售价含运费与尾数，与来源批发价**本来就不相等**（6 → 27.48）
+- 但规格名必须一一对应：少一个规格就说明没铺全 → `verification_pending`
+
+### 属性区也印证了这点
+
+`tr` 里「颜色」一行写着：`极氪车门限位器-4个装、极氪车门限位器-1个装`，
+与规格选择区一致。
