@@ -827,3 +827,47 @@ def test_manual_attribute_list_is_written_without_inventing_values(tmp_path):
     assert all(item['value'] is None for item in checklist['items'])
     assert all(item['source'] == '人工填写' for item in checklist['items'])
     assert load_manual_attribute_list(job)['missing_count'] == 2
+
+
+# ---------- 选品候选与人工待办汇总 ----------
+
+def test_manual_queue_report_merges_both_lines(tmp_path):
+    """铺货任务与批量队列的待补值要汇到同一张只读清单。"""
+    from doudian_auto.dropship_policy import (build_manual_attribute_list,
+                                              build_manual_queue_report)
+    job = tmp_path / 'dropship-task-1'
+    job.mkdir()
+    build_manual_attribute_list(
+        job, source_product_id='922368518409',
+        target_product_id='3853482303460343870',
+        row_text='"保质期,生产企业名称"未填写，导致复制失败，系统自动放至草稿箱')
+
+    report = build_manual_queue_report(data_root=str(tmp_path))
+    assert report['by_line']['dropship'] == 2
+    assert all(x['attribute'] in ('保质期', '生产企业名称')
+               for x in report['items'] if x['line'] == 'dropship')
+    assert report['total_items'] == len(report['items'])
+    assert '只读' in report['note']
+
+
+def test_manual_queue_report_never_invents_values():
+    from doudian_auto.dropship_policy import build_manual_queue_report
+    report = build_manual_queue_report()
+    assert 'value' not in report
+    for item in report['items']:
+        assert set(item) >= {'line', 'product_id', 'attribute', 'evidence'}
+    assert all('不推断' in report['note'] or '程序不推断' in report['note']
+               for _ in [0])
+
+
+def test_opportunity_candidates_declare_the_identity_limit():
+    """选品候选必须如实说明「卡片没有 offer ID」，不能被当成可直接铺的链接。"""
+    bridge = FakeBridge([{
+        'status': 'ok', 'candidate_count': 1,
+        'candidates': [{'title': 'X', 'supports_cipher': True,
+                        'dropship': True, 'miaoshou_uuid': 'u-1'}],
+        'identity_note': '机会卡片不含 1688 offer ID，只有妙手内部 UUID；不能直接铺货。',
+    }])
+    result = DropshipPages(bridge).read_opportunity_candidates(limit=1)
+    assert result['candidate_count'] == 1
+    assert 'offer ID' in result['identity_note']

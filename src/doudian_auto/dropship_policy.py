@@ -173,3 +173,98 @@ def build_manual_attribute_list(job, *, source_product_id, target_product_id=Non
 def load_manual_attribute_list(job):
     path = Path(job) / 'manual-attributes.json'
     return read_json(path) if path.is_file() else None
+
+def build_manual_queue_report(*, data_root=None, limit=200):
+    """把两条线的「等人工给值」汇总成一张只读清单。
+
+    线 A：铺货任务目录里的 ``manual-attributes.json``（新商品的类目必填属性）。
+    线 B：批量队列 ``batch.sqlite3`` 里因必填属性缺失 / missing_fields 而 blocked
+          的历史商品。
+
+    只读：不修改队列状态、不解锁任何任务、不写商品页面。
+    目的是让人一眼看到「总共还欠哪些值、分别属于哪个商品」，而不是让两条线
+    各说各话。属性名一律从页面原文/队列原文解析，不推断值。
+    """
+    import re
+    import sqlite3
+    from .jobs import DATA_ROOT
+
+    root = Path(data_root or DATA_ROOT)
+    items = []
+
+    # 线 A：铺货任务。默认在 DATA_ROOT/dropship/任务/ 下，
+    # 但真跑常用临时 --data-root，任务目录直接挂在 root 下，两种都要认。
+    seen_files = set()
+    for pattern in ('dropship/*/manual-attributes.json',
+                    '*/manual-attributes.json'):
+        for f in sorted(root.glob(pattern)):
+            if f in seen_files:
+                continue
+            seen_files.add(f)
+            try:
+                data = read_json(f)
+            except Exception:
+                continue
+            for entry in data.get('items') or []:
+                items.append({
+                    'line': 'dropship',
+                    'product_id': data.get('target_product_id'),
+                    'source_product_id': data.get('source_product_id'),
+                    'attribute': entry.get('attribute'),
+                    'category': data.get('category'),
+                    'evidence': '复制历史行的失败原因',
+                })
+
+    # 线 B：批量队列（只读连接）。队列 db 常驻 DATA_ROOT，
+    # 不会跟着 --data-root 搬到临时目录，所以两个位置都试。
+    db = next((c for c in (root / 'batch.sqlite3', DATA_ROOT / 'batch.sqlite3')
+               if c.is_file()), None)
+    if db is not None:
+        try:
+            con = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+            rows = con.execute(
+                "select product_id, last_error from products "
+                "where state='blocked' limit ?", (limit,)).fetchall()
+            con.close()
+            for product_id, err in rows:
+                text = str(err or '')
+                if not any(k in text for k in (
+                        'required_attributes_missing', 'missing_fields',
+                        '待真实参数', '需真实资料补齐')):
+                    continue
+                names = []
+                m = re.search(r'missing_fields=\[([^\]]*)\]', text)
+                if m:
+                    names += re.findall(r'"([^"]+)"', m.group(1))
+                m2 = re.search(r'平台必填类目属性缺失：([^；;]+)', text)
+                if m2:
+                    names += re.split(r'[、,，]', m2.group(1).strip())
+                uniq = []
+                for n in names:
+                    n = n.strip()
+                    if n and n not in uniq:
+                        uniq.append(n)
+                if not uniq:
+                    uniq = ['（原文未列出属性名，需查看 last_error）']
+                for n in uniq:
+                    items.append({
+                        'line': 'batch_queue',
+                        'product_id': str(product_id),
+                        'source_product_id': None,
+                        'attribute': n,
+                        'category': None,
+                        'evidence': text[:180],
+                    })
+        except sqlite3.Error:
+            pass
+
+    return {
+        'generated_at': time.time(),
+        'total_items': len(items),
+        'by_line': {
+            'dropship': sum(1 for x in items if x['line'] == 'dropship'),
+            'batch_queue': sum(1 for x in items if x['line'] == 'batch_queue'),
+        },
+        'items': items,
+        'note': '只读汇总。属性值必须由人按真实资料提供，程序不推断、不填写。',
+    }

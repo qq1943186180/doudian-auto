@@ -77,26 +77,6 @@ class DropshipPages:
         """进入 1688 来源商品页。
 
         detail.1688.com 不在 navigate 白名单里，所以用 location.assign：
-        适配器里随后会用 URL 校验确认落位的就是任务指定的那个 offer。
-        """
-        self.bridge.evaluate(
-            '(()=>{location.assign(' + json.dumps(offer_url) + ');return 1;})()')
-        return {'status': 'ok', 'offer_url': offer_url}
-
-    def navigate_source(self, offer_url):
-        """进入 1688 来源商品页。
-
-        detail.1688.com 不在 navigate 白名单里，所以用 location.assign：
-        适配器随后会用 URL 校验确认落位的就是任务指定的那个 offer。
-        """
-        self.bridge.evaluate(
-            '(()=>{location.assign(' + json.dumps(offer_url) + ');return 1;})()')
-        return {'status': 'ok', 'offer_url': offer_url}
-
-    def navigate_source(self, offer_url):
-        """进入 1688 来源商品页。
-
-        detail.1688.com 不在 navigate 白名单里，所以用 location.assign：
         适配器随后会用 URL 校验确认落位的就是任务指定的那个 offer。
         """
         self.bridge.evaluate(
@@ -258,6 +238,73 @@ return {status:'ok',source_product_id:String(p.source_product_id),
         return self._evaluate(code, page_name='1688来源商品页')
 
     # ---------- 机会商品页 ----------
+
+    def read_opportunity_candidates(self, *, require_cipher=True,
+                                    require_dropship=True, limit=30):
+        """读抖音官方机会商品页的候选卡片，**只读**，不点任何按钮。
+
+        实抓（2026-11-12）确认这页就是「抖音官方机会商品」，有官方上新扶持、
+        豆包商机品、推荐理由（热度高/成交增速快/平台缺货/销量高）等入口，
+        每张卡片带商机词与服务标签。所以「选品数据」其实存在，只是之前没接进程序。
+
+        实测卡片结构：
+          div.preview-item.hover-active
+            [data-custom-id]              妙手内部 UUID
+            a.title                        商品标题
+            .price-number                  价格区间（如 "1.68 ~ 2.38"）
+            .tag-text[]                    服务标签（一件代发/48小时发货/...）
+            独立叶子「支持密文」
+            .multipleEllipsis-1            商机词（如「商机：奇瑞车门限位器保护套」，可能没有）
+
+        🔴 诚实边界：**卡片上没有任何 1688 offer ID**，只有妙手内部 UUID。
+        所以它产出的是「候选清单」，不能独立建立来源身份，也不能直接喂给
+        `prepare`（后者要求 detail.1688.com/offer/<ID>.html）。
+        要用候选必须再用标题去 1688 检索出对应 offer，并人工核实是同一个商品。
+        """
+        code = """(()=>{
+const WSRE2=new RegExp('['+String.fromCharCode(32,9,10,13,12288,160)+']+','g');
+const u=new URL(location.href);
+if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/selection/opportunity_product')
+ return {status:'wrong_page'};
+const p=__PAYLOAD__;
+const cards=[...document.querySelectorAll('div.preview-item.hover-active')];
+if(!cards.length)return {status:'layout_changed',reason:'no_cards'};
+const out=[];
+for(const card of cards){
+ const titleEl=card.querySelector('a.title')||card.querySelector('.title-text-box');
+ if(!titleEl)return {status:'layout_changed',reason:'title_missing'};
+ const title=(titleEl.innerText||'').replace(WSRE2,' ').trim();
+ if(!title)return {status:'layout_changed',reason:'title_empty'};
+ const tags=[...card.querySelectorAll('.tag-text')]
+   .map(e=>(e.innerText||'').trim()).filter(Boolean);
+ const cipher=[...card.querySelectorAll('*')]
+   .some(e=>e.children.length===0 && (e.innerText||'').trim()==='支持密文');
+ const dropship=tags.some(t=>t.indexOf('一件代发')>=0);
+ if(p.require_cipher&&!cipher)continue;
+ if(p.require_dropship&&!dropship)continue;
+ const custom=card.querySelector('[data-custom-id]');
+ const priceEl=card.querySelector('.price-number');
+ const img=card.querySelector('img');
+ const oppEl=[...card.querySelectorAll('*')].find(
+   e=>e.children.length===0 && (e.innerText||'').trim().indexOf('商机：')===0);
+ out.push({
+   title, price_range:priceEl?(priceEl.innerText||'').trim():null,
+   supports_cipher:cipher, dropship,
+   tags, opportunity:oppEl?(oppEl.innerText||'').trim().replace(/^商机：/,''):null,
+   miaoshou_uuid:custom?custom.getAttribute('data-custom-id'):null,
+   image_url:img?img.src:null
+ });
+ if(out.length>=p.limit)break;
+}
+return {status:'ok',page_url:u.href,candidate_count:out.length,candidates:out,
+ identity_note:'机会卡片不含 1688 offer ID，只有妙手内部 UUID；'
+   +'此清单不能独立建立来源身份，需以标题到 1688 检索并人工核实同一商品。'};
+})()""".replace('__PAYLOAD__', _js({
+    'require_cipher': bool(require_cipher),
+    'require_dropship': bool(require_dropship),
+    'limit': int(limit),
+}))
+        return self._evaluate(code, page_name='抖音官方机会商品页')
 
     def click_single_opportunity(self, *, card_text):
         """点击机会商品卡片上的「立即铺货」，并要求点击后能确认结果页出现。

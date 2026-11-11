@@ -104,11 +104,11 @@ def parser():
     attr.add_argument('--reason', help='放弃原因，会落盘留存')
     attr.add_argument('--operator', default=os.environ.get('USERNAME') or 'unknown')
     attr.add_argument('--session', default='doudian-auto')
-    dropship = sub.add_parser('dropship', help='单商品机会铺货任务（初版只读观测，不批量）')
+    dropship = sub.add_parser('dropship', help='单商品铺货任务：计划/阶段推进/只读核查/机会候选/人工待办')
     dropship_sub = dropship.add_subparsers(dest='dropship_command', required=True)
     dropship_prepare = dropship_sub.add_parser('prepare', help='创建单商品计划并试算价格；不连浏览器')
     dropship_prepare.add_argument('--source-product-id', required=True, help='1688 来源商品ID（数字）')
-    dropship_prepare.add_argument('--offer-url', required=True, help='1688 商品链接（HTTPS）')
+    dropship_prepare.add_argument('--offer-url', required=True, help='1688 商品链接（http 或 https，写入前规范成 https）')
     dropship_prepare.add_argument('--shop', required=True)
     dropship_prepare.add_argument('--source-price', required=True, help='源价，如 57')
     dropship_prepare.add_argument('--multiplier', required=True, help='倍数，3 表示三倍')
@@ -120,8 +120,20 @@ def parser():
                                   help='已知的抖店类目（如 家清纸品>除臭用品>空气清新/净化/芳香剂）')
     dropship_prepare.add_argument('--allow-risk', action='store_true',
                                   help='显式放行类目预检的高风险任务')
-    for name, help_text in (('apply', '读搬家配置快照；写配置与复制尚未接入'),
-                            ('verify', '只读核查铺货结果；当前版本不触发任何页面写入')):
+    dropship_candidates = dropship_sub.add_parser(
+        'candidates', help='只读列出抖音官方机会商品页的候选（不点任何按钮）')
+    dropship_candidates.add_argument('--session', default='doudian-auto-dropship')
+    dropship_candidates.add_argument('--limit', type=int, default=30)
+    dropship_candidates.add_argument('--no-cipher', action='store_true',
+                                     help='不要求「支持密文」')
+    dropship_candidates.add_argument('--no-dropship', action='store_true',
+                                     help='不要求「一件代发」')
+    dropship_queue = dropship_sub.add_parser(
+        'manual-queue', help='只读汇总铺货任务与批量队列里等待人工补值的属性')
+    dropship_queue.add_argument('--data-root')
+    dropship_queue.add_argument('--limit', type=int, default=200)
+    for name, help_text in (('apply', '按阶段推进铺货任务；不带 --apply 为预览'),
+                            ('verify', '只读核查铺货结果，不触发任何页面写入')):
         action = dropship_sub.add_parser(name, help=help_text)
         action.add_argument('task_id')
         action.add_argument('--data-root')
@@ -755,6 +767,23 @@ def run(args):
         return unlock(args.job)
     if args.command == 'dropship':
         from .dropship import prepare_task, run_task
+        if args.dropship_command == 'candidates':
+            from .dropship_pages import DropshipPages, OPPORTUNITY_PATH
+            from .ego_bridge import EgoBridge
+            bridge = EgoBridge(session=args.session)
+            bridge.require_ready()
+            pages = DropshipPages(bridge)
+            pages.navigate_miaoshou(OPPORTUNITY_PATH)
+            import time as _t
+            _t.sleep(14)
+            return pages.read_opportunity_candidates(
+                require_cipher=not args.no_cipher,
+                require_dropship=not args.no_dropship,
+                limit=args.limit)
+        if args.dropship_command == 'manual-queue':
+            from .dropship_policy import build_manual_queue_report
+            return build_manual_queue_report(data_root=args.data_root,
+                                             limit=args.limit)
         if args.dropship_command == 'prepare':
             return prepare_task(
                 source_product_id=args.source_product_id,

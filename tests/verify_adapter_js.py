@@ -231,6 +231,52 @@ STUB_HISTORY_EMPTY = STUB_HISTORY.replace(
 STUB_HISTORY_WRONG_FILTER = STUB_HISTORY.replace(
     "body: {innerText: '共 1 条'}", "body: {innerText: '共 1 条'}")
 
+# 抖音官方机会商品页的卡片（结构与实抓一致）
+def_opportunity_stub = r"""
+const leaf = t => ({children: {length: 0}, innerText: t});
+const mkCard = (title, tags, cipher, uuid, opportunity) => ({
+  innerText: [title].concat(tags).join(' '),
+  querySelector: s => {
+    if (s === 'a.title' || s === '.title-text-box') return {innerText: title};
+    if (s === '.price-number') return {innerText: '1.68 ~ 2.38'};
+    if (s === '[data-custom-id]') return {getAttribute: () => uuid};
+    if (s === 'img') return {src: 'https://cbu01.alicdn.com/img/x.jpg'};
+    return null;
+  },
+  querySelectorAll: s => {
+    if (s === '.tag-text') return tags.map(t => ({innerText: t}));
+    if (s === '*') {
+      const leaves = tags.map(leaf);
+      if (cipher) leaves.push(leaf('支持密文'));
+      if (opportunity) leaves.push(leaf('商机：' + opportunity));
+      return leaves;
+    }
+    return [];
+  },
+});
+globalThis.__mkCard = mkCard;
+"""
+STUB_OPPORTUNITY = def_opportunity_stub + r"""
+const cards = [
+  __mkCard('汽车倒车后视镜小圆镜', ['一件代发', '48小时发货'], true,
+           'uuid-1', null),
+];
+globalThis.document = {
+  querySelectorAll: s => (s === 'div.preview-item.hover-active' ? cards : []),
+  body: {innerText: ''},
+};
+"""
+STUB_OPPORTUNITY_MIXED = def_opportunity_stub + r"""
+const cards = [
+  __mkCard('汽车倒车后视镜小圆镜', ['一件代发'], true, 'uuid-1', null),
+  __mkCard('普通无密文商品', ['一件代发'], false, 'uuid-2', null),
+];
+globalThis.document = {
+  querySelectorAll: s => (s === 'div.preview-item.hover-active' ? cards : []),
+  body: {innerText: ''},
+};
+"""
+
 # 1688 来源页：规格选择区
 # 这段结构是从实抓页面抄的：div.module-od-sku-selection > div.expand-view-item，
 # 规格名在 span.item-label[title]，价格在第一个 span.item-price-stock，
@@ -624,6 +670,26 @@ globalThis.document = {
                        check_history_not_filtered,
                        page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
                        stub=STUB_HISTORY))
+
+    # ---------- 选品候选：只读，不点按钮 ----------
+    def check_opportunity(d):
+        """字段完整 + 过滤生效 + 身份边界如实声明。"""
+        rows = d.get('candidates') or []
+        return (d.get('status') == 'ok'
+                and d.get('candidate_count') == 1
+                and rows[0]['title'] == '汽车倒车后视镜小圆镜'
+                and rows[0]['supports_cipher'] is True
+                and rows[0]['dropship'] is True
+                and rows[0]['price_range'] == '1.68 ~ 2.38'
+                and 'offer ID' in (d.get('identity_note') or ''))
+
+    results.append(run('read_opportunity_candidates_filters_and_fields',
+                       extract(pages.read_opportunity_candidates,
+                               {'require_cipher': True, 'require_dropship': True,
+                                'limit': 30}),
+                       check_opportunity,
+                       page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
+                       stub=STUB_OPPORTUNITY_MIXED))
 
     # ---------- read_review_status ----------
     def check_review(d):
