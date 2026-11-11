@@ -104,6 +104,25 @@ def parser():
     attr.add_argument('--reason', help='放弃原因，会落盘留存')
     attr.add_argument('--operator', default=os.environ.get('USERNAME') or 'unknown')
     attr.add_argument('--session', default='doudian-auto')
+    dropship = sub.add_parser('dropship', help='单商品机会铺货任务（初版只读观测，不批量）')
+    dropship_sub = dropship.add_subparsers(dest='dropship_command', required=True)
+    dropship_prepare = dropship_sub.add_parser('prepare', help='创建单商品计划并试算价格；不连浏览器')
+    dropship_prepare.add_argument('--source-product-id', required=True, help='1688 来源商品ID（数字）')
+    dropship_prepare.add_argument('--offer-url', required=True, help='1688 商品链接（HTTPS）')
+    dropship_prepare.add_argument('--shop', required=True)
+    dropship_prepare.add_argument('--source-price', required=True, help='源价，如 57')
+    dropship_prepare.add_argument('--multiplier', required=True, help='倍数，3 表示三倍')
+    dropship_prepare.add_argument('--addition', required=True, help='加价，如 5')
+    dropship_prepare.add_argument('--data-root')
+    for name, help_text in (('apply', '读搬家配置快照；写配置与复制尚未接入'),
+                            ('verify', '只读核查铺货结果；当前版本不触发任何页面写入')):
+        action = dropship_sub.add_parser(name, help=help_text)
+        action.add_argument('task_id')
+        action.add_argument('--data-root')
+        action.add_argument('--session', default='doudian-auto-dropship')
+        if name == 'apply':
+            action.add_argument('--apply', action='store_true',
+                                help='确认展示的源价、公式和最终价后继续')
     batch = sub.add_parser('batch', help='批量全套优化任务队列')
     batch_sub = batch.add_subparsers(dest='batch_command', required=True)
     batch_create = batch_sub.add_parser('create', help='从JSON商品清单创建持久化批次')
@@ -728,6 +747,29 @@ def run(args):
         return {'job_dir': str(Path(args.job).resolve()), 'product_id': data['product_id'], 'state':read_json(Path(args.job) / 'state.json')}
     if args.command == 'unlock':
         return unlock(args.job)
+    if args.command == 'dropship':
+        from .dropship import prepare_task, run_task
+        if args.dropship_command == 'prepare':
+            return prepare_task(
+                source_product_id=args.source_product_id,
+                offer_url=args.offer_url,
+                shop=args.shop,
+                source_price=args.source_price,
+                multiplier=args.multiplier,
+                addition=args.addition,
+                root=args.data_root,
+            )
+        if args.dropship_command == 'apply':
+            if not args.apply:
+                return run_task(argparse.Namespace(
+                    task_id=args.task_id, apply=False,
+                    data_root=args.data_root, session=args.session,
+                ))
+            return run_task(args)
+        # verify 只走只读核查，绝不复用 apply 的写入路径。
+        raise DoudianError(
+            'dropship_verify_incomplete',
+            'verify 需接入复制历史与官方编辑页只读核查；当前版本不触发任何页面写入。')
     if args.command == 'attributes':
         from .attribute_workflow import publish_attributes
         # Bridge and Editor are imported at module scope; re-importing either here turned
