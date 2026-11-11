@@ -767,9 +767,15 @@ def run(args):
                 ))
             return run_task(args)
         # verify 只走只读核查，绝不复用 apply 的写入路径。
+        if args.dropship_command == 'verify':
+            from .dropship import run_task
+            return run_task(argparse.Namespace(
+                task_id=args.task_id, apply=True, readback_only=True,
+                data_root=args.data_root, session=args.session,
+            ))
         raise DoudianError(
-            'dropship_verify_incomplete',
-            'verify 需接入复制历史与官方编辑页只读核查；当前版本不触发任何页面写入。')
+            'dropship_command_unknown',
+            f'未知的铺货子命令：{args.dropship_command}。')
     if args.command == 'attributes':
         from .attribute_workflow import publish_attributes
         # Bridge and Editor are imported at module scope; re-importing either here turned

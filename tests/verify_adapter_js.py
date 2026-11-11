@@ -5,7 +5,10 @@ a regex written as \\\\s in a Python triple-quoted string lands as two backslash
 matches a literal backslash followed by 's' instead of whitespace. Nothing in-process
 would catch that. This runs the real code path in Node against a stub page.
 
-Run: python work/optimizer-20261111/verify-adapter-js.py
+Every adapter method gets a happy path and a fail-closed path: a happy path alone
+cannot show that an ambiguous match stops instead of widening.
+
+Run: python tests/verify_adapter_js.py
 """
 
 import inspect
@@ -13,16 +16,36 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'src'))
 
-from doudian_auto.dropship_pages import DropshipPages, _js  # noqa: E402
+from doudian_auto.dropship_pages import (  # noqa: E402
+    PRICE_FIELDS, DropshipPages, _js,
+)
 
 PID = '3853454064050373417'
+SOURCE_ID = '965251097615'
+YEN = '¥'
 
-STUB_DOM = r"""
+# 每个 case 各自建一套 stub，避免共用数组导致「所有选择器都命中同一批元素」。
+STUB_BASE = r"""
+globalThis.URL = URL;
+globalThis.setPage = (host, path, query) => {
+  const q = new URLSearchParams(query);
+  globalThis.location = {href: 'https://' + host + path + '?' + query,
+                         hostname: host, pathname: path, searchParams: q};
+};
+globalThis.resetDoc = () => {
+  globalThis.document = {querySelectorAll: () => [], body: {innerText: ''}};
+};
+globalThis.resetDoc();
+"""
+
+# 官方商品编辑页：SKU 行 + 价格填写进度
+STUB_OFFICIAL = r"""
 const YEN = String.fromCharCode(65509);
 const makeInput = v => ({value: v, getAttribute: () => '请输入'});
 const skuRows = [
@@ -31,53 +54,133 @@ const skuRows = [
   {innerText: '极氪车门限位器-1个装 ' + YEN + ' 888888 增 减 888888 清空 - 3392818512538405 去关联 已上架',
    querySelectorAll: () => [makeInput('15.48')]},
 ];
+globalThis.document = {
+  querySelectorAll: sel => (sel === 'tr' ? skuRows : []),
+  body: {innerText: '*价格与库存 价格填写进度 100% 区域库存 全部颜色'},
+};
+"""
+
+# 复制历史页：多行，含本次来源
+STUB_HISTORY = r"""
 const historyRows = [
   {innerText: '阿里巴巴utookii行李箱轮子保护套 1688分销 源ID： 872099955768 商品ID： 3850072322857894188'},
-  {innerText: '阿里巴巴适用极氪001/007车门限位器 1688分销 源ID： 965251097615 商品ID： ' + '3853454064050373417'},
+  {innerText: '阿里巴巴适用极氪001/007车门限位器 1688分销 源ID： 965251097615 商品ID： 3853454064050373417'},
 ];
 globalThis.document = {
+  querySelectorAll: sel => (sel === 'tr' ? historyRows : []),
+  body: {innerText: ''},
+};
+"""
+
+# 搬家设置页：8 个价格字段 + 放入仓库 radio + 保存按钮
+STUB_SETTINGS = r"""
+const FIELDS = ['pricePercent','priceAdd','priceSub','priceFinalPercent','priceTail',
+                 'priceDecimalDiyValue','sourcePostFeePriceAddValue','postFeePrice1688AddValue'];
+const initial = {pricePercent:'200', priceAdd:'3', priceSub:'', priceFinalPercent:'100',
+                 priceTail:'', priceDecimalDiyValue:'88', sourcePostFeePriceAddValue:'',
+                 postFeePrice1688AddValue:'5.00'};
+class HTMLInputElement {
+  constructor(name, value) { this.name = name; this._value = value; this.dispatchEvent = () => {}; }
+}
+Object.defineProperty(HTMLInputElement.prototype, 'value', {
+  set(v) { this._value = v; }, get() { return this._value; },
+});
+globalThis.window = {HTMLInputElement};
+globalThis.Event = class Event { constructor(t, o) { this.type = t; this.options = o; } };
+const inputs = {};
+for (const name of FIELDS) inputs[name] = new HTMLInputElement(name, initial[name]);
+
+const radioInput = {checked: true};
+const radio = {
+  innerText: '放入仓库',
+  querySelector: s => (s === 'input[type=radio]' ? radioInput : null),
+  click: () => { radioInput.checked = true; },
+};
+const saveButton = {innerText: '保存', click: () => {}};
+globalThis.document = {
   querySelectorAll: sel => {
-    if (sel === 'tr') return skuRows.concat(historyRows);
+    if (sel === 'input[name]') return Object.values(inputs);
+    if (sel === 'label.el-radio') return [radio];
+    if (sel === 'button') return [saveButton];
+    if (sel === '.el-message') return [];
     return [];
   },
   body: {innerText: ''},
 };
-globalThis.location = {
-  href: 'https://fxg.jinritemai.com/ffa/g/create?product_id=__PID__',
-  hostname: 'fxg.jinritemai.com', pathname: '/ffa/g/create',
-  searchParams: new URLSearchParams('product_id=__PID__'),
+"""
+
+# 商品上货页：textarea + 三个同类按钮
+STUB_MOVE = r"""
+class HTMLTextAreaElement {
+  constructor() { this.placeholder = '多条地址换行或逗号区分'; this._value = ''; this.dispatchEvent = () => {}; }
+}
+Object.defineProperty(HTMLTextAreaElement.prototype, 'value', {
+  set(v) { this._value = v; }, get() { return this._value; },
+});
+globalThis.window = {HTMLTextAreaElement};
+globalThis.Event = class Event { constructor(t, o) { this.type = t; this.options = o; } };
+const ta = new HTMLTextAreaElement();
+
+const grabButton = {innerText: '开始批量抓取商品', disabled: false, click: () => {}};
+const nextCopyButton = {innerText: '下一步: 开始复制', disabled: false, click: () => {}};
+globalThis.document = {
+  querySelectorAll: sel => {
+    if (sel === 'textarea') return [ta];
+    if (sel === 'button') return [grabButton, nextCopyButton];
+    return [];
+  },
+  body: {innerText: '商品列表 跳过： 1 详情 成功： 0 查看详情'},
 };
-// 每个 case 可覆盖 location 来伪装所在页面
-globalThis.setPage = (host, path, query) => {
-  const q = new URLSearchParams(query);
-  globalThis.location = {href: 'https://' + host + path + '?' + query,
-                         hostname: host, pathname: path, searchParams: q};
+"""
+
+# 机会商品页：一张卡片 + 立即铺货
+STUB_OPPORTUNITY = r"""
+const action = {innerText: '立即铺货', click: () => {}};
+const card = {
+  innerText: '素材优化 汽车密封条 支持密文 一件代发',
+  querySelector: s => (s === '.product-card.product-card__ms.product-card__orange' ? {} : null),
+  querySelectorAll: s => (s === 'div.J_moveCommonPreviewProductBtn' ? [action] : []),
 };
-globalThis.URL = URL;
+globalThis.document = {
+  querySelectorAll: sel => {
+    if (sel === 'div.preview-item.hover-active') return [card];
+    if (sel === 'button') return [{innerText: '下一步: 开始复制'}];
+    return [];
+  },
+  body: {innerText: '商品列表 成功： 1'},
+};
 """
 
 
-def extract(method, payload):
+def extract(method, payload, fields=None):
     src = inspect.getsource(method)
     body = re.search(r'code = """(.*?)"""', src, re.S).group(1)
-    return body.replace('__PAYLOAD__', _js(payload))
+    body = body.replace('__PAYLOAD__', _js(payload))
+    if '__FIELDS__' in body:
+        body = body.replace('__FIELDS__', _js(fields or []))
+    return body
 
 
-def run(label, js, expect, page=None):
-    # 适配器是一段 IIFE，Node 不会打印它的返回值；接到全局再输出才能断言
+def run(label, js, expect, page=None, stub=None):
+    """在 Node 里真跑一段适配器 JS 并断言返回值。
+
+    临时文件写系统临时目录而不是仓库：Node 超时或 Python 异常都可能让清理
+    步骤来不及执行，留在仓库里就是污染。
+    """
     js = js.replace('(()=>{', 'globalThis.__r=(()=>{', 1)
     js += '\nconsole.log(JSON.stringify(globalThis.__r));\n'
     prefix = ''
     if page:
         prefix = f'setPage({page[0]!r}, {page[1]!r}, {page[2]!r});\n'
-    path = Path(__file__).with_name(f'_js_{label}.js')
-    path.write_text(STUB_DOM.replace('__PID__', PID) + '\n' + prefix + js + '\n',
-                    encoding='utf-8')
-    proc = subprocess.run(['node', str(path)], capture_output=True, text=True, timeout=30)
-    path.unlink(missing_ok=True)
+    script = STUB_BASE + (stub or '') + prefix + js
+    with tempfile.TemporaryDirectory(prefix='dropship-js-') as tmp:
+        path = Path(tmp) / 'case.js'
+        path.write_text(script, encoding='utf-8')
+        proc = subprocess.run(['node', str(path)], capture_output=True,
+                              text=True, timeout=30)
     out = (proc.stdout or '').strip()
     if proc.returncode != 0:
-        print(f'[FAIL] {label}: node 执行报错\n{proc.stderr.strip()[:300]}')
+        print(f'[FAIL] {label}: node 执行报错\n{proc.stderr.strip()[:400]}')
         return False
     try:
         data = json.loads(out)
@@ -85,7 +188,7 @@ def run(label, js, expect, page=None):
         print(f'[FAIL] {label}: 输出不是 JSON -> {out[:200]}')
         return False
     ok = expect(data)
-    print(f"[{'PASS' if ok else 'FAIL'}] {label}: {json.dumps(data, ensure_ascii=False)[:220]}")
+    print(f"[{'PASS' if ok else 'FAIL'}] {label}: {json.dumps(data, ensure_ascii=False)[:200]}")
     return ok
 
 
@@ -93,23 +196,166 @@ def main():
     pages = DropshipPages(None)
     results = []
 
+    # ---------- read_sku_prices ----------
     def check_sku(d):
         rows = d.get('sku_rows') or []
         return (d.get('status') == 'ok' and len(rows) == 2
                 and rows[0]['price'] == '27.48' and rows[1]['price'] == '15.48'
                 and rows[0]['sku'].startswith('极氪车门限位器-4个装')
-                and d.get('sku_total_count') is None)
+                and d.get('sku_total_count') is None
+                and d.get('price_progress') == 100)
 
     results.append(run('read_sku_prices',
-                       extract(pages.read_sku_prices, {'product_id': PID}), check_sku))
+                       extract(pages.read_sku_prices, {'product_id': PID}), check_sku,
+                       page=('fxg.jinritemai.com', '/ffa/g/create', f'product_id={PID}'),
+                       stub=STUB_OFFICIAL))
 
+    def check_sku_wrong_page(d):
+        return d.get('status') == 'wrong_page'
+
+    results.append(run('read_sku_prices_wrong_page',
+                       extract(pages.read_sku_prices, {'product_id': PID}), check_sku_wrong_page,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_OFFICIAL))
+
+    # ---------- read_history_product_id ----------
     def check_history(d):
         return d.get('status') == 'ok' and d.get('product_id') == PID
 
     results.append(run('read_history_product_id',
                        extract(pages.read_history_product_id,
-                               {'source_product_id': '965251097615'}), check_history,
-                       page=('v2-dd.chengji-inc.com', '/move/move_history', '')))
+                               {'source_product_id': SOURCE_ID}), check_history,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY))
+
+    def check_history_prefix(d):
+        """短 ID 不能命中长 ID 的前缀。"""
+        return d.get('status') == 'layout_changed'
+
+    results.append(run('read_history_prefix_collision',
+                       extract(pages.read_history_product_id,
+                               {'source_product_id': '96525109761'}), check_history_prefix,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY))
+
+    def check_history_bad_id(d):
+        """来源 ID 含正则字符时必须拒绝，而不是改变匹配含义。"""
+        return d.get('status') == 'layout_changed' and d.get('reason') == 'source_id_invalid'
+
+    results.append(run('read_history_non_numeric_id',
+                       extract(pages.read_history_product_id,
+                               {'source_product_id': '.*'}), check_history_bad_id,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY))
+
+    # ---------- read_settings ----------
+    def check_settings(d):
+        v = d.get('values') or {}
+        return (d.get('status') == 'ok' and v.get('pricePercent') == '200'
+                and v.get('priceAdd') == '3' and d.get('shelf_mode') == '放入仓库')
+
+    results.append(run('read_settings',
+                       extract(pages.read_settings, {},
+                               fields=list(PRICE_FIELDS)), check_settings,
+                       page=('v2-dd.chengji-inc.com', '/move/move_setting', ''),
+                       stub=STUB_SETTINGS))
+
+    # ---------- set_price_formula ----------
+    def check_set(d):
+        v = d.get('values') or {}
+        return (d.get('status') == 'ok' and v.get('pricePercent') == '300'
+                and v.get('priceAdd') == '5'
+                and d.get('shelf_mode') == '放入仓库'
+                and d.get('persistence') == 'unverified')
+
+    results.append(run('set_price_formula',
+                       extract(pages.set_price_formula,
+                               {'before': {'pricePercent': '200', 'priceAdd': '3'},
+                                'target': {'pricePercent': '300', 'priceAdd': '5'}}),
+                       check_set,
+                       page=('v2-dd.chengji-inc.com', '/move/move_setting', ''),
+                       stub=STUB_SETTINGS))
+
+    def check_set_stale(d):
+        """旧值已被别人改过时必须停，不能覆盖。"""
+        return (d.get('status') == 'readback_mismatch'
+                and d.get('reason') == 'old_value_changed')
+
+    results.append(run('set_price_formula_stale_before',
+                       extract(pages.set_price_formula,
+                               {'before': {'pricePercent': '999', 'priceAdd': '3'},
+                                'target': {'pricePercent': '300', 'priceAdd': '5'}}),
+                       check_set_stale,
+                       page=('v2-dd.chengji-inc.com', '/move/move_setting', ''),
+                       stub=STUB_SETTINGS))
+
+    # ---------- paste_offer_and_fetch ----------
+    def check_paste(d):
+        return (d.get('status') == 'ok'
+                and d.get('textarea_value') == 'https://detail.1688.com/offer/1.html')
+
+    results.append(run('paste_offer_and_fetch',
+                       extract(pages.paste_offer_and_fetch,
+                               {'offer_url': 'https://detail.1688.com/offer/1.html'}),
+                       check_paste,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_MOVE))
+
+    # ---------- read_fetch_result ----------
+    def check_fetch(d):
+        return (d.get('status') == 'ok' and d.get('skipped_count') == '1'
+                and d.get('success_count') == '0' and d.get('next_step_count') == 1)
+
+    results.append(run('read_fetch_result',
+                       extract(pages.read_fetch_result, {}), check_fetch,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_MOVE))
+
+    # ---------- click_start_copy ----------
+    def check_next(d):
+        return d.get('status') == 'ok' and d.get('clicked') == '下一步: 开始复制'
+
+    results.append(run('click_start_copy',
+                       extract(pages.click_start_copy, {}), check_next,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_MOVE))
+
+    # ---------- click_single_opportunity ----------
+    def check_card(d):
+        return (d.get('status') == 'ok' and d.get('result_visible') is True
+                and d.get('next_step') is True)
+
+    results.append(run('click_single_opportunity',
+                       extract(pages.click_single_opportunity,
+                               {'card_text': '汽车密封条'}), check_card,
+                       page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
+                       stub=STUB_OPPORTUNITY))
+
+    def check_card_ambiguous(d):
+        """子串命中多张卡片时必须停。"""
+        return d.get('status') == 'layout_changed' and d.get('reason') == 'card'
+
+    results.append(run('click_single_opportunity_ambiguous',
+                       extract(pages.click_single_opportunity,
+                               {'card_text': '不存在的标题'}), check_card_ambiguous,
+                       page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
+                       stub=STUB_OPPORTUNITY))
+
+    # ---------- read_review_status ----------
+    def check_review(d):
+        # 真实页面同时出现「待审核」和「已下架」，两个都要如实读出，不能择一
+        return (d.get('status') == 'ok'
+                and set(d.get('status_tokens') or []) == {'待审核', '已下架'})
+
+    results.append(run('read_review_status',
+                       extract(pages.read_review_status, {'product_id': PID}), check_review,
+                       page=('fxg.jinritemai.com', '/ffa/g/create', f'product_id={PID}'),
+                       stub=r"""
+globalThis.document = {
+  querySelectorAll: () => [],
+  body: {innerText: '*价格与库存 价格填写进度 100% 商品状态 待审核 已下架'},
+};
+"""))
 
     print(f'\n{sum(results)}/{len(results)} 段 JS 真跑通过')
     return 0 if all(results) else 1
