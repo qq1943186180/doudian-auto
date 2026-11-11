@@ -60,14 +60,37 @@ globalThis.document = {
 };
 """
 
-# 复制历史页：多行，含本次来源
+# 复制历史页：真实结构是 vue-recycle-scroller 虚拟滚动表格，行容器是 div 不是 tr。
+# 这段 DOM 是从实抓页面逐字抄下来的：之前 stub 自造了 tr 行，于是验证器自洽通过，
+# 而真实页面上永远返回 0 行。stub 必须反映真实结构，否则验证器等于自证。
 STUB_HISTORY = r"""
+const mkRow = cells => ({
+  innerText: cells.join(' '),
+  querySelectorAll: sel => (sel === 'div.cell'
+    ? cells.map(c => ({innerText: c}))
+    : []),
+});
 const historyRows = [
-  {innerText: '阿里巴巴utookii行李箱轮子保护套 1688分销 源ID： 872099955768 商品ID： 3850072322857894188'},
-  {innerText: '阿里巴巴适用极氪001/007车门限位器 1688分销 源ID： 965251097615 商品ID： 3853454064050373417'},
+  mkRow(['',
+    '阿里巴巴适用极氪001/007车门限位器7X/009汽车门缓冲减震垫改装保护套 发布类目：汽车用品>汽车防护用品>其他汽车防护用品 1688分销',
+    '华睿车品（华睿车品） 源ID： 965251097615 默认配置',
+    '审核通过', '已成功复制',
+    '2026-11-11 22:21 商品ID： 3853454064050373417 已下架 审核通过 销量：0',
+    '', '商品快速编辑 去抖店编辑 更多']),
+  mkRow(['',
+    '阿里巴巴utookii行李箱轮子保护套一次性收纳防尘脚罩防脏旅行箱滚轮万向 发布类目：箱包>箱包配件>箱包配件 1688分销',
+    '上海馨尚悦居贸易有限公司（馨尚悦居） 源ID： 872099955768 默认配置',
+    '', '已成功复制',
+    '2026-10-24 16:36 商品ID： 3850072322857894188 已下架 审核通过 销量：0',
+    '', '商品快速编辑 去抖店编辑 更多']),
 ];
 globalThis.document = {
-  querySelectorAll: sel => (sel === 'tr' ? historyRows : []),
+  querySelectorAll: sel => {
+    if (sel === 'div.pro-table-custom-body-row') return historyRows;
+    // tr 里只有日历残留——这正是旧实现返回 0 行的原因
+    if (sel === 'tr') return [{innerText: '日一二三四五六'}];
+    return [];
+  },
   body: {innerText: ''},
 };
 """
@@ -132,6 +155,36 @@ globalThis.document = {
   body: {innerText: '商品列表 跳过： 1 详情 成功： 0 查看详情'},
 };
 """
+
+# 商品上货页：抓取成功的结果页（成功 1 / 跳过 0）
+STUB_MOVE_OK = r"""
+const ta = {
+  placeholder: '多条地址换行或逗号区分', value: '',
+  dispatchEvent: () => {},
+};
+class HTMLTextAreaElement {}
+Object.defineProperty(HTMLTextAreaElement.prototype, 'value', {
+  set(v) { this._value = v; }, get() { return this._value; },
+});
+globalThis.window = {HTMLTextAreaElement};
+globalThis.Event = class Event { constructor(t, o) { this.type = t; this.options = o; } };
+
+const nextCopyButton = {innerText: '下一步: 开始复制', disabled: false, click: () => {}};
+globalThis.document = {
+  querySelectorAll: sel => {
+    if (sel === 'textarea') return [ta];
+    if (sel === 'button') return [nextCopyButton];
+    return [];
+  },
+  body: {innerText: '商品列表 跳过： 0 详情 成功： 1'},
+};
+"""
+
+# 商品上货页：成功 2 / 跳过 0（成功数多于单商品任务的预期）
+STUB_MOVE_TWO = STUB_MOVE_OK.replace('跳过： 0 详情 成功： 1', '跳过： 0 详情 成功： 2')
+
+# 商品上货页：成功 1 / 跳过 1（成功数对但有跳过，仍不许复制）
+STUB_MOVE_SKIPPED = STUB_MOVE_OK.replace('跳过： 0 详情 成功： 1', '跳过： 1 详情 成功： 1')
 
 # 机会商品页：一张卡片 + 立即铺货
 STUB_OPPORTUNITY = r"""
@@ -312,13 +365,58 @@ def main():
                        stub=STUB_MOVE))
 
     # ---------- click_start_copy ----------
+    # 点击复制是整条链里最不可逆的一步，所以它自带前置闸门。
+    # 下面几个用例逐条钉住闸门：抓取不干净就不许点。
+
     def check_next(d):
-        return d.get('status') == 'ok' and d.get('clicked') == '下一步: 开始复制'
+        return (d.get('status') == 'ok'
+                and d.get('clicked') == '下一步: 开始复制'
+                and d.get('success_count') == '1')
 
     results.append(run('click_start_copy',
-                       extract(pages.click_start_copy, {}), check_next,
+                       extract(pages.click_start_copy, {'expected_success': 1}), check_next,
                        page=('v2-dd.chengji-inc.com', '/move/move', ''),
-                       stub=STUB_MOVE))
+                       stub=STUB_MOVE_OK))
+
+    def check_next_skipped(d):
+        """有跳过就不许复制：被跳过的商品根本没抓回来。"""
+        return (d.get('status') == 'layout_changed'
+                and d.get('reason') == 'fetch_skipped'
+                and d.get('skipped_count') == '1')
+
+    results.append(run('click_start_copy_refuses_skipped',
+                       extract(pages.click_start_copy, {'expected_success': 1}),
+                       check_next_skipped,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_MOVE_SKIPPED))
+
+    def check_next_mismatch(d):
+        """成功数与预期不符就不许复制。"""
+        return (d.get('status') == 'layout_changed'
+                and d.get('reason') == 'fetch_success_mismatch')
+
+    results.append(run('click_start_copy_refuses_success_mismatch',
+                       extract(pages.click_start_copy, {'expected_success': 1}),
+                       check_next_mismatch,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_MOVE_TWO))
+
+    def check_next_no_list(d):
+        """结果页都没出现就不许复制。"""
+        return (d.get('status') == 'layout_changed'
+                and d.get('reason') == 'result_list_missing')
+
+    results.append(run('click_start_copy_refuses_missing_list',
+                       extract(pages.click_start_copy, {'expected_success': 1}),
+                       check_next_no_list,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=r"""
+const ta = {placeholder: '多条地址换行或逗号区分', value: '', dispatchEvent: () => {}};
+globalThis.document = {
+  querySelectorAll: sel => (sel === 'textarea' ? [ta] : []),
+  body: {innerText: '还没有抓取结果'},
+};
+"""))
 
     # ---------- click_single_opportunity ----------
     def check_card(d):
@@ -343,17 +441,28 @@ def main():
 
     # ---------- read_review_status ----------
     def check_review(d):
-        # 真实页面同时出现「待审核」和「已下架」，两个都要如实读出，不能择一
+        # 实测：编辑页没有商品审核状态。「已上架」是 SKU 状态，不能当审核状态。
         return (d.get('status') == 'ok'
-                and set(d.get('status_tokens') or []) == {'待审核', '已下架'})
+                and d.get('review_status') is None
+                and d.get('sku_status_tokens') == ['已上架']
+                and set(d.get('product_state_options') or []) == {'上架', '下架'})
 
     results.append(run('read_review_status',
                        extract(pages.read_review_status, {'product_id': PID}), check_review,
                        page=('fxg.jinritemai.com', '/ffa/g/create', f'product_id={PID}'),
                        stub=r"""
+const YEN = String.fromCharCode(65509);
+const skuRows = [
+  {innerText: '极氪车门限位器-4个装 ' + YEN + ' 888888 增 减 888888 清空 - 3392818512538149 去关联 已上架'},
+];
+const stateSpans = [{innerText: '上架'}, {innerText: '下架'}];
 globalThis.document = {
-  querySelectorAll: () => [],
-  body: {innerText: '*价格与库存 价格填写进度 100% 商品状态 待审核 已下架'},
+  querySelectorAll: sel => {
+    if (sel === 'tr') return skuRows;
+    if (sel === 'span') return stateSpans;
+    return [];
+  },
+  body: {innerText: '*商品状态 上架 下架'},
 };
 """))
 

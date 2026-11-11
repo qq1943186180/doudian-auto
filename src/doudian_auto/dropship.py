@@ -117,21 +117,32 @@ def _task_id(source_product_id, offer_url, shop):
 
 
 def _validate_offer_url(offer_url, source_product_id):
-    """校验 offer URL 真的指向指定的那个 1688 商品。
+    """校验 offer URL 真的指向指定的那个 1688 商品，并规范成 HTTPS。
 
     只检查「是不是 https」是不够的：manifest 把来源 ID 和链接绑在一起，
     后面整个流程都相信这个绑定。链接与 ID 不匹配时，程序会去抓一个无关商品，
     而错误只在几天后的审核结果里才暴露出来。
+
+    但也不能只收 https：仓库里现存的 42 条源链接**全部是 http**（实抓核对）。
+    一刀切只收 https 会把全部现有关联都拒掉。所以 http 也接受，
+    但写进 manifest 前统一规范成 https——页面访问用 https，保留可追溯的原链接。
     """
     parsed = urlparse(offer_url)
     match = re.fullmatch(r'/offer/(\d+)\.html', parsed.path)
-    if (parsed.scheme != 'https'
+    if (parsed.scheme not in ('http', 'https')
             or parsed.hostname != 'detail.1688.com'
             or not match
             or match.group(1) != str(source_product_id)):
         raise DoudianError(
             'dropship_offer_invalid',
             'offer URL 必须是 detail.1688.com 的 /offer/<来源商品ID>.html，且 ID 必须与来源一致。')
+    return f'https://{parsed.hostname}{parsed.path}'
+
+
+def _canonical_offer_url(offer_url, source_product_id):
+    """返回规范化的 HTTPS 链接，同时保留原始链接供追溯。"""
+    canonical = _validate_offer_url(offer_url, source_product_id)
+    return canonical, offer_url
 
 
 def resolve_job_dir(root, task_id):
@@ -154,13 +165,13 @@ def prepare_task(*, source_product_id, offer_url, shop, source_price,
     """创建或读取单商品计划。此操作不连浏览器，也不执行任何写入。"""
     if not re.fullmatch(r'\d{1,24}', str(source_product_id)):
         raise DoudianError('dropship_source_invalid', '来源商品 ID 必须是数字字符串。')
-    _validate_offer_url(offer_url, str(source_product_id))
+    canonical_url, original_url = _canonical_offer_url(offer_url, str(source_product_id))
     if not shop.strip():
         raise DoudianError('dropship_shop_missing', '必须指定店铺。')
 
     price = calculate_price(source_price, multiplier, addition)
     root = Path(root or DATA_ROOT / 'dropship').resolve()
-    task_id = _task_id(str(source_product_id), offer_url, shop.strip())
+    task_id = _task_id(str(source_product_id), canonical_url, shop.strip())
     job = root / task_id
     job.mkdir(parents=True, exist_ok=True)
 
@@ -168,7 +179,8 @@ def prepare_task(*, source_product_id, offer_url, shop, source_price,
         'schema_version': 1,
         'task_id': task_id,
         'source_product_id': str(source_product_id),
-        'offer_url': offer_url,
+        'offer_url': canonical_url,
+        'offer_url_original': original_url,
         'shop': shop.strip(),
         'price_input': {
             'source_price': price['source_price'],
@@ -178,7 +190,7 @@ def prepare_task(*, source_product_id, offer_url, shop, source_price,
         'price_preview': price,
         'identity_hash': _canonical_hash({
             'source_product_id': str(source_product_id),
-            'offer_url': offer_url,
+            'offer_url': canonical_url,
             'shop': shop.strip(),
             'price_input': manifest_price_input(price, multiplier, addition),
         }),
@@ -271,6 +283,13 @@ def record_verified_configuration(job, *, before, target, persisted_after):
         raise DoudianError(
             'dropship_config_incomplete',
             f'目标配置缺少价格字段：{"、".join(missing)}。')
+    # 货架模式同样要明确：只对齐了价格却没确认「放入仓库」，
+    # 等于没确认商品会被放进仓库而不是直接开卖。
+    if ((target or {}).get('shelf_mode') != '放入仓库'
+            or (persisted_after or {}).get('shelf_mode') != '放入仓库'):
+        raise DoudianError(
+            'dropship_shelf_mode_unverified',
+            '目标配置与独立读回都必须明确 shelf_mode 为「放入仓库」。')
     audit = record_configuration_audit(job, before, target, persisted_after)
     state.update(stage='settings_verified', configuration_audit='configuration-audit.json',
                  updated_at=time.time())
@@ -292,11 +311,17 @@ def require_copy_write_allowed(state):
         raise DoudianError('dropship_stage_invalid', '搬家配置尚未核验，不能开始复制。')
 
 
-def mark_copy_intent(job):
+def mark_copy_intent(job, *, expected_skus=None, history_baseline=None):
     """写入前持久化 unknown，防止进程中断后重复触发复制。
 
     先落 unknown 再点按钮：哪怕进程在点击后被杀，重启后读到的也是 unknown，
     于是只能只读核查，不会重复铺一次货。
+
+    同时落盘两样东西：
+    - expected_skus：复制时页面上读到的 SKU 名与价格，核验时只跟它比。
+      不落盘的话，核验就成了调用方自己给自己出标准。
+    - history_baseline：点击复制前复制历史里的既有行。核验时只认基线之后
+      新增的行——否则一条旧记录也会被当成本次复制成功。
     """
     job = Path(job)
     state_path = job / 'state.json'
@@ -304,6 +329,10 @@ def mark_copy_intent(job):
     require_copy_write_allowed(state)
     state.update(stage='unknown', submission_status='unknown',
                  copy_intent_at=time.time(), updated_at=time.time())
+    if expected_skus:
+        state['expected_skus'] = dict(expected_skus)
+    if history_baseline is not None:
+        state['history_baseline'] = list(history_baseline)
     write_json(state_path, state)
 
 
@@ -342,6 +371,14 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
         raise DoudianError('dropship_copy_unverified', '缺少复制历史行证据，不能标记为已复制。')
     if str(evidence.get('source_product_id') or '') != str(state.get('source_product_id') or ''):
         raise DoudianError('dropship_copy_unverified', '复制历史行的来源商品与本任务不一致。')
+    # 基线校验：只认点击复制之后新增的历史行。
+    # 没有基线就无法区分「本次新增」与「历史里本来就有的那条」。
+    baseline = state.get('history_baseline')
+    if baseline is None:
+        raise DoudianError('dropship_copy_unverified', '缺少复制历史基线，无法区分新旧记录。')
+    row_key = str(evidence.get('history_row_key') or evidence.get('row_text') or '')
+    if row_key and row_key in set(map(str, baseline)):
+        raise DoudianError('dropship_copy_unverified', '该历史行在复制前就已存在，不是本次新增。')
     if not re.fullmatch(r'\d{16,22}', str(target_product_id or '')):
         state.update(stage='blocked', last_readback=evidence,
                      last_error='copy_readback_invalid', updated_at=time.time())
@@ -355,7 +392,7 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
     return {'stage': 'copied', 'target_product_id': str(target_product_id)}
 
 
-def verify_target_readback(job, *, product_id, sku_rows, expected_skus,
+def verify_target_readback(job, *, product_id, sku_rows,
                            sku_total_count, price_progress, review_status):
     """核对官方页读回与预期是否一致；不一致一律停在 verification_pending。
 
@@ -384,8 +421,11 @@ def verify_target_readback(job, *, product_id, sku_rows, expected_skus,
             raise DoudianError('dropship_sku_duplicate', f"SKU 名称重复：{row['sku']}。")
         observed[row['sku']] = str(row.get('price') or '')
 
-    expected = dict(expected_skus or {})
+    # 预期 SKU 只从状态里读，不接受调用方现传：调用方现传就等于自己给自己出标准。
+    expected = dict(state.get('expected_skus') or {})
     reasons = []
+    if not expected:
+        reasons.append('缺少复制时记录的预期 SKU 集合')
     if sku_total_count is None:
         reasons.append('缺少页面 SKU 总数计数')
     elif len(sku_rows) != sku_total_count:
@@ -415,13 +455,13 @@ def verify_target_readback(job, *, product_id, sku_rows, expected_skus,
         'sku_rows': sku_rows,
         'sku_total_count': sku_total_count,
         'price_progress': price_progress,
-        'review_status_read_only': review_status,
+        'review_status': review_status,
         'verified_at': time.time(),
     }
     write_json(job / 'target-readback.json', report)
     # 初版不推断审核或消费者端状态：页面读到什么就报什么。
     state.update(stage='verified', target_readback='target-readback.json',
-                 review_status_read_only=review_status, updated_at=time.time())
+                 review_status=review_status, updated_at=time.time())
     write_json(state_path, state)
     return report
 
@@ -485,7 +525,7 @@ def _readback_only(args, job, state, manifest):
 
     用于 unknown 阶段——那时复制已经点过但结果不明，重来一次就可能铺两个商品。
     """
-    from .dropship_pages import DropshipPages
+    from .dropship_pages import HISTORY_PATH, DropshipPages
     from .ego_bridge import EgoBridge
 
     bridge = EgoBridge(session=args.session)
@@ -515,6 +555,11 @@ def _readback_only(args, job, state, manifest):
     review = pages.read_review_status(product_id=target_id)
     result['sku_rows'] = skus.get('sku_rows')
     result['price_progress'] = skus.get('price_progress')
-    result['review_status_read_only'] = review.get('status_tokens')
-    result['next'] = '只读核查完成；是否推进到 verified 由人工判断。'
+    result['sku_completeness'] = skus.get('completeness')
+    # 审核状态在编辑页上读不到（那里只有 SKU 状态和上架/下架选项），
+    # 所以如实报 unavailable，不拿 SKU 状态冒充审核状态。
+    result['review_status'] = review.get('review_status')
+    result['review_status_reason'] = review.get('review_status_reason')
+    result['sku_status_tokens'] = review.get('sku_status_tokens')
+    result['next'] = '只读核查完成；SKU 完整性未证实，是否推进到 verified 由人工判断。'
     return result

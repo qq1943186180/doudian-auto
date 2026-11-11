@@ -250,33 +250,66 @@ const WS=String.fromCharCode(32,9,10,13,12288,160);
 // 空白集合要放进字符类里；直接拼 WS+'*' 会被当成「空白串重复」而不是「空白之一」
 const num=(label)=>{const m=t.match(new RegExp(label+'[:：]['+WS+']*([0-9]+)'));
  return m?m[1]:null;};
-const success=num('成功'), skipped=num('跳过'), failed=num('抓取失败');
+const success=num('成功'), skipped=num('跳过');
 const hasList=t.indexOf('商品列表')>=0;
 const nextStep=[...document.querySelectorAll('button')]
  .filter(x=>(x.innerText||'').trim()==='下一步: 开始复制');
 return {status:'ok',has_list:hasList,
- success_count:success,skipped_count:skipped,failed_count:failed,
+ success_count:success,skipped_count:skipped,
+ // 实测结果页没有独立的「抓取失败」计数器，抓取失败混在跳过里。
+ // failed_count 恒为 null 就是如实反映——编一个数字出来才是误导。
+ failed_count:null,
+ failed_count_note:'结果页无独立失败计数，抓取失败混在跳过里',
  next_step_count:nextStep.length,
- detail_hint:t.indexOf('查看详情')>=0};
+ detail_hint:t.indexOf('查看详情')>=0,
+ all_skipped_notice:t.indexOf('已全部被跳过或抓取失败')>=0};
 })()"""
         return self._evaluate(code, page_name='抓取结果页')
 
-    def click_start_copy(self):
-        """点「下一步: 开始复制」。
+    def click_start_copy(self, *, expected_success=1):
+        """点「下一步: 开始复制」，但必须先确认抓取结果是干净的。
 
-        点击后结果不确定（复制是后台任务），所以这里只负责确认按钮唯一并点击，
-        随后必须走复制历史去读回，不能靠本页推断成功。
+        ⚠️ 点击复制是整条链里最不可逆的一步，所以它自带前置闸门：
+        只有「商品列表可见 + 成功/跳过/失败三个计数齐全 + 成功数正好等于预期
+        + 跳过与失败都为 0 + 按钮唯一且可用」时才点。
+
+        之前这个方法只检查按钮，唯一性，结果页即使显示
+        「跳过：1 成功：0」也能点下去——那会把一个没抓成功的商品复制进店。
+        「成功：0」不等于失败（已铺过的商品会被跳过），但也**绝不能**当成可复制。
         """
         code = """(()=>{const u=new URL(location.href);
 if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move')
  return {status:'wrong_page'};
+// 每个方法自带空白定义：跨方法引用正则变量是隐式依赖，改一处就断一处
+const WSRE2=new RegExp('['+String.fromCharCode(32,9,10,13,12288,160)+']+','g');
+const t=(document.body.innerText||'').replace(WSRE2,' ');
+if(t.indexOf('商品列表')<0)return {status:'layout_changed',reason:'result_list_missing'};
+const WS=String.fromCharCode(32,9,10,13,12288,160);
+const num=(label)=>{const m=t.match(new RegExp(label+'[:：]['+WS+']*([0-9]+)'));
+ return m?m[1]:null;};
+const success=num('成功'), skipped=num('跳过');
+// 实测结果页只有「跳过」和「成功」两个计数器，没有单独的「抓取失败」计数。
+// 抓取失败的商品会混在「跳过」里，页面另给一句
+// 「待搬家的商品已全部被跳过或抓取失败，请查看详情」。
+// 所以判据是：成功数必须正好等于预期，且跳过数为 0。
+if(success===null||skipped===null)
+ return {status:'layout_changed',reason:'fetch_counter_missing',
+  success_count:success,skipped_count:skipped};
+if(Number(success)!==Number(__PAYLOAD__.expected_success))
+ return {status:'layout_changed',reason:'fetch_success_mismatch',
+  success_count:success,expected:__PAYLOAD__.expected_success,
+  skipped_count:skipped};
+if(Number(skipped)!==0)
+ return {status:'layout_changed',reason:'fetch_skipped',
+  success_count:success,skipped_count:skipped};
 const btns=[...document.querySelectorAll('button')]
  .filter(x=>(x.innerText||'').trim()==='下一步: 开始复制');
 if(btns.length!==1)return {status:'layout_changed',reason:'next_copy_button',count:btns.length};
 if(btns[0].disabled)return {status:'layout_changed',reason:'next_copy_disabled'};
 btns[0].click();
-return {status:'ok',clicked:'下一步: 开始复制'};
-})()"""
+return {status:'ok',clicked:'下一步: 开始复制',
+ success_count:success,skipped_count:skipped};
+})()""".replace('__PAYLOAD__', _js({'expected_success': int(expected_success)}))
         return self._evaluate(code, page_name='抓取结果页')
 
     # ---------- 复制历史页 ----------
@@ -286,6 +319,14 @@ return {status:'ok',clicked:'下一步: 开始复制'};
 
         不能要求「含商品ID的行唯一」：历史里会累积多次铺货记录，实测今天就有多条。
         必须用来源 ID 把范围收窄到本次任务，否则永远定位失败。
+
+        ⚠️ 行容器是 div.pro-table-custom-body-row，**不是 tr**。
+        实测这页是 vue-recycle-scroller 虚拟滚动表格：表头「源ID」「商品ID」是列名，
+        tr 里只有日历残留（读到的 tr 是「日一二三四五六」）。
+        真实结构：
+          cell[2] = 「供应商名 源ID： <id> 默认配置」
+          cell[5] = 「2026-11-11 22:21 商品ID： <19位数字> 已下架 审核通过 销量：0」
+        用 tr 定位会永远返回 0 行——这正是 Node 验证器用同样错结构而自洽通过的原因。
 
         空白用码点构造而非转义序列：Python 三引号会把 \t 变成真实 tab，
         写进 JS 字符串就成了一个制表符而不是正则的 \t，这类错误只有真跑才会暴露。
@@ -302,14 +343,41 @@ const WS=String.fromCharCode(32,9,10,13,12288,160);
 // 末尾加数字负向边界：短 ID 不能命中长 ID 的前缀
 const srcRe=new RegExp('源ID[:：]['+WS+']*'+p.source_product_id+'(?![0-9])');
 const idRe=new RegExp('商品ID[:：]['+WS+']*([0-9]{16,22})');
-const rows=[...document.querySelectorAll('tr')]
+// 行容器是虚拟滚动表格的 div 行，不是 tr：这页 tr 里只有日历残留
+const rows=[...document.querySelectorAll('div.pro-table-custom-body-row')]
  .filter(x=>srcRe.test(x.innerText||''))
  .filter(x=>idRe.test(x.innerText||''));
 if(rows.length!==1)return {status:'layout_changed',reason:'history_row',count:rows.length};
 const match=(rows[0].innerText||'').match(idRe);
 if(!match)return {status:'layout_changed',reason:'product_id_missing'};
-return {status:'ok',product_id:match[1],row_text:(rows[0].innerText||'').trim().slice(0,400)};
+// row_key 是稳定的行标识：源ID + 商品ID。
+// 基线比对靠它——只比行文本会因为页面文案变化而误判。
+const rowKey=p.source_product_id+'@'+match[1];
+return {status:'ok',product_id:match[1],row_key:rowKey,
+ row_text:(rows[0].innerText||'').trim().slice(0,400)};
 })()""".replace('__PAYLOAD__', _js({'source_product_id': str(source_product_id)}))
+        return self._evaluate(code, page_name='复制历史页')
+
+    def read_history_baseline(self):
+        """读复制历史里全部来源行，作为点击复制前的基线。
+
+        用途：复制之后只认基线里没有的新行。少了这一步，
+        「历史里本来就有的那条记录」会被当成本次复制成功。
+        """
+        code = """(()=>{const u=new URL(location.href);
+if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move_history')
+ return {status:'wrong_page'};
+const WS=String.fromCharCode(32,9,10,13,12288,160);
+const srcRe=new RegExp('源ID[:：]['+WS+']*([0-9]{1,24})(?![0-9])');
+const idRe=new RegExp('商品ID[:：]['+WS+']*([0-9]{16,22})');
+const keys=[];
+for(const row of document.querySelectorAll('div.pro-table-custom-body-row')){
+ const t=row.innerText||'';
+ const sm=t.match(srcRe); const im=t.match(idRe);
+ if(sm&&im) keys.push(sm[1]+'@'+im[1]);
+}
+return {status:'ok',baseline_keys:[...new Set(keys)]};
+})()"""
         return self._evaluate(code, page_name='复制历史页')
 
     def read_sku_prices(self, *, product_id):
@@ -363,15 +431,37 @@ return {status:'ok',product_id:String(__PAYLOAD__.product_id),
         return result
 
     def read_review_status(self, *, product_id):
-        """只读官方页可见的审核/上下架文案，原样返回，不推断。"""
+        """只读官方页可见的状态文案，原样返回，不推断。
+
+        ⚠️ 实测结论：**编辑页上没有商品审核状态**。
+        页面上出现的「已上架」是 **SKU 状态**（每个规格行末尾的角标），
+        「上架/下架」是「*商品状态」表单里的两个可选项，不是当前状态。
+        商品的审核状态在抖店商品列表页，不在这里。
+
+        所以这里分开报：sku_status_tokens 是规格行状态，product_state_options 是
+        表单里的选项，商品审核状态一律标为 unavailable——不拿 SKU 状态冒充审核状态。
+        """
         code = """(()=>{const u=new URL(location.href);
 if(u.hostname!=='fxg.jinritemai.com'||u.pathname!=='/ffa/g/create'||
  u.searchParams.get('product_id')!==String(__PAYLOAD__.product_id))
  return {status:'wrong_page'};
+// 空白用码点构造，不依赖别处的正则定义
 const WSRE2=new RegExp('['+String.fromCharCode(32,9,10,13,12288,160)+']+','g');
 const t=(document.body.innerText||'').replace(WSRE2,' ');
-const hits=[...new Set((t.match(/审核中|待审核|审核通过|已下架|已上架|售卖中/g)||[]))];
+// SKU 状态：规格行末尾的角标
+const skuTokens=[...new Set([...document.querySelectorAll('tr')]
+ .map(tr=>tr.innerText||'')
+ .join(' ')
+ .match(/已上架|已下架|未上架|已售罄/g)||[])];
+// 商品状态表单里的选项：它们是可选值，不是当前状态
+const stateOptions=[...document.querySelectorAll('span')]
+ .map(s=>(s.innerText||'').trim())
+ .filter(x=>x==='上架'||x==='下架');
 return {status:'ok',product_id:String(__PAYLOAD__.product_id),
- status_tokens:hits,raw:t.slice(0,400)};
+ sku_status_tokens:skuTokens,
+ product_state_options:[...new Set(stateOptions)],
+ review_status:null,
+ review_status_reason:'商品审核状态不在编辑页；「已上架」是 SKU 状态，不能当审核状态',
+ raw:t.slice(0,300)};
 })()""".replace('__PAYLOAD__', _js({'product_id': str(product_id)}))
         return self._evaluate(code, page_name='抖店官方商品编辑页')
