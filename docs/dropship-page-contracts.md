@@ -340,3 +340,41 @@ Codex 要求「防止读不全」。实抓找到两个可用的独立计数：
 
 - 多 SKU 商品（如 20 个）时表格是否虚拟滚动、能否一次读全，**未实测**。
   今天的商品只有 2 个 SKU，全在可见区。这是真实风险，需用一件多 SKU 商品验证。
+
+---
+
+## 六轮实抓：配置持久化的独立读回（Codex 复核要求的关键证据）
+
+Codex 指出：写完配置后立刻读同一份 DOM，只能证明「输入框里的值变了」，
+不能证明「服务端存了」。实测整页刷新后重读：
+
+| 字段 | 刷新前 | 刷新后 |
+|---|---|---|
+| pricePercent | 300 | **300** |
+| priceAdd | 5 | **5** |
+| priceSub | (空) | (空) |
+| priceFinalPercent | 100 | **100** |
+| priceTail | (空) | (空) |
+| priceDecimalDiyValue | 88 | **88** |
+| sourcePostFeePriceAddValue | (空) | (空) |
+| postFeePrice1688AddValue | 5.00 | **5.00** |
+| 「放入仓库」radio checked | true | **true** |
+
+8 个价格字段的 `input[name]` 全部**唯一命中**（dup 为空），radio 唯一命中。
+
+### 由此确定的设计
+
+1. `set_price_formula` 只负责「写 DOM + 点保存 + 读回 DOM」，返回
+   `persistence: 'unverified'`。**不得**据此推进阶段。
+2. 推进到 `settings_verified` 必须经过**独立重新进入页面**后的读回
+   （重新 navigate 或 reload，不是同一次 evaluate 里的二次读取）。
+3. 完整目标配置必须覆盖全部 8 个字段，缺一个都不算读回一致。
+
+### 顺带确认的价格语义
+
+- `pricePercent=300` 是**百分比**（300%），CLI 的 `multiplier=3` 是**倍数**，两者差 100 倍，接线时必须换算。
+- `priceDecimalDiyValue=88` 是尾数，`priceFinalPercent=100` 是最终价倍数，
+  `postFeePrice1688AddValue=5.00` 是 1688 不包邮加价（金额）。
+- 实测源价 2 → 售价 15.48，源价 6 → 27.48。差 4.48 是运费，
+  即 `2×3+5=11` 再加运费 4.48。**运费不在上述 8 个字段里**，
+  说明 CLI 的简化试算无法代表页面最终售价，核验必须读官方页实际价格。
