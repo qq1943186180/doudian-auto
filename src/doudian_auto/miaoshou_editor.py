@@ -222,9 +222,15 @@ class MiaoshouEditor:
                                '妙手商品信息窗没有加载目标商品。', seconds=30)
         # One-row search must produce one editing item. This prevents the left-side
         # multi-product navigator from silently switching to a neighbouring listing.
-        dialog = self._visible_dom('dialog', product_id)
-        if not isinstance(dialog, dict) or dialog.get('count') != 1 or not dialog.get('identity'):
-            raise DoudianError('wrong_identity', '妙手编辑窗未包含精确目标商品ID。')
+        try:
+            self.bridge.wait(lambda: self._visible_dom('dialog', product_id),
+                lambda dialog: isinstance(dialog, dict) and dialog.get('count') == 1 and
+                    dialog.get('identity') is True,
+                '妙手编辑窗未包含精确目标商品ID。', seconds=10)
+        except DoudianError as exc:
+            if exc.code != 'page_timeout':
+                raise
+            raise DoudianError('wrong_identity', '妙手编辑窗未包含精确目标商品ID。') from exc
         return page
 
     def _observed_edit_response(self, product_id, seconds=30):

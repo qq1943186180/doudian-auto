@@ -15,12 +15,26 @@ def test_remembered_sku_tab_switches_once_inside_original_read_budget(monkeypatc
             self.calls.append((action, args))
             return {'requests': []}
 
+        def wait(self, read, predicate, message, seconds):
+            assert seconds == 10
+            for _ in range(2):
+                value = read()
+                if predicate(value):
+                    return value
+            raise AssertionError(message)
+
     bridge = Bridge()
     editor = MiaoshouEditor(bridge, '销霁百货', session='unit')
     monkeypatch.setattr(editor, '_mark_control', lambda op, product_id=None: op)
-    monkeypatch.setattr(editor, '_visible_dom', lambda op, *args:
-                        {'count': 0} if op == 'navigation_toggle' else
-                        {'count': 1, 'selector': 'information_tab', 'identity': True})
+    dialog_reads = []
+    def visible_dom(op, *args):
+        if op == 'navigation_toggle':
+            return {'count': 0}
+        if op == 'dialog':
+            dialog_reads.append(op)
+            return {'count': 1, 'identity': len(dialog_reads) == 2}
+        return {'count': 1, 'selector': 'information_tab', 'identity': True}
+    monkeypatch.setattr(editor, '_visible_dom', visible_dom)
     budgets = []
 
     def wait_tree(predicate, message, seconds=30):
@@ -41,4 +55,5 @@ def test_remembered_sku_tab_switches_once_inside_original_read_budget(monkeypatc
     assert '商品标题：' in editor.open_product(pid)['tree_text']
     assert bridge.calls.count(('click', {'selector': 'information_tab'})) == 1
     assert budgets == [30, 30]
+    assert len(dialog_reads) == 2
     assert all('save' not in str(args).lower() for action, args in bridge.calls)

@@ -128,6 +128,9 @@ def parser():
     batch_rebaseline = batch_sub.add_parser('rebaseline', help='以双端完整证据核清旧任务，恢复同一目标版本的素材准备')
     batch_rebaseline.add_argument('--task-id', required=True, type=int)
     batch_rebaseline.add_argument('--proof', required=True)
+    batch_recover_preflight = batch_sub.add_parser('recover-preflight', help='以新鲜双端证据恢复未开始上传/保存的旧缺属性任务')
+    batch_recover_preflight.add_argument('--task-id', required=True, type=int)
+    batch_recover_preflight.add_argument('--proof', required=True)
     batch_recover_prepared = batch_sub.add_parser('recover-prepared', help='以两轮完整只读证据恢复尚未上传/保存的合格素材任务')
     batch_recover_prepared.add_argument('--task-id', required=True, type=int)
     batch_recover_prepared.add_argument('--proof', required=True)
@@ -806,6 +809,9 @@ def run(args):
             if args.batch_command == 'rebaseline':
                 from .rebaseline import rebaseline_external
                 return rebaseline_external(args.task_id, args.proof)
+            if args.batch_command == 'recover-preflight':
+                from .rebaseline import recover_preflight
+                return recover_preflight(args.task_id, args.proof)
             if args.batch_command == 'recover-prepared':
                 from .prepared_recovery import recover_prepared_after_reads
                 return recover_prepared_after_reads(args.task_id, args.proof)

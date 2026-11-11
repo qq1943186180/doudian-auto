@@ -60,6 +60,7 @@ doudian-auto --json --endpoint ego batch resume --batch-id '<batch-id>' --sessio
 | ego_state_locked / ego_transport_unknown / ego_cleanup_unknown | 保留锁/队列/收据，按原 session 证据调查；未决时先看本地记录 | 重放命令、二次 finish、新建空间掩盖未知 |
 | 外部历史工作 | batch reconcile --evidence ... --shop ...，隔离并保留原事实 | 把 reconcile 当已核验或清 unknown |
 | external_work_requires_rebaseline | batch rebaseline --task-id ... --proof ...；零队列保存、无未知/制品/映射/基线/占用，绑定历史结论和完整双端快照 | 删记录或覆盖未知历史保存 |
+| 旧required_attributes_missing已补齐，尚未开始图文 | batch recover-preflight --task-id ... --proof ...，原错误与30分钟双端证据绑定，零制品/基线/上传/保存，恢复同版本needs_agent | 直接改ready或跳过正常预检 |
 | official_repeat_snapshot_unstable: | batch recover-prepared --task-id ... --proof ...；原 manifest/版本、零上传保存、两轮新鲜完整双端证据 | 手改 ready 或免除后续 preflight |
 | writer_detail_source_collision / 缺事实或必填 | 保留合格素材，batch quarantine --product-id ... --reason ...，按具体证据处理 | 猜属性、弱化比较或第三次生成失败槽 |
 | 历史 ego_target_not_unique 点击前失败 | 仅程序 restore_proven_preclick_failure 核验完整审计链；非通用 CLI 解锁命令 | 只凭 click_issued=false 或旧标题解除未知 |

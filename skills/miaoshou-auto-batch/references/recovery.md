@@ -8,6 +8,8 @@
 
 ## 外部工作、基线及素材保留恢复
 
+- `batch recover-preflight --task-id <id> --proof <file>`恢复原`preflight_exception: required_attributes_missing;`任务。proof包含`read_only=true`、`reviewer`、同一`product_id/shop/target_version`、与当前记录完全相同的`prior_error`，以及`miaoshou/doudian`两个`{path,sha256}`引用。两份文件须为30分钟内的真实完整双端观测，必填、SKU、图片源唯一性及仓库状态均通过。队列须无制品、基线、映射、提交意图、读回、历史目视记录、外部观察或有效占用，保存次数为0且结果not_attempted。符合时保留原版本并记恢复事件，回到needs_agent，再按正常领取和Writer预检继续。
+
 - Before claiming old imported records, reconcile saved/verified work and unknown uploads from their evidence files. `batch reconcile` quarantines them for fresh baselines; it does not mark a whole revision verified or clear an unknown submission.
 
 - `batch rebaseline` returns only an `external_work_requires_rebaseline` row with zero queue save attempts and no unknown submission, artifacts, mappings, baseline or live occupation to `needs_agent`. Its proof binds the same shop/product/version, fresh hashed complete dual snapshots and every original observation hash plus an explicit reviewed resolution (`no_save_attempted` or historical `verified/accepted`). It retains version and history. Unknown historical saves, missing SKU/required fields, stale/changed evidence, other queue versions and active official jobs remain blocked. Normal writer preflight repeats before any upload.

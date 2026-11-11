@@ -14,6 +14,15 @@ from .workflow import resource_key
 
 def rebaseline_external(task_id, proof_path, *, db_path=None):
     """Keep version/history intact; never recover an unknown queue submission."""
+    return _rebaseline(task_id, proof_path, db_path=db_path, preflight=False)
+
+
+def recover_preflight(task_id, proof_path, *, db_path=None):
+    """Recover only an untouched missing-attribute preparation after fresh dual reads."""
+    return _rebaseline(task_id, proof_path, db_path=db_path, preflight=True)
+
+
+def _rebaseline(task_id, proof_path, *, db_path, preflight):
     path = Path(proof_path).resolve()
     proof = batch.read_json(path)
     conn = batch._db(db_path)
@@ -23,8 +32,13 @@ def rebaseline_external(task_id, proof_path, *, db_path=None):
         conn.execute('BEGIN IMMEDIATE')
         row = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
         now = time.time()
+        if preflight:
+            expected_error = bool(row and str(row['last_error'] or '').startswith(
+                'preflight_exception: required_attributes_missing;'))
+        else:
+            expected_error = bool(row and row['last_error'] == 'external_work_requires_rebaseline')
         if (row is None or row['state'] != 'blocked'
-                or row['last_error'] != 'external_work_requires_rebaseline'
+                or not expected_error
                 or row['submission_state'] != 'not_attempted' or row['submission_attempts'] != 0
                 or row['baseline_hash'] or row['artifacts_path'] or row['artifacts_hash']
                 or json.loads(row['upload_map_json'] or '[]') != []
@@ -37,14 +51,25 @@ def rebaseline_external(task_id, proof_path, *, db_path=None):
                                 (row['shop'], row['product_id'], task_id)).fetchone()
                 or batch._active_doudian_job_conflict(row['shop'], row['product_id'])):
             raise fail()
+        if preflight and (
+                proof.get('prior_error') != row['last_error']
+                or any(row[key] for key in ('baseline_json', 'submission_intent_json',
+                                                'readback_json', 'readback_hash', 'writer_preparation_json'))
+                or batch._source_has_prior_work(json.loads(row['source']))
+                or conn.execute('SELECT 1 FROM asset_reviews WHERE task_id=?', (task_id,)).fetchone()
+                or conn.execute('SELECT 1 FROM external_observations WHERE task_id=?', (task_id,)).fetchone()):
+            raise fail()
         snapshots = []
         for key in ('miaoshou', 'doudian'):
             file = _bound_file(proof.get(key), path.parent, 'external_rebaseline_unproven')
-            if not 0 <= now - file.stat().st_mtime <= 7200:
+            if not 0 <= now - file.stat().st_mtime <= (1800 if preflight else 7200):
                 raise fail()
             snapshots.append(batch.read_json(file))
         miao, official = snapshots
         _validate_snapshot(official, dict(row))
+        if preflight:
+            from .prepared_recovery import _validate_miaoshou
+            _validate_miaoshou(miao, official, dict(row))
         verify_miaoshou_skus(miao, official.get('sku_evidence'))
         if (miao.get('product_id') != row['product_id'] or miao.get('shop') != row['shop']
                 or miao.get('protected_complete') is not True
@@ -55,7 +80,7 @@ def rebaseline_external(task_id, proof_path, *, db_path=None):
             raise fail()
         observations = conn.execute('SELECT * FROM external_observations WHERE task_id=?', (task_id,)).fetchall()
         resolutions = proof.get('resolved_observations', [])
-        if not observations or len(resolutions) != len(observations):
+        if (not preflight and not observations) or len(resolutions) != len(observations):
             raise fail()
         remaining = {x['evidence_sha256'] for x in observations}
         for item in resolutions:
@@ -78,10 +103,12 @@ def rebaseline_external(task_id, proof_path, *, db_path=None):
         source = json.loads(row['source'])
         source.update(source_title=miao['title'], name=miao['title'], stage='prepared',
                       status='1', statusName='下架')
-        detail = {'kind': 'external_rebaseline', 'proof_path': str(path),
+        detail = {'kind': 'preflight_recovery' if preflight else 'external_rebaseline', 'proof_path': str(path),
                   'proof_sha256': batch._digest(path), 'target_version': row['target_version'],
                   'reviewer': proof['reviewer'], 'resolved_observation_sha256': sorted(
                       x['evidence_sha256'] for x in observations)}
+        if preflight:
+            detail['prior_error'] = row['last_error']
         conn.execute("UPDATE products SET state='needs_agent',last_error=NULL,source=?,"
                      "lease_owner=NULL,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
                      (json.dumps(source, ensure_ascii=False), now, task_id))
