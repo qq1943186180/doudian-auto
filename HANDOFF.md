@@ -6,12 +6,14 @@
 
 ### T-20261111-001 · 194-76 · 完整图文及上架验收
 
-- 状态：blocked；Agent codex-live-one。整套图文/上架待继续，用户已授权41/3848316465015030183，5主图+前4详情+标题，图文双端核验后单独上架。
+- 状态：done；Agent codex-live-one。41/3848316465015030183整套图文及上架实页验收通过，官方新页“上架”选中、“下架”未选中，妙手新页显示“上架、审核通过”。父194-76全仓任务继续in_progress。
 - 9张内置生图已逐张对照原图，主图1254方图、详情1024×1536；原图、真实提示词、source/facts、视觉逐槽检查和哈希均保存在work/codex-full-20261111/，artifacts.json本地校验9项通过，最终标题“厨房免打孔壁挂置物架贴片款锅铲锅盖收纳单杆双杆”。
 - 9f70499新增batch recover-preflight，只接受原缺属性错误绑定、30分钟完整双端证据、零制品/基线/映射/意图/保存及无活动/历史占用，保留版本/事件回needs_agent；复用既有完整SKU及保护门槛。另修妙手信息窗身份刚挂载的等待，608 Python通过，批量技能源码/两安装副本同步。
-- 首轮Space21/session=codex-full-20261111实读41官方必填100%/5主12详及妙手20SKU通过。间隔后旧证据过期，恢复正确拒绝。刷新时Space21返回not found，现有空间清单仅淘宝项目；ego-browser规则要求确认后新建，已异步询问用户，等待回复。
-- 本轮图文上传/保存/上架均0，41仍blocked/not_attempted/0次保存/无制品；队列44 blocked/17 verified，unknown及WorkBuddy50原现场保持。现场RESULT.json已持久化，21已不存在，无可关闭的自有页。
-- 用户明确同意重建后执行06-collect-after-confirmation.py，使用新固定session采集双端并更新proof实际哈希；recover-preflight→正常agent next/complete→Writer预览/单次写入及双端读回→单独上架与官方核验。复用九张已审图，旧proof不能沿用。Linear194-76保持in_progress，代码/交接push后读回。
+- 用户明确授权重建后使用Space4/session=codex-full-recovered-20261111，刷新双端基线并经recover-preflight→agent next/complete→正常Writer。妙手返回access_token过期，通过已登录的服务市场恢复原店铺妙手授权后继续；商品身份及20SKU完整核对通过。
+- 5主4详上传齐全，图文仅保存1次；响应未知时保留意图并仅双端读回，队列恢复verified/verified_by_readback。新标题、九张本地素材与双端远端内容及顺序一致，其余8张详情、全20SKU/价格库存/非目标保护字段通过。
+- 上架首次SDK点击被视口可见性校验拒绝，迟到完整收据明确element is not visible；只读核对后修正表格横向滚动，原生一次有效点击，页面请求返回成功1/失败0且ID仅目标商品。上架后再读双端与九图远端内容，status1→0、startSaleType1→0、draftStatus0→3、checkStatus7→3及官方状态单选变化逐项记录，其他字段通过。
+- 队列现43 blocked/18 verified；两件unknown和WorkBuddy50现场保持。最终证据RESULT/final-verification、listed-official-status、listed-miaoshou-review-ui、listing-native-response及final-mappings均在本机任务目录，图文与上架分别留有提交意图。Space4四个自有页已finish关闭。
+- Linear194-76及T-ID映射已记录阶段结果并读回，交接提交并push。后续其他商品按各自恢复条件续办，这件已完成，避免重复图文保存。
 
 ### T-20261110-009 · 194-76 · Codex实跑：属性发布及双端读回通过
 

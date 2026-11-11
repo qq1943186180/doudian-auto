@@ -2,7 +2,7 @@
 
 | T-ID | Linear | 状态 | 说明 |
 |---|---|---|---|
-| T-20261111-001 | [194-76](https://linear.app/1943186180/issue/194-76) | blocked | codex-live-one：41整套九图内置生图/目视/本地校验通过，recover-preflight及信息窗等待修复9f70499，608Python通过。Space21在浏览器重启后丢失，等待用户确认新建；原proof过期，队列未恢复，图文上传/保存/上架0次。证据work/codex-full-20261111/，确认后06脚本重新采集，复用九图继续正式Writer与上架。 |
+| T-20261111-001 | [194-76](https://linear.app/1943186180/issue/194-76) | done | codex-live-one：41整套新5主4详/标题及上架实页验收通过。recover-preflight→正常Writer保存1次，未知响应双端读回恢复verified；上架请求成功1失败0，官方状态上架选中、妙手上架/审核通过。上架后九图远端内容、其余8详及20SKU核对通过，工作流状态变化单列。队列43 blocked/18 verified，Space4四个自有页已关闭，证据work/codex-full-20261111/，父全仓任务继续。 |
 | T-20261110-009 | [194-76](https://linear.app/1943186180/issue/194-76) | review | Codex实跑属性阶段：41/3848316465015030183安装方式=免打孔式，单次发布受理，submitted后只读恢复saved，双端属性/5主12详/全20SKU核对；仍下架，startSaleType 0→1按仓库策略记录。修SKU重载预览、info误报、CDN误报，591Python/101JS通过，49e2f24。Space20自有页已关闭；整套9图/上架未验收，队列44 blocked/17 verified未变。详见docs/live-attribute-acceptance-20261110.md。 |
 | T-20261110-008 | [194-76](https://linear.app/1943186180/issue/194-76) | in_progress | 属性发布首次实页验收（商品 3848315275342643596）。修 3 缺陷：①**读回值带 option id**（`text(selects)` 含隐藏 id，读回 `"466329 免打孔式"` 永不等于目标 → 该路径此前不可能成功的真因）改为读 `.ecom-g-select-selection-item`；②新增 `attributes` 单品入口（原只能经 `batch auto --facts`，无法单件验收）；③新增 `--abandon --reason`（仅页面确认目标属性为空才释放 editing 僵局）。附带修 title 分支 `UnboundLocalError`（分支内重复 import Bridge/Editor 造成局部名）。实测填写成功 `written=true`，未点击发布。2026-11-11纠正：5项2天后变必填是蓝色info，被旧check误判为错误，不能断言平台拒绝；商品50仍editing未动，后续见T-009。587 Python / 99 JS 通过。`7e0fd74`。 |
 | T-20261110-006 | [194-160](https://linear.app/1943186180/issue/194-160) | done | 修资料模板覆盖、真实preflight与受控调度/预算/未决停止，新增独立属性一次发布及只读恢复，Ego活动页/路由存活校验；585Python/98JS，报告标记及首次会话初始化另31项专项通过。手册、skill两安装副本和交接同步；无线上写入，新增属性路径待真实验收。 |
