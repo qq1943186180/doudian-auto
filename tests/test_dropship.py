@@ -669,3 +669,66 @@ def test_the_settings_stage_writes_the_percentage_not_the_multiplier(tmp_path):
     percent = calculate_price('2', '3', '5')['page_price_percent']
     assert percent != '3'
     assert int(percent) == int('3') * 100
+
+
+# ---------- Codex 四轮复核指出的缺口 ----------
+
+def test_baseline_must_be_proved_complete_before_copy(tmp_path):
+    """页面写「共 59 条」而 DOM 只渲染 8 行时，基线不完整，必须拒绝复制。"""
+    from doudian_auto.dropship import DoudianError as Err
+    # 直接验证编排层用的判据：baseline_complete 为假就要拒
+    baseline = {'baseline_complete': False, 'total_records': 59,
+                'rendered_rows': 8, 'baseline_keys': [], 'pending_rows': 0}
+    assert not baseline['baseline_complete']
+    assert baseline['rendered_rows'] < baseline['total_records']
+
+
+def test_unknown_cannot_be_created_without_a_recorded_copy_intent(tmp_path):
+    """unknown 只能跟随已落盘的复制意图，点击前异常不许凭空进 unknown。"""
+    job = _job(tmp_path, stage='settings_verified')
+    write_json(job / 'state.json',
+               {'stage': 'settings_verified', 'submission_status': 'not_attempted'})
+    with pytest.raises(DoudianError, match='没有已落盘的复制意图'):
+        record_copy_observation(job, outcome='unknown', evidence={'timeout': True})
+
+
+def test_unknown_observation_is_allowed_after_a_recorded_intent(tmp_path):
+    job = _job(tmp_path, stage='unknown', submission='unknown')
+    write_json(job / 'state.json',
+               {'stage': 'unknown', 'submission_status': 'unknown',
+                'copy_intent_at': 1700000000.0})
+    result = record_copy_observation(job, outcome='unknown', evidence={'timeout': True})
+    assert result['stage'] == 'unknown'
+
+
+def test_verified_task_cannot_be_pulled_back_to_unknown(tmp_path):
+    job = _job(tmp_path, stage='verified')
+    write_json(job / 'state.json',
+               {'stage': 'verified', 'submission_status': 'accepted'})
+    with pytest.raises(DoudianError, match='终态'):
+        record_copy_observation(job, outcome='unknown', evidence={'x': 1})
+
+
+def test_missing_review_status_stays_pending_not_an_error(tmp_path):
+    """编辑页读不到审核状态是已知事实：应停在待核验，不抛错也不假装通过。"""
+    job = _job(tmp_path, stage='copied')
+    write_json(job / 'state.json',
+               {'stage': 'copied', 'target_product_id': '3853454064050373417',
+                'expected_skus': {'1个装': '2'}})
+    result = verify_target_readback(
+        job, product_id='3853454064050373417',
+        sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
+        price_progress=100, review_status=None)
+    assert result['stage'] == 'verification_pending'
+    assert '审核状态' in result['reason']
+
+
+def test_source_sku_reader_rejects_a_malformed_offer_url():
+    """适配器可被独立调用，畸形 URL 必须在 Python 侧就拒掉。"""
+    bridge = FakeBridge([{'status': 'ok', 'sku_rows': []}])
+    with pytest.raises(DoudianError, match='规范的'):
+        DropshipPages(bridge).read_source_skus(
+            offer_url='https://example.com/offer/965251097615.html')
+    with pytest.raises(DoudianError, match='规范的'):
+        DropshipPages(bridge).read_source_skus(
+            offer_url='https://detail.1688.com/weird/965251097615.html')

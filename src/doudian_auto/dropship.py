@@ -376,12 +376,16 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
             f"任务已处于终态 {state.get('stage')}，不接受新的复制观察结果。")
 
     if outcome == 'unknown':
-        # unknown 也要求已落盘复制意图：没有意图就不该出现 unknown 观察
-        if state.get('stage') != 'unknown' and state.get('submission_status') != 'unknown':
-            if state.get('stage') != 'settings_verified':
-                raise DoudianError('dropship_stage_invalid', '没有待核查的复制意图，不能记录未知结果。')
-        state.update(stage='unknown', submission_status='unknown',
-                     last_readback=evidence, updated_at=time.time())
+        # unknown 只能是对「已落盘复制意图」的补充说明，不能凭空创建。
+        # 否则点击前的异常也会进 unknown，恢复路径会只读历史、
+        # 永不继续，留下一个假 unknown 卡死任务。
+        if (state.get('stage') != 'unknown'
+                or state.get('submission_status') != 'unknown'
+                or not state.get('copy_intent_at')):
+            raise DoudianError(
+                'dropship_stage_invalid',
+                '没有已落盘的复制意图，不能把任务置为 unknown。')
+        state.update(last_readback=evidence, updated_at=time.time())
         write_json(state_path, state)
         return {'stage': 'unknown', 'readback_only': True}
 
@@ -480,6 +484,12 @@ def verify_target_readback(job, *, product_id, sku_rows,
             detail.append('多出规格 ' + '、'.join(extra))
         reasons.append('读回的规格名与来源不一致：' + '；'.join(detail))
 
+    # 审核状态在官方编辑页读不到是**已知事实**（那里只有 SKU 角标和表单选项）。
+    # 不能因此抛错终止，也不能假装通过：列为一条待核验原因，停在
+    # verification_pending，把「还缺什么」写清楚交给人工。
+    if not isinstance(review_status, str) or not review_status.strip():
+        reasons.append('官方编辑页读不到商品审核状态')
+
     if reasons:
         state.update(stage='verification_pending', sku_rows_observed=len(sku_rows),
                      sku_total_count=sku_total_count,
@@ -492,8 +502,7 @@ def verify_target_readback(job, *, product_id, sku_rows,
             'reason': '；'.join(reasons) + '，不标 verified。',
         }
 
-    if not isinstance(review_status, str) or not review_status.strip():
-        raise DoudianError('dropship_review_unknown', '审核状态无法读取；不作推断。')
+
 
     report = {
         'stage': 'verified',
@@ -629,18 +638,31 @@ def _stage_settings(args, job, state, manifest, pages):
 
 
 def _wait_for_fetch_result(pages, *, attempts=12, interval=4):
-    """轮询等抓取结果出现。
+    """轮询等抓取结果出现，并绑住页面身份。
 
     抓取是后台任务：点完「开始批量抓取商品」，结果页的计数器要过几秒才渲染出来。
     读一次就判断会把「还没好」误判成「失败」。
-    超时上限到了就把最后一次读到的如实返回，让调用方按不干净处理。
+
+    但如果轮询期间 session 切到别的页面，或者结果区被重新加载成上一次的
+    旧计数，就可能把陈旧数据当成本次结果放行。所以每次都记录页面身份，
+    身份一变就停；超时显式标 timed_out，绝不静默当成一次有效观测。
     """
     last = {}
+    first_url = None
     for _ in range(attempts):
         last = pages.read_fetch_result()
+        url = last.get('page_url')
+        if first_url is None:
+            first_url = url
+        elif url != first_url:
+            last['timed_out'] = True
+            last['reason'] = '轮询期间页面身份变化，停止并交人工核查'
+            return last
         if last.get('success_count') is not None and last.get('skipped_count') is not None:
             return last
         time.sleep(interval)
+    last['timed_out'] = True
+    last['reason'] = '等待抓取结果超时，未取得完整计数'
     return last
 
 
@@ -667,6 +689,14 @@ def _stage_copy(args, job, state, manifest, pages):
     time.sleep(SETTLE_SECONDS)
     baseline = pages.read_history_baseline(source_product_id=source_id)
     require_no_pending_history(job, baseline.get('pending_rows'))
+    # 虚拟滚动只渲染当前视口的行。页面写「共 N 条」而 DOM 只有少数行时，
+    # 不能把这几行当完整基线——没看到的那 51 条里可能就有本来源的旧记录，
+    # 那样复制后会把旧行误认成「本次新增」。
+    if not baseline.get('baseline_complete'):
+        raise DoudianError(
+            'dropship_baseline_incomplete',
+            f"复制历史共 {baseline.get('total_records')} 条，当前只渲染 "
+            f"{baseline.get('rendered_rows')} 行；无法证明基线完整，拒绝复制。")
 
     # 3) 贴链接并抓取。抓取是异步的：点完按钮后结果页要过一会儿才有计数器，
     #    所以要轮询等它出现，而不是读一次就下结论。
@@ -674,6 +704,9 @@ def _stage_copy(args, job, state, manifest, pages):
     time.sleep(SETTLE_SECONDS)
     pages.paste_offer_and_fetch(offer_url=offer_url)
     fetch = _wait_for_fetch_result(pages)
+    if fetch.get('timed_out'):
+        raise DoudianError('dropship_fetch_incomplete',
+                           f"抓取结果不可用：{fetch.get('reason')}。未点复制。")
     if fetch.get('success_count') != '1' or fetch.get('skipped_count') != '0':
         raise DoudianError(
             'dropship_fetch_incomplete',
@@ -739,5 +772,15 @@ def _readback_only(args, job, state, manifest):
     result['review_status'] = review.get('review_status')
     result['review_status_reason'] = review.get('review_status_reason')
     result['sku_status_tokens'] = review.get('sku_status_tokens')
-    result['next'] = '只读核查完成；SKU 完整性未证实，是否推进到 verified 由人工判断。'
+
+    verification = verify_target_readback(
+        job, product_id=target_id,
+        sku_rows=skus.get('sku_rows') or [],
+        sku_total_count=skus.get('sku_total_count'),
+        price_progress=skus.get('price_progress'),
+        review_status=review.get('review_status'))
+    result['verification'] = verification
+    result['stage'] = verification.get('stage', state.get('stage'))
+    result['next'] = ('核验结果已按页面证据落盘；缺 SKU 总数或审核状态时停在 '
+                      'verification_pending，不假装 verified。')
     return result

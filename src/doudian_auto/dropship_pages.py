@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .errors import DoudianError
 
@@ -210,12 +211,25 @@ return {status:ok?'ok':'readback_mismatch',values,
 
         取第一个 item-price-stock 作为价格：第二个是库存文本，不是钱。
         """
+        # Python 侧先校验传入的 URL：适配器可能被独立调用，
+        # 不能靠 split('/offer/') 从畸形路径里抠 ID。
+        from urllib.parse import urlparse
+        parsed = urlparse(str(offer_url))
+        path_id = re.fullmatch(r'/offer/(\d+)\.html', parsed.path)
+        if (parsed.scheme not in ('http', 'https')
+                or parsed.hostname != SOURCE_HOST
+                or not path_id):
+            raise DoudianError(
+                'dropship_offer_invalid',
+                '来源 SKU 读取要求规范的 detail.1688.com/offer/<ID>.html 链接。')
+        source_product_id = path_id.group(1)
+
         code = """(()=>{
 const u=new URL(location.href);
 if(u.hostname!=='detail.1688.com'||!/^[/]offer[/][0-9]+[.]html$/.test(u.pathname))
  return {status:'wrong_page'};
 const p=__PAYLOAD__;
-// 链接必须就是任务指定的那一个，否则读到的是别的商品
+// 当前页面必须就是任务指定的那个 offer，否则读到的是别的商品
 const m=u.pathname.match(new RegExp('^[/]offer[/]([0-9]+)[.]html$'));
 if(!m||m[1]!==String(p.source_product_id))
  return {status:'wrong_page',reason:'offer_id_mismatch'};
@@ -239,8 +253,8 @@ for(const item of items){
 }
 return {status:'ok',source_product_id:String(p.source_product_id),
  sku_rows:out,sku_count:out.length};
-})()""".replace('__PAYLOAD__', _js({'offer_url': offer_url,
-                                   'source_product_id': str(offer_url).split('/offer/')[-1].split('.')[0]}))
+})()""".replace('__PAYLOAD__', _js({'offer_url': str(offer_url),
+                                   'source_product_id': source_product_id}))
         return self._evaluate(code, page_name='1688来源商品页')
 
     # ---------- 机会商品页 ----------
@@ -336,7 +350,7 @@ const success=num('成功'), skipped=num('跳过');
 const hasList=t.indexOf('商品列表')>=0;
 const nextStep=[...document.querySelectorAll('button')]
  .filter(x=>(x.innerText||'').trim()==='下一步: 开始复制');
-return {status:'ok',has_list:hasList,
+return {status:'ok',has_list:hasList,page_url:u.href,
  success_count:success,skipped_count:skipped,
  // 实测结果页没有独立的「抓取失败」计数器，抓取失败混在跳过里。
  // failed_count 恒为 null 就是如实反映——编一个数字出来才是误导。
@@ -455,10 +469,12 @@ if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move_history')
  return {status:'wrong_page'};
 const p=__PAYLOAD__;
 const WS=String.fromCharCode(32,9,10,13,12288,160);
+const WSRE2=new RegExp('['+WS+']+','g');
 const srcRe=new RegExp('源ID[:：]['+WS+']*([0-9]{1,24})(?![0-9])');
 const idRe=new RegExp('商品ID[:：]['+WS+']*([0-9]{16,22})');
+const allRows=[...document.querySelectorAll('div.pro-table-custom-body-row')];
 const keys=[]; let srcOnly=0;
-for(const row of document.querySelectorAll('div.pro-table-custom-body-row')){
+for(const row of allRows){
  const t=row.innerText||'';
  const sm=t.match(srcRe); const im=t.match(idRe);
  if(!sm) continue;
@@ -467,7 +483,18 @@ for(const row of document.querySelectorAll('div.pro-table-custom-body-row')){
  if(im) keys.push(sm[1]+'@'+im[1]);
  else { srcOnly++; keys.push(sm[1]+'@pending'); }
 }
-return {status:'ok',baseline_keys:[...new Set(keys)],pending_rows:srcOnly};
+// 虚拟滚动表格里 DOM 只有当前视口的行。页面会明写「共 N 条」，
+// 拿它和渲染行数一比就知道基线是否覆盖全量。
+// 实测：页面写「共 59 条」，DOM 只有 8 行 —— 51 条没被看到。
+// 这种情况下绝不能把 baseline_keys 当成完整基线。
+const bodyText=(document.body.innerText||'').replace(WSRE2,' ');
+const tm=bodyText.match(new RegExp('共['+WS+']*([0-9]+)['+WS+']*条'));
+const total=tm?Number(tm[1]):null;
+const rendered=allRows.length;
+const complete=(total!==null && rendered>=total);
+return {status:'ok',baseline_keys:[...new Set(keys)],pending_rows:srcOnly,
+ total_records:total,rendered_rows:rendered,baseline_complete:complete,
+ completeness_reason: complete?'页面记录已全部渲染':'虚拟滚动只渲染了部分记录，基线不完整'};
 })()""".replace('__PAYLOAD__', _js({'source_product_id': str(source_product_id or '')}))
         return self._evaluate(code, page_name='复制历史页')
 
