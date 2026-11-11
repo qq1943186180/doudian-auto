@@ -114,6 +114,12 @@ def parser():
     dropship_prepare.add_argument('--multiplier', required=True, help='倍数，3 表示三倍')
     dropship_prepare.add_argument('--addition', required=True, help='加价，如 5')
     dropship_prepare.add_argument('--data-root')
+    dropship_prepare.add_argument('--source-title',
+                                  help='1688 商品标题，用于强属性类目风险预检')
+    dropship_prepare.add_argument('--category',
+                                  help='已知的抖店类目（如 家清纸品>除臭用品>空气清新/净化/芳香剂）')
+    dropship_prepare.add_argument('--allow-risk', action='store_true',
+                                  help='显式放行类目预检的高风险任务')
     for name, help_text in (('apply', '读搬家配置快照；写配置与复制尚未接入'),
                             ('verify', '只读核查铺货结果；当前版本不触发任何页面写入')):
         action = dropship_sub.add_parser(name, help=help_text)
@@ -758,6 +764,9 @@ def run(args):
                 multiplier=args.multiplier,
                 addition=args.addition,
                 root=args.data_root,
+                source_title=args.source_title,
+                category=args.category,
+                allow_risk=args.allow_risk,
             )
         if args.dropship_command == 'apply':
             if not args.apply:

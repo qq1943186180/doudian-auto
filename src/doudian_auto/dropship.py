@@ -43,7 +43,8 @@ WRITE_FORBIDDEN_STAGES = frozenset({
     'copying_after_intent',
     'verification_pending',
     'copied',
-    'verified',
+    'verified',          # 旧版终态，保留兼容
+    'copy_confirmed',
     'blocked',
 })
 
@@ -164,7 +165,8 @@ def resolve_job_dir(root, task_id):
 
 
 def prepare_task(*, source_product_id, offer_url, shop, source_price,
-                 multiplier, addition, root=None):
+                 multiplier, addition, root=None, source_title=None,
+                 category=None, allow_risk=False):
     """创建或读取单商品计划。此操作不连浏览器，也不执行任何写入。"""
     if not re.fullmatch(r'\d{1,24}', str(source_product_id)):
         raise DoudianError('dropship_source_invalid', '来源商品 ID 必须是数字字符串。')
@@ -173,6 +175,9 @@ def prepare_task(*, source_product_id, offer_url, shop, source_price,
         raise DoudianError('dropship_shop_missing', '必须指定店铺。')
 
     price = calculate_price(source_price, multiplier, addition)
+    from .dropship_policy import precheck_category
+    precheck = precheck_category(title=source_title, category=category)
+    precheck['allow_risk'] = bool(allow_risk)
     root = Path(root or DATA_ROOT / 'dropship').resolve()
     task_id = _task_id(str(source_product_id), canonical_url, shop.strip())
     job = root / task_id
@@ -191,6 +196,9 @@ def prepare_task(*, source_product_id, offer_url, shop, source_price,
             'addition': str(addition),
         },
         'price_preview': price,
+        'source_title': source_title,
+        'category': category,
+        'category_precheck': precheck,
         'identity_hash': _canonical_hash({
             'source_product_id': str(source_product_id),
             'offer_url': canonical_url,
@@ -226,7 +234,10 @@ def prepare_task(*, source_product_id, offer_url, shop, source_price,
         'dry_run': True,
         'price_confirmation': price,
         'shelf_mode': '放入仓库',
-        'next': '核对源价、公式和最终价；确认后以同一任务执行 dropship apply --apply。',
+        'category_precheck': precheck,
+        'next': ('预检命中高风险，需人工确认类目必填属性后再继续。'
+                 if precheck.get('risk') == 'high' and not allow_risk
+                 else '核对源价、公式和最终价；确认后以同一任务执行 dropship apply --apply。'),
     }
 
 
@@ -370,7 +381,7 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
     state = read_json(state_path)
 
     # 终态不可回退：verified / blocked 的任务不能再被改成 unknown。
-    if state.get('stage') in ('verified', 'blocked'):
+    if state.get('stage') in ('verified', 'copy_confirmed', 'blocked'):
         raise DoudianError(
             'dropship_terminal_state',
             f"任务已处于终态 {state.get('stage')}，不接受新的复制观察结果。")
@@ -431,21 +442,73 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
     return {'stage': 'copied', 'target_product_id': str(target_product_id)}
 
 
+def _check_price_formula(observed, expected, price_input):
+    """验证「售价 = 源价 × 倍数 + 加价 + 统一运费」。
+
+    妙手会改写规格名（实测「生物酶除臭剂【2500ml】送喷壶」→「2500ml（生物酶除臭剂）」），
+    所以按名字匹配不可靠。改用价格排序做位置对应：源价与售价都单调，
+    最小的源价对应最小的售价。
+
+    真正的证据不是「售价等于某个数」，而是**所有 SKU 的差额相同且非负**——
+    那个共同差额就是运费。两次真实铺货都得到 3.48，说明公式确实被执行了。
+    """
+    if not expected or not observed:
+        return {'ok': False, 'reason': '缺少预期或读回的 SKU 价格，无法核对公式'}
+    if len(expected) != len(observed):
+        return {'ok': False,
+                'reason': f'SKU 数量不一致（来源 {len(expected)} / 官方 {len(observed)}）'}
+    try:
+        factor = Decimal(str(price_input.get('multiplier')))
+        add = Decimal(str(price_input.get('addition')))
+        sources = sorted(Decimal(str(v)) for v in expected.values())
+        prices = sorted(Decimal(str(v)) for v in observed.values())
+    except (InvalidOperation, ValueError, TypeError, AttributeError):
+        return {'ok': False, 'reason': '价格公式输入或读回值不是有效金额'}
+
+    deltas = []
+    for source, price in zip(sources, prices):
+        base = (source * factor + add).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        deltas.append(price - base)
+    if any(d < 0 for d in deltas):
+        return {'ok': False, 'reason': '有 SKU 售价低于任务公式价'}
+    spread = max(deltas) - min(deltas)
+    if spread > Decimal('0.01'):
+        return {'ok': False,
+                'reason': f'各 SKU 的运费差额不一致（最大差 {spread}）'}
+    return {
+        'ok': True,
+        'formula': f'{factor} × 源价 + {add}',
+        'shipping_delta': format(deltas[0], '.2f'),
+        'pairs': [{'source_price': format(s, '.2f'),
+                   'formula_price': format((s * factor + add).quantize(
+                       Decimal('0.01'), rounding=ROUND_HALF_UP), '.2f'),
+                   'shop_price': format(pr, '.2f')}
+                  for s, pr in zip(sources, prices)],
+    }
+
+
 def verify_target_readback(job, *, product_id, sku_rows,
                            sku_total_count, price_progress, review_status):
-    """核对官方页读回与预期是否一致；不一致一律停在 verification_pending。
+    """确认复制动作的结果，只声明能被证据证明的事。
 
-    之前只检查「行数等于总数」，那只能证明读到的行数和传进来的数字相等，
-    调用方传两条编造的行再传 sku_total_count=2 就能标成 verified。
-    现在必须同时满足：商品 ID 与复制历史一致、页面价格填写进度是 100%、
-    读到的 SKU 集合与预期完全一致、审核状态原文可读。
+    终态叫 ``copy_confirmed`` 而不是 ``verified``：官方编辑页**结构上**没有
+    独立 SKU 总数计数，也没有商品审核状态（那里只有 SKU 角标和上架/下架表单
+    选项），规格名还常被妙手改写。这三项不是「暂时没抓到」，是「这里根本没有」。
+    拿它们当阻断条件，终态就永远不可达——之前停在 verification_pending
+    一整轮正是这个原因。
 
-    expected_skus 来自复制时的页面读回并持久化，不是核验时临时指定的。
+    能自动证明的三件事：
+    1. 商品 ID 与复制历史一致；
+    2. 官方页能打开、读到 SKU 行、价格填写进度 100%；
+    3. 价格符合任务公式（所有 SKU 的运费差额一致且非负）。
+
+    拿不到的证据一律进 ``unverified_aspects``，如实交人工，不假装已验证。
     """
     job = Path(job)
     state_path = job / 'state.json'
     state = read_json(state_path)
-    if state.get('stage') not in ('copied', 'warehouse_created', 'verification_pending'):
+    if state.get('stage') not in (
+            'copied', 'warehouse_created', 'verification_pending', 'copy_confirmed'):
         raise DoudianError('dropship_stage_invalid', '没有可核验的铺货结果。')
     if str(product_id) != str(state.get('target_product_id') or ''):
         raise DoudianError('dropship_product_mismatch', '官方页商品 ID 与复制历史不一致。')
@@ -460,62 +523,72 @@ def verify_target_readback(job, *, product_id, sku_rows,
             raise DoudianError('dropship_sku_duplicate', f"SKU 名称重复：{row['sku']}。")
         observed[row['sku']] = str(row.get('price') or '')
 
-    # 预期 SKU 只从状态里读，不接受调用方现传：调用方现传就等于自己给自己出标准。
-    # 它的值是来源批发价，比对的是**规格名集合**：
-    # 官方页的售价含运费与尾数，与来源批发价不相等是正常的，
-    # 但规格名必须一一对应，少一个规格就说明没铺全。
     expected = dict(state.get('expected_skus') or {})
-    reasons = []
+    manifest_path = job / 'manifest.json'
+    manifest = read_json(manifest_path) if manifest_path.is_file() else {}
+    price_check = _check_price_formula(
+        observed, expected, manifest.get('price_input') or {})
+
+    verified_aspects = [
+        '复制历史里出现本来源的新行，商品 ID 与官方页一致',
+        '官方编辑页可打开并读到 SKU 行',
+    ]
+    unverified_aspects = []
+    blockers = []
+
     if not expected:
-        reasons.append('缺少复制时记录的预期 SKU 集合')
-    if sku_total_count is None:
-        reasons.append('缺少页面 SKU 总数计数')
-    elif len(sku_rows) != sku_total_count:
-        reasons.append(f'读回行数 {len(sku_rows)} 与页面总数 {sku_total_count} 不一致')
+        blockers.append('缺少复制时记录的预期 SKU 集合')
+    if price_check.get('ok'):
+        verified_aspects.append(
+            '价格符合任务公式，各 SKU 运费差额一致（' + price_check['shipping_delta'] + '）')
+    else:
+        blockers.append('价格公式核对未通过：' + price_check.get('reason', ''))
     if price_progress != 100:
-        reasons.append(f'页面价格填写进度为 {price_progress}%，不是 100%')
-    if expected and set(observed) != set(expected):
-        missing = sorted(set(expected) - set(observed))
-        extra = sorted(set(observed) - set(expected))
-        detail = []
-        if missing:
-            detail.append('缺少规格 ' + '、'.join(missing))
-        if extra:
-            detail.append('多出规格 ' + '、'.join(extra))
-        reasons.append('读回的规格名与来源不一致：' + '；'.join(detail))
+        blockers.append(f'页面价格填写进度为 {price_progress}%，不是 100%')
+    else:
+        verified_aspects.append('页面价格填写进度 100%')
 
-    # 审核状态在官方编辑页读不到是**已知事实**（那里只有 SKU 角标和表单选项）。
-    # 不能因此抛错终止，也不能假装通过：列为一条待核验原因，停在
-    # verification_pending，把「还缺什么」写清楚交给人工。
+    if sku_total_count is None:
+        unverified_aspects.append('官方编辑页无独立 SKU 总数计数（结构上不存在）')
+    elif len(sku_rows) != sku_total_count:
+        blockers.append(f'读回行数 {len(sku_rows)} 与页面总数 {sku_total_count} 不一致')
     if not isinstance(review_status, str) or not review_status.strip():
-        reasons.append('官方编辑页读不到商品审核状态')
+        unverified_aspects.append('官方编辑页无商品审核状态（需到商品列表页人工确认）')
+    if expected and set(observed) != set(expected):
+        unverified_aspects.append(
+            '妙手改写了规格名：来源 ' + '、'.join(sorted(expected))
+            + ' → 官方 ' + '、'.join(sorted(observed)))
 
-    if reasons:
+    if blockers:
         state.update(stage='verification_pending', sku_rows_observed=len(sku_rows),
                      sku_total_count=sku_total_count,
-                     last_error='sku_readback_unverified', updated_at=time.time())
+                     last_error='readback_blockers', updated_at=time.time())
         write_json(state_path, state)
         return {
             'stage': 'verification_pending',
             'sku_rows_observed': len(sku_rows),
-            'sku_total_count': sku_total_count,
-            'reason': '；'.join(reasons) + '，不标 verified。',
+            'verified_aspects': verified_aspects,
+            'unverified_aspects': unverified_aspects,
+            'blockers': blockers,
+            'reason': '；'.join(blockers),
         }
 
-
-
     report = {
-        'stage': 'verified',
+        'stage': 'copy_confirmed',
         'product_id': str(product_id),
         'sku_rows': sku_rows,
+        'price_check': price_check,
+        'verified_aspects': verified_aspects,
+        'unverified_aspects': unverified_aspects,
         'sku_total_count': sku_total_count,
         'price_progress': price_progress,
         'review_status': review_status,
-        'verified_at': time.time(),
+        'confirmed_at': time.time(),
+        'note': '只确认「复制动作产生了这个商品且定价符合公式」；'
+                '审核与上架状态不在本页，需人工到商品列表页确认。',
     }
     write_json(job / 'target-readback.json', report)
-    # 初版不推断审核或消费者端状态：页面读到什么就报什么。
-    state.update(stage='verified', target_readback='target-readback.json',
+    state.update(stage='copy_confirmed', target_readback='target-readback.json',
                  review_status=review_status, updated_at=time.time())
     write_json(state_path, state)
     return report
@@ -573,7 +646,7 @@ def _advance(args, job, state, manifest):
       prepared → 写搬家配置 → 独立重新读回 → settings_verified
       settings_verified → 读来源 SKU → 采历史基线 → 贴链接 → 抓取 → 落复制意图 → 点复制
       unknown → 读复制历史 → copied
-      copied → 读官方页 → verified / verification_pending
+      copied → 读官方页 → copy_confirmed / verification_pending
     """
     from .dropship_pages import DropshipPages
     from .ego_bridge import EgoBridge
@@ -589,6 +662,9 @@ def _advance(args, job, state, manifest):
         return _stage_copy(args, job, state, manifest, pages)
     if stage in ('unknown', 'copied', 'verification_pending'):
         return _readback_only(args, job, state, manifest)
+    if stage in ('copy_confirmed', 'verified'):
+        return {'task_id': args.task_id, 'stage': stage,
+                'note': '任务已完成，终态不可回退。'}
     raise DoudianError('dropship_stage_invalid', f'任务处于无法推进的阶段：{stage}。')
 
 
@@ -694,6 +770,12 @@ def _stage_copy(args, job, state, manifest, pages):
     offer_url = manifest['offer_url']
     source_id = manifest['source_product_id']
 
+    # 0) 类目预检：命中强属性类目就别创建提不了审的草稿箱商品
+    from .dropship_policy import require_precheck_allowed
+    require_precheck_allowed(
+        manifest.get('category_precheck'),
+        allow_risk=bool((manifest.get('category_precheck') or {}).get('allow_risk')))
+
     # 1) 读来源商品的规格：复制前唯一的先验
     pages.navigate_source(offer_url)
     time.sleep(SETTLE_SECONDS)
@@ -782,6 +864,20 @@ def _readback_only(args, job, state, manifest):
             target_product_id=history.get('product_id'))
         result['stage'] = 'copied'
         result['target_product_id'] = history.get('product_id')
+
+        # 复制历史行里若写着「XX未填写，导致复制失败，自动放至草稿箱」，
+        # 就把缺的属性解析成一张人工补值清单，随结果一起交付。
+        from .dropship_policy import build_manual_attribute_list
+        checklist = build_manual_attribute_list(
+            job,
+            source_product_id=manifest['source_product_id'],
+            target_product_id=history.get('product_id'),
+            row_text=history.get('row_text'),
+            category=manifest.get('category'))
+        if checklist:
+            result['manual_attributes'] = checklist
+            result['next'] = ('商品已创建，但有必填属性缺失需人工补齐；'
+                              '清单见 manual-attributes.json。')
         return result
 
     # 已有目标商品 ID：读官方页 SKU 与审核状态，原样报告
@@ -808,6 +904,6 @@ def _readback_only(args, job, state, manifest):
         review_status=review.get('review_status'))
     result['verification'] = verification
     result['stage'] = verification.get('stage', state.get('stage'))
-    result['next'] = ('核验结果已按页面证据落盘；缺 SKU 总数或审核状态时停在 '
-                      'verification_pending，不假装 verified。')
+    result['next'] = ('已按页面证据确认复制结果；官方编辑页拿不到的证据'
+                      '列在 unverified_aspects 中，交人工确认。')
     return result

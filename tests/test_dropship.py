@@ -164,21 +164,6 @@ def test_verify_requires_a_copied_stage(tmp_path):
                                price_progress=100, review_status='待审核')
 
 
-def test_verify_reports_review_status_without_inferring(tmp_path):
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '15.48'}})
-    report = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
-        price_progress=100, review_status='待审核')
-    assert report['review_status'] == '待审核'
-    assert report['sku_rows'][0]['price'] == '15.48'
-
-
-# ---------- 任务创建 ----------
-
 def test_prepare_rejects_an_offer_url_that_does_not_name_the_source(tmp_path):
     """URL 必须真的是 detail.1688.com/offer/<来源ID>.html。
 
@@ -308,51 +293,6 @@ def test_prepared_stage_cannot_start_copy():
 
 # ---------- SKU 完整性：行数对不上就不标 verified ----------
 
-def test_sku_count_mismatch_stays_verification_pending(tmp_path):
-    """读到的行数少于总数时必须停在 verification_pending，不能标 verified。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '15.48'}})
-    result = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '15.48'}], review_status='待审核',
-        sku_total_count=20, price_progress=100,
-    )
-    assert result['stage'] == 'verification_pending'
-    assert result['sku_rows_observed'] == 1
-    assert result['sku_total_count'] == 20
-
-
-def test_missing_total_count_stays_verification_pending(tmp_path):
-    """没有实抓到的总数计数时，不得把部分行冒充完整结果。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '15.48'}})
-    result = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '15.48'}, {'sku': '4个装', 'price': '27.48'}],
-        review_status='待审核', sku_total_count=None, price_progress=100,
-    )
-    assert result['stage'] == 'verification_pending'
-    assert '总数计数' in result['reason']
-
-
-def test_matching_sku_count_reaches_verified(tmp_path):
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '15.48', '4个装': '27.48'}})
-    rows = [{'sku': '1个装', 'price': '15.48'}, {'sku': '4个装', 'price': '27.48'}]
-    report = verify_target_readback(job, product_id='3853454064050373417',
-                                    sku_rows=rows,
-                                    review_status='待审核',
-                                    sku_total_count=2, price_progress=100)
-    assert report['sku_total_count'] == 2
-    assert report['review_status'] == '待审核'
-
-
 def test_sku_adapter_reads_visible_rows_without_a_preset_list():
     """不再要求调用方预填 sku_names：那会用期望代替页面实际。"""
     bridge = FakeBridge([{'status': 'ok', 'product_id': '3853454064050373417',
@@ -403,23 +343,6 @@ def test_verify_rejects_a_product_id_that_is_not_the_copied_one(tmp_path):
                                sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
                                price_progress=100, review_status='待审核')
 
-
-def test_verify_stays_pending_when_a_spec_is_missing(tmp_path):
-    """规格名少一个就说明没铺全，不能算核验通过。
-
-    官方页的**售价**与来源批发价本来就不相等（售价含运费与尾数），
-    所以比的是规格名集合，不是价格。
-    """
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '2', '4个装': '6'}})
-    result = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
-        price_progress=100, review_status='待审核')
-    assert result['stage'] == 'verification_pending'
-    assert '缺少规格' in result['reason']
 
 def test_verify_stays_pending_when_the_page_progress_is_not_complete(tmp_path):
     """页面价格填写进度不到 100% 时，可能还有 SKU 没被读到。"""
@@ -651,28 +574,6 @@ def test_the_settings_stage_writes_the_percentage_not_the_multiplier(tmp_path):
     assert int(percent) == int('3') * 100
 
 
-def test_the_page_price_percent_is_a_hundred_times_the_multiplier():
-    """页面的 pricePercent 是百分比，任务的 multiplier 是倍数，两者差 100 倍。
-
-    写成 3 会把定价变成 3%——这个 bug 真的发生过一次，
-    把妙手的 300% 改成了 3%。
-    """
-    preview = calculate_price('2', '3', '5')
-    assert preview['page_price_percent'] == '300'
-    assert preview['final_price'] == '11.00'
-
-
-def test_the_settings_stage_writes_the_percentage_not_the_multiplier(tmp_path):
-    """写配置那一段必须用换算后的百分比。"""
-    from doudian_auto.dropship import calculate_price
-
-    percent = calculate_price('2', '3', '5')['page_price_percent']
-    assert percent != '3'
-    assert int(percent) == int('3') * 100
-
-
-# ---------- Codex 四轮复核指出的缺口 ----------
-
 def test_baseline_must_be_proved_complete_before_copy(tmp_path):
     """页面写「共 59 条」而 DOM 只渲染 8 行时，基线不完整，必须拒绝复制。"""
     from doudian_auto.dropship import DoudianError as Err
@@ -707,20 +608,6 @@ def test_verified_task_cannot_be_pulled_back_to_unknown(tmp_path):
                {'stage': 'verified', 'submission_status': 'accepted'})
     with pytest.raises(DoudianError, match='终态'):
         record_copy_observation(job, outcome='unknown', evidence={'x': 1})
-
-
-def test_missing_review_status_stays_pending_not_an_error(tmp_path):
-    """编辑页读不到审核状态是已知事实：应停在待核验，不抛错也不假装通过。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853454064050373417',
-                'expected_skus': {'1个装': '2'}})
-    result = verify_target_readback(
-        job, product_id='3853454064050373417',
-        sku_rows=[{'sku': '1个装', 'price': '15.48'}], sku_total_count=1,
-        price_progress=100, review_status=None)
-    assert result['stage'] == 'verification_pending'
-    assert '审核状态' in result['reason']
 
 
 def test_source_sku_reader_rejects_a_malformed_offer_url():
@@ -788,89 +675,155 @@ def test_filtered_baseline_is_only_complete_when_total_equals_matched():
     assert incomplete['baseline_complete'] is False
 
 
-def test_the_live_run_landed_at_verification_pending_not_verified(tmp_path):
-    """草稿箱商品的规格名被妙手改写，核验必须停在待核验，不假装成功。"""
+# ---------- copy_confirmed：只声明能被证据证明的事 ----------
+
+LIVE_SOURCE_SKUS = {
+    '生物酶除臭剂【2500ml】送喷壶': '25.8',
+    '生物酶除臭剂【5000ml】送喷壶': '43.8',
+}
+LIVE_SHOP_ROWS = [
+    {'sku': '2500ml（生物酶除臭剂）', 'price': '85.88'},
+    {'sku': '5000ml（生物酶除臭剂）', 'price': '139.88'},
+]
+LIVE_TARGET = '3853482303460343870'
+
+
+def _confirm_job(tmp_path, *, expected=None, target=LIVE_TARGET):
     job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853482303460343870',
-                'expected_skus': {'生物酶除臭剂【2500ml】送喷壶': '25.8',
-                                  '生物酶除臭剂【5000ml】送喷壶': '43.8'}})
+    write_json(job / 'state.json', {
+        'stage': 'copied', 'target_product_id': target,
+        'expected_skus': dict(expected) if expected is not None
+        else dict(LIVE_SOURCE_SKUS),
+    })
+    write_json(job / 'manifest.json', {
+        'price_input': {'source_price': '25.80', 'multiplier': '3', 'addition': '5'},
+    })
+    return job
+
+
+def test_copy_confirmed_when_the_price_formula_matches(tmp_path):
+    """真实数据：25.8/43.8 ×3+5 = 82.40/136.40，售价 85.88/139.88，运费同为 3.48。"""
+    job = _confirm_job(tmp_path)
+    report = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
+        sku_total_count=None, price_progress=100, review_status=None)
+    assert report['stage'] == 'copy_confirmed'
+    assert report['price_check']['shipping_delta'] == '3.48'
+    assert any('价格符合任务公式' in x for x in report['verified_aspects'])
+
+
+def test_official_page_has_no_review_status_but_that_is_not_a_blocker(tmp_path):
+    """审核状态在官方编辑页结构上不存在，不能因此让终态永远不可达。"""
+    job = _confirm_job(tmp_path)
+    report = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
+        sku_total_count=None, price_progress=100, review_status=None)
+    assert report['stage'] == 'copy_confirmed'
+    assert any('审核状态' in x for x in report['unverified_aspects'])
+
+
+def test_miaoshou_rewriting_spec_names_is_listed_not_a_blocker(tmp_path):
+    """妙手改写规格名是常态，按价格排序核对公式；改写事实如实列出。"""
+    job = _confirm_job(tmp_path)
+    report = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
+        sku_total_count=None, price_progress=100, review_status=None)
+    assert report['stage'] == 'copy_confirmed'
+    assert any('改写了规格名' in x for x in report['unverified_aspects'])
+
+
+def test_price_formula_mismatch_stays_pending(tmp_path):
+    job = _confirm_job(tmp_path)
+    rows = [dict(LIVE_SHOP_ROWS[0]),
+            {'sku': '5000ml（生物酶除臭剂）', 'price': '999.88'}]
     result = verify_target_readback(
-        job, product_id='3853482303460343870',
-        sku_rows=[{'sku': '2500ml（生物酶除臭剂）', 'price': '85.88'},
-                  {'sku': '5000ml（生物酶除臭剂）', 'price': '139.88'}],
+        job, product_id=LIVE_TARGET, sku_rows=rows,
         sku_total_count=None, price_progress=100, review_status=None)
     assert result['stage'] == 'verification_pending'
-    assert '缺少规格' in result['reason']
-    assert '审核状态' in result['reason']
+    assert any('价格公式' in b for b in result['blockers'])
 
 
-# ---------- 真实闭环跑出来的页面细节 ----------
-
-def test_polling_stops_immediately_when_counters_are_present():
-    """跳过为 0 时计数器被隐藏，适配器会把它规范成 '0'；
-    轮询见到两个计数齐全就应立即返回，不再空转到超时。
-    """
-    from doudian_auto.dropship import _wait_for_fetch_result
-
-    class Bridge:
-        def __init__(self):
-            self.calls = 0
-
-        def read_fetch_result(self):
-            self.calls += 1
-            return {'status': 'ok', 'success_count': '1',
-                    'skipped_count': '0', 'skipped_inferred': True,
-                    'page_url': 'https://v2-dd.chengji-inc.com/move/move'}
-
-    bridge = Bridge()
-    result = _wait_for_fetch_result(bridge, attempts=5, interval=0)
-    assert bridge.calls == 1
-    assert result['skipped_count'] == '0'
-    assert not result.get('timed_out')
-
-
-def test_polling_aborts_when_the_page_identity_changes():
-    """轮询期间页面被切走，必须停下，不能把别处的计数当成本次结果。"""
-    from doudian_auto.dropship import _wait_for_fetch_result
-
-    class Bridge:
-        def __init__(self):
-            self.calls = 0
-
-        def read_fetch_result(self):
-            self.calls += 1
-            return {'status': 'ok', 'success_count': None,
-                    'skipped_count': None,
-                    'page_url': 'A' if self.calls == 1 else 'B'}
-
-    result = _wait_for_fetch_result(Bridge(), attempts=5, interval=0)
-    assert result.get('timed_out') is True
-    assert '页面身份变化' in result.get('reason', '')
-
-
-def test_filtered_baseline_is_only_complete_when_total_equals_matched():
-    """筛选态基线必须满足：筛选值==本来源，且「共 N 条」==匹配行数。"""
-    complete = {'filter_value': '922368518409', 'total_records': 0,
-                'matched_rows': 0, 'baseline_complete': True}
-    assert complete['baseline_complete'] is True
-    incomplete = {'filter_value': '999999999999', 'total_records': 1,
-                  'matched_rows': 0, 'baseline_complete': False}
-    assert incomplete['baseline_complete'] is False
-
-
-def test_the_live_run_landed_at_verification_pending_not_verified(tmp_path):
-    """草稿箱商品的规格名被妙手改写，核验必须停在待核验，不假装成功。"""
-    job = _job(tmp_path, stage='copied')
-    write_json(job / 'state.json',
-               {'stage': 'copied', 'target_product_id': '3853482303460343870',
-                'expected_skus': {'生物酶除臭剂【2500ml】送喷壶': '25.8',
-                                  '生物酶除臭剂【5000ml】送喷壶': '43.8'}})
+def test_sku_count_mismatch_stays_pending(tmp_path):
+    job = _confirm_job(tmp_path)
     result = verify_target_readback(
-        job, product_id='3853482303460343870',
-        sku_rows=[{'sku': '2500ml（生物酶除臭剂）', 'price': '85.88'},
-                  {'sku': '5000ml（生物酶除臭剂）', 'price': '139.88'}],
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS[:1],
+        sku_total_count=2, price_progress=100, review_status=None)
+    assert result['stage'] == 'verification_pending'
+
+
+def test_missing_expected_skus_stays_pending(tmp_path):
+    job = _confirm_job(tmp_path, expected={})
+    result = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
         sku_total_count=None, price_progress=100, review_status=None)
     assert result['stage'] == 'verification_pending'
-    assert '缺少规格' in result['reason']
-    assert '审核状态' in result['reason']
+
+
+def test_price_progress_below_100_stays_pending(tmp_path):
+    job = _confirm_job(tmp_path)
+    result = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
+        sku_total_count=None, price_progress=50, review_status=None)
+    assert result['stage'] == 'verification_pending'
+
+
+def test_terminal_state_is_copy_confirmed_not_verified(tmp_path):
+    """终态改名：不再叫 verified，因为三项证据在官方页结构上拿不到。"""
+    job = _confirm_job(tmp_path)
+    report = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
+        sku_total_count=None, price_progress=100, review_status=None)
+    assert report['stage'] == 'copy_confirmed'
+    state = read_json(job / 'state.json')
+    assert state['stage'] == 'copy_confirmed'
+
+
+# ---------- 类目预检与人工补值清单 ----------
+
+def test_precheck_blocks_a_known_strong_attribute_category():
+    from doudian_auto.dropship_policy import precheck_category, require_precheck_allowed
+    pre = precheck_category(category='家清纸品>除臭用品>空气清新/净化/芳香剂')
+    assert pre['risk'] == 'high' and pre['basis'] == 'category'
+    assert pre['missing_attributes'] == ['保质期', '生产企业名称']
+    with pytest.raises(DoudianError, match='预检命中'):
+        require_precheck_allowed(pre)
+
+
+def test_precheck_can_be_explicitly_allowed_by_an_operator():
+    from doudian_auto.dropship_policy import precheck_category, require_precheck_allowed
+    pre = precheck_category(category='空气清新/净化/芳香剂')
+    assert require_precheck_allowed(pre, allow_risk=True)['action'] == 'allowed_by_operator'
+
+
+def test_precheck_keyword_hit_is_marked_as_heuristic(tmp_path):
+    """标题命中只能预警，不能冒充类目证据。"""
+    from doudian_auto.dropship_policy import precheck_category
+    pre = precheck_category(title='酒店生物酶除味剂空气清新分解型去异味净味')
+    assert pre['risk'] == 'high' and pre['basis'] == 'keyword_heuristic'
+    assert '除味剂' in pre['matched_keywords']
+
+
+def test_precheck_low_risk_for_an_unrelated_product():
+    from doudian_auto.dropship_policy import precheck_category
+    assert precheck_category(title='车门限位器保护盖')['risk'] == 'low'
+
+
+def test_missing_attributes_are_parsed_from_the_real_history_row():
+    from doudian_auto.dropship_policy import extract_missing_attributes
+    row = '「保质期,生产企业名称」未填写，导致复制失败，系统自动放至草稿箱'
+    assert extract_missing_attributes(row) == ['保质期', '生产企业名称']
+    assert extract_missing_attributes('已成功复制 审核通过') == []
+
+
+def test_manual_attribute_list_is_written_without_inventing_values(tmp_path):
+    from doudian_auto.dropship_policy import build_manual_attribute_list, \
+        load_manual_attribute_list
+    job = _job(tmp_path)
+    checklist = build_manual_attribute_list(
+        job, source_product_id='922368518409',
+        target_product_id=LIVE_TARGET,
+        row_text='「保质期,生产企业名称」未填写，导致复制失败，系统自动放至草稿箱')
+    assert checklist['missing_count'] == 2
+    assert all(item['value'] is None for item in checklist['items'])
+    assert all(item['source'] == '人工填写' for item in checklist['items'])
+    assert load_manual_attribute_list(job)['missing_count'] == 2
