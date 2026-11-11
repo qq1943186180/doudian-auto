@@ -4,6 +4,16 @@
 
 ## 给人的说明
 
+### T-20261112-008 · 194-76 · 选品候选 / skill 编排 / 人工待办汇总（只读，无商品写入）
+
+- 状态：**done**。用户「4 5 6 7 8 不需要人工的你继续推进，有问题问codex」→ 落地；**按授权就 skill 编排设计派了一次 Codex 只读咨询**（`work/optimizer-20261111/codex-skill-design-out.md`）。本轮**没有创建/修改/删除任何商品**。
+- **① 选品候选**：实抓 `/selection/opportunity_product` 确认它就是**抖音官方机会商品页**（官方上新扶持/豆包商机品/推荐理由热度高·成交增速快·平台缺货），30 张卡片有 `a.title` / `.price-number` / `.tag-text` /「支持密文」/「商机：xxx」/ `[data-custom-id]`。新增只读适配器 `read_opportunity_candidates` + CLI `dropship candidates`，默认只留同时「支持密文+一件代发」。真跑读出 5 条候选。🔴 **卡片没有 1688 offer ID，只有妙手内部 UUID**，返回值固定带 `identity_note` 声明「不能直接铺、需以标题检索并人工核实同一商品」。「推荐理由」是页面筛选项不是逐卡字段，没有编造成候选属性。
+- **② skill 编排层**：Codex 只读咨询建议**新建** `dropship-workflow`（三个既有 skill 分别管「改版现有商品 / 批量图文 / 妙手手工编辑」，铺货是「从来源创建」，塞进去会混淆授权边界）。已落盘 `skills/dropship-workflow/SKILL.md`，含适用范围、选品、价格确认（提醒 300% vs 3 倍差 100 倍）、阶段语义、失败关闭、人工确认点、禁止事项；**不写选择器/DOM/内部字段**（C 方案抽象边界）。同步到仓库 / `~/.workbuddy/skills/` / `~/.codex/skills/` **三处哈希一致** `4afc4b39…`，既有三份 skill 未动。顺带修了 CLI 里过时的 help（原写「写配置与复制尚未接入」）。
+- **③ 两条线打通**：`build_manual_queue_report` + CLI `dropship manual-queue`，把铺货任务的 `manual-attributes.json` 与 `batch.sqlite3` 里因属性缺失 blocked 的商品汇成一张**只读**待补值表。真跑：默认 23 项全来自队列；带临时 `--data-root` 时 25 项（23 队列 + 2 铺货：3853482303460343870 的保质期/生产企业名称）。不改队列状态、不解锁、不写页面、不推断值。
+- **④ 口径修正与代码清理**：`navigate_source` 曾被重复定义 3 次，已清为 1 份；HANDOFF 抬头同步到 2026-11-12 / workbuddy；**更正上一轮不准确说法**——队列 61 件＝18 verified/43 blocked（实读 `batch.sqlite3`），其中明确 `required_attributes_missing` 只有 **8 件**，其余是重新基线 14、图片槽位、视觉质量、草稿/驳回预检、商品已删除等，不可笼统归为缺属性。
+- 🔴 **三项有证据地不做**（`docs/dropship-candidates-and-orchestration.md`）：①**审核状态读取** — `ffa/g/list` 确有状态词与商品ID搜索框，但填入 ID 查询返回「共 0 条」、草稿箱 tab 精确定位失败，路径未证明可用，**不写适配器**，`unverified_aspects` 那条保持；②**规格名改写规则** — 只有 1 个对照样本，不归纳，继续用价格排序对应（3.48 运费差已验证）；③**类目白名单扩展** — 本轮无新失败观测，不凭类目名猜必填属性。
+- **验证**：688 Python（191.67s，新增 3 项）+ 101 JS + 27/27 Node。提交 `050e30a`。文档 `docs/dropship-candidates-and-orchestration.md`。
+
 ### T-20261112-007 · 194-76 · 按事实推断落地：类目预检 / 补值清单 / copy_confirmed
 
 - 状态：**done**。Agent workbuddy，2026-11-12 凌晨。用户「你根据事实推断呢」→ 我给出五条推断 → 用户「可以你加吧」→ 落地。未调用 Codex。
