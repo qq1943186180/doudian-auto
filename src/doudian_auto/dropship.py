@@ -593,9 +593,14 @@ def _stage_settings(args, job, state, manifest, pages):
 
     before = pages.read_settings()
     target = dict(before.get('values') or {})
-    # 只改任务明确指定的字段：倍数换算成百分比，加价写成金额
+    # 只改任务明确指定的字段。
+    # ⚠️ 倍数与百分比差 100 倍：页面的 pricePercent 是 300 表示 300%，
+    # 而任务的 multiplier 是 3 表示三倍。直接写 3 会把定价变成 3%。
     price_input = manifest.get('price_input') or {}
-    target['pricePercent'] = price_input.get('multiplier')
+    percent = calculate_price(price_input.get('source_price'),
+                              price_input.get('multiplier'),
+                              price_input.get('addition')).get('page_price_percent')
+    target['pricePercent'] = percent
     target['priceAdd'] = price_input.get('addition')
     target['shelf_mode'] = '放入仓库'
 
@@ -623,6 +628,22 @@ def _stage_settings(args, job, state, manifest, pages):
     }
 
 
+def _wait_for_fetch_result(pages, *, attempts=12, interval=4):
+    """轮询等抓取结果出现。
+
+    抓取是后台任务：点完「开始批量抓取商品」，结果页的计数器要过几秒才渲染出来。
+    读一次就判断会把「还没好」误判成「失败」。
+    超时上限到了就把最后一次读到的如实返回，让调用方按不干净处理。
+    """
+    last = {}
+    for _ in range(attempts):
+        last = pages.read_fetch_result()
+        if last.get('success_count') is not None and last.get('skipped_count') is not None:
+            return last
+        time.sleep(interval)
+    return last
+
+
 def _stage_copy(args, job, state, manifest, pages):
     """贴链接 → 抓取 → 落复制意图 → 点复制。"""
     from .dropship_pages import HISTORY_PATH, MOVE_PATH
@@ -647,11 +668,12 @@ def _stage_copy(args, job, state, manifest, pages):
     baseline = pages.read_history_baseline(source_product_id=source_id)
     require_no_pending_history(job, baseline.get('pending_rows'))
 
-    # 3) 贴链接并抓取
+    # 3) 贴链接并抓取。抓取是异步的：点完按钮后结果页要过一会儿才有计数器，
+    #    所以要轮询等它出现，而不是读一次就下结论。
     pages.navigate_miaoshou(MOVE_PATH)
     time.sleep(SETTLE_SECONDS)
     pages.paste_offer_and_fetch(offer_url=offer_url)
-    fetch = pages.read_fetch_result()
+    fetch = _wait_for_fetch_result(pages)
     if fetch.get('success_count') != '1' or fetch.get('skipped_count') != '0':
         raise DoudianError(
             'dropship_fetch_incomplete',

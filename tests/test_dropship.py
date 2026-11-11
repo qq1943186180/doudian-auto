@@ -629,3 +629,43 @@ def test_copy_intent_records_the_expected_skus_and_history_baseline(tmp_path):
 
 
 # ---------- Codex 二轮复核指出的盲区 ----------
+
+
+def test_the_page_price_percent_is_a_hundred_times_the_multiplier():
+    """页面的 pricePercent 是百分比，任务的 multiplier 是倍数，两者差 100 倍。
+
+    写成 3 会把定价变成 3%——这个 bug 真的发生过一次，
+    把妙手的 300% 改成了 3%。
+    """
+    preview = calculate_price('2', '3', '5')
+    assert preview['page_price_percent'] == '300'
+    assert preview['final_price'] == '11.00'
+
+
+def test_the_settings_stage_writes_the_percentage_not_the_multiplier(tmp_path):
+    """写配置那一段必须用换算后的百分比。"""
+    from doudian_auto.dropship import calculate_price
+
+    percent = calculate_price('2', '3', '5')['page_price_percent']
+    assert percent != '3'
+    assert int(percent) == int('3') * 100
+
+
+def test_the_page_price_percent_is_a_hundred_times_the_multiplier():
+    """页面的 pricePercent 是百分比，任务的 multiplier 是倍数，两者差 100 倍。
+
+    写成 3 会把定价变成 3%——这个 bug 真的发生过一次，
+    把妙手的 300% 改成了 3%。
+    """
+    preview = calculate_price('2', '3', '5')
+    assert preview['page_price_percent'] == '300'
+    assert preview['final_price'] == '11.00'
+
+
+def test_the_settings_stage_writes_the_percentage_not_the_multiplier(tmp_path):
+    """写配置那一段必须用换算后的百分比。"""
+    from doudian_auto.dropship import calculate_price
+
+    percent = calculate_price('2', '3', '5')['page_price_percent']
+    assert percent != '3'
+    assert int(percent) == int('3') * 100
