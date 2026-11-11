@@ -40,18 +40,12 @@
 - 验证：591 Python、101 JS通过；[验收说明](docs/live-attribute-acceptance-20261110.md)，本机原证据work/codex-live-one-20261110/及~/.doudian-auto/jobs/attributes-3848316465015030183-f4eb30ca5f9b/。
 - 现场已持久化RESULT及双端证据，Space20自有p1/p2/p3已finish关闭，不再续该已结束空间；其他用户页保留。Linear194-76记录及读回、代码/交接分提交并push，父任务保持in_progress。
 
-### T-20261110-008 · 194-76 · 属性发布首次实页验收（修复3个缺陷）
+### T-20261110-008 · 194-76 · 属性发布首次实页验收（结论已被 T-002 纠正）
 
-- 状态：**部分完成**。属性填写成功；2026-11-11纠正：旧check把蓝色未来必填info误判为错误，当时未点击发布，不能断言平台拒绝，后续修复及商品41实跑见T-009。商品50仍保留原editing现场。
-- 验收商品：`3848315275342643596`（免打孔吸盘抹布架，销霁百货）。**未改动其他商品，未动队列状态。**
-- 🔴 **缺陷1（致命）读回值带 option id**：`dom.js` 用 `text(selects[0])` 读控件全文，把隐藏 option id 也读进来，读回是 `"466329 免打孔式"`，而调用方比对 `"免打孔式"`，永远不等 → 每件都卡在 `attribute_fill_incomplete`。**这就是该路径此前从未验收通过的真正原因**。改为优先读 `.ecom-g-select-selection-item`，退路用正则去掉前导数字。实测修复后 `readback="免打孔式"`、`written=true`。
-- 🔴 **缺陷2 单品无入口**：`publish_attributes()` 只能经 `batch auto --facts` 间接调用，无法对单件做验收。新增 `doudian-auto attributes --product-id X --shop Y --set 名=值 [--apply]`，缺省 dry-run，写前先读控件报可写性。
-- 🔴 **缺陷3 editing 无出口**：任务停在 `editing` 后既不能重跑也不能释放，商品被永久占用。新增 `--abandon --reason`，**仅当重开页面确认目标属性仍为空**才放行；已有不同值或已进入提交则拒绝并保留现场。
-- 附带修复：新增分支内多余的 `from .bridge import Bridge` / `from .editor import Editor` 使二者变成 `run()` 局部名，导致全部 title 分支 `UnboundLocalError`（3 个测试失败）。已删除，模块级导入已足够。
-- **平台未来规则提示**：5 项被标记「2天后变更为必填」：是否可接触食品、是否进口、材质类型（多选）、型号、生产企业地址；尚不能当作当日发布失败证据。这些是商品事实，不猜。该商品已填 品牌=无品牌、材质=ABS。
-- 验证：**587 Python 通过**（167.25s）、**99 JS 通过**（含新增回归测试：选中项读回为纯标签）。证据 `work/optimizer-20261110/`（含 ACCEPTANCE-REPORT.md、ATTR-OPTIONS.json、apply-*.json）。
-- 未做：未点发布，不能据未来必填提示推定必败；本任务未改其他商品；`材质类型` 为多选，程序暂不支持自动写。
-
+- 状态：done（已被 2026-11-11 实跑取代）。商品50。此处保留仅因它是那三个缺陷的来历。
+- 修3个缺陷：①**读回值带 option id**（`text(selects)` 含隐藏id，读回 `"466329 免打孔式"` 永不等于目标 → 该路径此前不可能成功）改为读 `.ecom-g-select-selection-item`；②新增 `attributes` 单品入口；③新增 `--abandon --reason`（仅页面确认目标属性为空才释放 editing 僵局）。附带修 title 分支 `UnboundLocalError`（分支内重复 import Bridge/Editor 造成局部名）。
+- ⚠️ **当时结论「平台拒绝发布」是误判**：那5项蓝色 info 是未来规则提示，程序误当 error，根本没点发布。真因见 T-20261111-002。
+- 证据 `work/optimizer-20261110/`。587 Python / 99 JS。
 ### T-20261110-006 · 194-160 · 自动入口与Ego标签修复
 
 - 状态：done（代码及离线回归）；新属性发布路径与失效页恢复尚待指定商品/实页验收，不能冒称已线上验证。未操作浏览器或真实商品，原61件队列未改状态。
