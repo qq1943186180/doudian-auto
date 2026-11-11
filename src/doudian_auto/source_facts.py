@@ -84,3 +84,32 @@ def unsupported_but_asked(spec):
     if not (spec or {}).get('location') or '生产企业' not in pairs:
         missing['生产企业地址'] = '源页面仅有店铺公司与发货地，无详细厂址'
     return missing
+
+
+# Douyin's category tree defines attributes that 1688 has no counterpart for. Reading more
+# of the supplier page cannot answer these, so a caller should not spend another pass on it.
+# Measured on the full spec band of five offers: 材质/品牌/贸易属性/是否进口/箱装数量/
+# 加工定制/专利/货号/颜色/规格/产地/是否跨境出口专供货源, and nothing else.
+DOUYIN_ONLY = {
+    '安装方式': '抖店类目特有；1688 属性表无此字段，源详情图为营销图无安装说明',
+    '尺寸': '抖店类目特有；1688 只有包装件重尺（包装尺寸，非商品尺寸）',
+    '厚度': '抖店类目特有；1688 属性表无此字段',
+    '硬度': '抖店类目特有；1688 属性表无此字段',
+    '适用年龄': '抖店类目特有且为多选；1688 属性表无此字段',
+}
+
+
+def needs_human(attribute_names):
+    """Split the asked attributes into what the source can answer and what it cannot.
+
+    A caller uses this to stop re-reading supplier pages for a fact that is not there, and
+    to tell the user exactly which values only they can supply.
+    """
+    askable, blocked = {}, {}
+    for name in attribute_names:
+        reason = DOUYIN_ONLY.get(name)
+        if reason:
+            blocked[name] = reason
+        else:
+            askable[name] = None
+    return askable, blocked
