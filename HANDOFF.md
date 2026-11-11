@@ -4,6 +4,21 @@
 
 ## 给人的说明
 
+### T-20261112-007 · 194-76 · 按事实推断落地：类目预检 / 补值清单 / copy_confirmed
+
+- 状态：**done**。Agent workbuddy，2026-11-12 凌晨。用户「你根据事实推断呢」→ 我给出五条推断 → 用户「可以你加吧」→ 落地。未调用 Codex。
+- **核心判断**：端到端跑通后，剩下的阻塞**不是浏览器自动化**，是三个设计错位。所以本轮**一行页面选择器都没改**，改策略层。
+- **① 类目预检**（`src/doudian_auto/dropship_policy.py`）：`KNOWN_CATEGORY_ATTRIBUTES` 记实测类目→必填属性（当前 `空气清新/净化/芳香剂` → 保质期/生产企业名称）；`RISK_KEYWORDS` 标题预警但 `basis` 明确标 `keyword_heuristic`（铺货前拿不到抖店最终类目，**只是预警不是证据**）。`_stage_copy` 最前面 `require_precheck_allowed` 拦截高风险，除非显式 `--allow-risk`。**命中时不创建商品**，不往草稿箱堆垃圾。CLI 新增 `--source-title/--category/--allow-risk`。
+- **② 人工补值清单**：从复制历史行「保质期,生产企业名称」未填写解析属性名，`build_manual_attribute_list` 写 `manual-attributes.json`，**值一律 null、来源标「人工填写」**，不替人猜。`_readback_only` 发现新增行时自动产出并附进结果。真实产物已生成在 `ds-final` 任务目录（2 条）。
+- **③ 终态改名 `verified` → `copy_confirmed`**：旧终态要的「SKU 总数」「审核状态」在官方编辑页**结构上不存在**（不是没抓到），规格名还常被妙手改写 → 永远不可达。新终态只声明能证明的，并新增**可自动判定的强证据**：每个 SKU 的 `售价 − (源价×倍数+加价)` 差额相同且非负（=运费）。规格名按**价格排序做位置对应**，不按名字匹配。真实数据 25.8→85.88 / 43.8→139.88，差额都是 **3.48**。报告分 `verified_aspects`(4) / `unverified_aspects`(3)，后者如实交人工、不阻断。
+- **真跑验证**：
+  - 旧任务 `dropship-922368518409-eea919c37defc94b` 重跑 apply → **`copy_confirmed`**，运费 3.48，4 条已验证 / 3 条未验证（SKU总数、审核状态、规格名改写）
+  - 高风险标题 prepare → `risk: high / basis: keyword_heuristic / action: block`；apply → **`dropship_category_risk`，未点复制、未创建商品**
+  - 真实历史行生成 `manual-attributes.json`：保质期、生产企业名称，值均为 null
+- **兼容**：`WRITE_FORBIDDEN_STAGES` 与 `record_copy_observation` 仍接受旧 `verified`，历史任务不失效；终态不可回退。
+- **边界**：类目白名单目前只有一条实测类目 + 关键词兜底，扩展应基于新观测不要猜；`copy_confirmed` **不表示可售/已审核/已上架**，只表示「复制产生了这个商品且定价符合公式」。
+- 文档 `docs/dropship-policy.md`。**验证**：685 Python（189.36s，新增 12 项）+ 101 JS + 26/26 Node。提交 `06b924d`。
+
 ### T-20261112-006 · 194-76 · 铺货端到端闭环真跑通（解锁自动复制）
 
 - 状态：**done**。Agent workbuddy，2026-11-12 凌晨。**未调用 Codex**（用户要求自己干到底）。
