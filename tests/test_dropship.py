@@ -732,3 +732,145 @@ def test_source_sku_reader_rejects_a_malformed_offer_url():
     with pytest.raises(DoudianError, match='规范的'):
         DropshipPages(bridge).read_source_skus(
             offer_url='https://detail.1688.com/weird/965251097615.html')
+
+
+# ---------- 真实闭环跑出来的页面细节 ----------
+
+def test_polling_stops_immediately_when_counters_are_present():
+    """跳过为 0 时计数器被隐藏，适配器会把它规范成 '0'；
+    轮询见到两个计数齐全就应立即返回，不再空转到超时。
+    """
+    from doudian_auto.dropship import _wait_for_fetch_result
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+
+        def read_fetch_result(self):
+            self.calls += 1
+            return {'status': 'ok', 'success_count': '1',
+                    'skipped_count': '0', 'skipped_inferred': True,
+                    'page_url': 'https://v2-dd.chengji-inc.com/move/move'}
+
+    bridge = Bridge()
+    result = _wait_for_fetch_result(bridge, attempts=5, interval=0)
+    assert bridge.calls == 1
+    assert result['skipped_count'] == '0'
+    assert not result.get('timed_out')
+
+
+def test_polling_aborts_when_the_page_identity_changes():
+    """轮询期间页面被切走，必须停下，不能把别处的计数当成本次结果。"""
+    from doudian_auto.dropship import _wait_for_fetch_result
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+
+        def read_fetch_result(self):
+            self.calls += 1
+            return {'status': 'ok', 'success_count': None,
+                    'skipped_count': None,
+                    'page_url': 'A' if self.calls == 1 else 'B'}
+
+    result = _wait_for_fetch_result(Bridge(), attempts=5, interval=0)
+    assert result.get('timed_out') is True
+    assert '页面身份变化' in result.get('reason', '')
+
+
+def test_filtered_baseline_is_only_complete_when_total_equals_matched():
+    """筛选态基线必须满足：筛选值==本来源，且「共 N 条」==匹配行数。"""
+    complete = {'filter_value': '922368518409', 'total_records': 0,
+                'matched_rows': 0, 'baseline_complete': True}
+    assert complete['baseline_complete'] is True
+    incomplete = {'filter_value': '999999999999', 'total_records': 1,
+                  'matched_rows': 0, 'baseline_complete': False}
+    assert incomplete['baseline_complete'] is False
+
+
+def test_the_live_run_landed_at_verification_pending_not_verified(tmp_path):
+    """草稿箱商品的规格名被妙手改写，核验必须停在待核验，不假装成功。"""
+    job = _job(tmp_path, stage='copied')
+    write_json(job / 'state.json',
+               {'stage': 'copied', 'target_product_id': '3853482303460343870',
+                'expected_skus': {'生物酶除臭剂【2500ml】送喷壶': '25.8',
+                                  '生物酶除臭剂【5000ml】送喷壶': '43.8'}})
+    result = verify_target_readback(
+        job, product_id='3853482303460343870',
+        sku_rows=[{'sku': '2500ml（生物酶除臭剂）', 'price': '85.88'},
+                  {'sku': '5000ml（生物酶除臭剂）', 'price': '139.88'}],
+        sku_total_count=None, price_progress=100, review_status=None)
+    assert result['stage'] == 'verification_pending'
+    assert '缺少规格' in result['reason']
+    assert '审核状态' in result['reason']
+
+
+# ---------- 真实闭环跑出来的页面细节 ----------
+
+def test_polling_stops_immediately_when_counters_are_present():
+    """跳过为 0 时计数器被隐藏，适配器会把它规范成 '0'；
+    轮询见到两个计数齐全就应立即返回，不再空转到超时。
+    """
+    from doudian_auto.dropship import _wait_for_fetch_result
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+
+        def read_fetch_result(self):
+            self.calls += 1
+            return {'status': 'ok', 'success_count': '1',
+                    'skipped_count': '0', 'skipped_inferred': True,
+                    'page_url': 'https://v2-dd.chengji-inc.com/move/move'}
+
+    bridge = Bridge()
+    result = _wait_for_fetch_result(bridge, attempts=5, interval=0)
+    assert bridge.calls == 1
+    assert result['skipped_count'] == '0'
+    assert not result.get('timed_out')
+
+
+def test_polling_aborts_when_the_page_identity_changes():
+    """轮询期间页面被切走，必须停下，不能把别处的计数当成本次结果。"""
+    from doudian_auto.dropship import _wait_for_fetch_result
+
+    class Bridge:
+        def __init__(self):
+            self.calls = 0
+
+        def read_fetch_result(self):
+            self.calls += 1
+            return {'status': 'ok', 'success_count': None,
+                    'skipped_count': None,
+                    'page_url': 'A' if self.calls == 1 else 'B'}
+
+    result = _wait_for_fetch_result(Bridge(), attempts=5, interval=0)
+    assert result.get('timed_out') is True
+    assert '页面身份变化' in result.get('reason', '')
+
+
+def test_filtered_baseline_is_only_complete_when_total_equals_matched():
+    """筛选态基线必须满足：筛选值==本来源，且「共 N 条」==匹配行数。"""
+    complete = {'filter_value': '922368518409', 'total_records': 0,
+                'matched_rows': 0, 'baseline_complete': True}
+    assert complete['baseline_complete'] is True
+    incomplete = {'filter_value': '999999999999', 'total_records': 1,
+                  'matched_rows': 0, 'baseline_complete': False}
+    assert incomplete['baseline_complete'] is False
+
+
+def test_the_live_run_landed_at_verification_pending_not_verified(tmp_path):
+    """草稿箱商品的规格名被妙手改写，核验必须停在待核验，不假装成功。"""
+    job = _job(tmp_path, stage='copied')
+    write_json(job / 'state.json',
+               {'stage': 'copied', 'target_product_id': '3853482303460343870',
+                'expected_skus': {'生物酶除臭剂【2500ml】送喷壶': '25.8',
+                                  '生物酶除臭剂【5000ml】送喷壶': '43.8'}})
+    result = verify_target_readback(
+        job, product_id='3853482303460343870',
+        sku_rows=[{'sku': '2500ml（生物酶除臭剂）', 'price': '85.88'},
+                  {'sku': '5000ml（生物酶除臭剂）', 'price': '139.88'}],
+        sku_total_count=None, price_progress=100, review_status=None)
+    assert result['stage'] == 'verification_pending'
+    assert '缺少规格' in result['reason']
+    assert '审核状态' in result['reason']

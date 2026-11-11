@@ -84,14 +84,17 @@ const historyRows = [
     '2026-10-24 16:36 商品ID： 3850072322857894188 已下架 审核通过 销量：0',
     '', '商品快速编辑 去抖店编辑 更多']),
 ];
+// 复制历史页的「来源ID」筛选框：适配器要求处在按本来源筛选的状态
+const sourceFilter = {name: 'sourceItemId', value: '965251097615'};
 globalThis.document = {
   querySelectorAll: sel => {
     if (sel === 'div.pro-table-custom-body-row') return historyRows;
+    if (sel === 'input[name="sourceItemId"]') return [sourceFilter];
     // tr 里只有日历残留——这正是旧实现返回 0 行的原因
     if (sel === 'tr') return [{innerText: '日一二三四五六'}];
     return [];
   },
-  body: {innerText: ''},
+  body: {innerText: '共 1 条'},
 };
 """
 
@@ -185,6 +188,48 @@ STUB_MOVE_TWO = STUB_MOVE_OK.replace('跳过： 0 详情 成功： 1', '跳过�
 
 # 商品上货页：成功 1 / 跳过 1（成功数对但有跳过，仍不许复制）
 STUB_MOVE_SKIPPED = STUB_MOVE_OK.replace('跳过： 0 详情 成功： 1', '跳过： 1 详情 成功： 1')
+
+# 结果页：抓取成功、跳过为 0（此时页面把「跳过」计数器整个隐藏）
+STUB_MOVE_CLEAN = STUB_MOVE_OK.replace(
+    '跳过： 0 详情 成功： 1', '成功： 1')
+
+# 复制历史页：筛选表单
+STUB_HISTORY_FILTER = r"""
+const rect = () => ({width: 200, height: 30});
+class HTMLInputElement {
+  constructor() {
+    this.name = 'sourceItemId';
+    this.dispatchEvent = () => {};
+    this.getBoundingClientRect = rect;
+  }
+}
+Object.defineProperty(HTMLInputElement.prototype, 'value', {
+  set(v) { this._value = v; }, get() { return this._value; },
+});
+globalThis.window = {HTMLInputElement};
+globalThis.Event = class Event { constructor(t, o) { this.type = t; this.options = o; } };
+const filterInput = new HTMLInputElement();
+const queryBtn = {innerText: '查询', click: () => {}, getBoundingClientRect: rect};
+globalThis.document = {
+  querySelectorAll: sel => {
+    if (sel === 'input[name="sourceItemId"]') return [filterInput];
+    if (sel === 'button') return [queryBtn];
+    return [];
+  },
+  body: {innerText: '共 0 条'},
+};
+"""
+
+# 筛选后「共 0 条」、DOM 无行 —— 基线空但完整
+STUB_HISTORY_EMPTY = STUB_HISTORY.replace(
+    "if (sel === 'div.pro-table-custom-body-row') return historyRows;",
+    "if (sel === 'div.pro-table-custom-body-row') return [];"
+).replace("body: {innerText: '共 1 条'}", "body: {innerText: '共 0 条'}"
+).replace("value: '965251097615'", "value: '922368518409'")
+
+# 筛选框里是别的来源 —— 基线必须判无效
+STUB_HISTORY_WRONG_FILTER = STUB_HISTORY.replace(
+    "body: {innerText: '共 1 条'}", "body: {innerText: '共 1 条'}")
 
 # 1688 来源页：规格选择区
 # 这段结构是从实抓页面抄的：div.module-od-sku-selection > div.expand-view-item，
@@ -498,6 +543,87 @@ globalThis.document = {
                        check_source_wrong_offer,
                        page=('detail.1688.com', '/offer/965251097615.html', ''),
                        stub=STUB_SOURCE))
+
+    # ---------- 筛选态历史：基线可证明完整 ----------
+    def check_filter(d):
+        return d.get('status') == 'ok' and d.get('value') == '922368518409'
+
+    results.append(run('filter_history_by_source',
+                       extract(pages.filter_history_by_source,
+                               {'source_product_id': '922368518409'}),
+                       check_filter,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY_FILTER))
+
+    def check_baseline(d):
+        """筛选后 total==matched 才承认基线完整。"""
+        return (d.get('status') == 'ok' and d.get('baseline_complete') is True
+                and d.get('total_records') == 0 and d.get('matched_rows') == 0
+                and d.get('baseline_keys') == [])
+
+    results.append(run('read_history_baseline_filtered_empty',
+                       extract(pages.read_history_baseline,
+                               {'source_product_id': '922368518409'}),
+                       check_baseline,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY_EMPTY))
+
+    def check_baseline_incomplete(d):
+        """筛选框不是本任务来源时必须判无效，不能拿别人的结果当基线。"""
+        return (d.get('status') == 'ok' and d.get('baseline_complete') is False
+                and '筛选框' in (d.get('completeness_reason') or ''))
+
+    results.append(run('read_history_baseline_wrong_filter',
+                       extract(pages.read_history_baseline,
+                               {'source_product_id': '922368518409'}),
+                       check_baseline_incomplete,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY_WRONG_FILTER))
+
+    # ---------- 结果页：跳过为 0 时计数器被隐藏 ----------
+    def check_skip_inferred(d):
+        return (d.get('status') == 'ok' and d.get('success_count') == '1'
+                and d.get('skipped_count') == '0'
+                and d.get('skipped_inferred') is True)
+
+    results.append(run('read_fetch_result_skip_counter_hidden',
+                       extract(pages.read_fetch_result, {}), check_skip_inferred,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_MOVE_CLEAN))
+
+    def check_next_clean(d):
+        """跳过计数器隐藏、但成功 1 时应允许点复制。"""
+        return d.get('status') == 'ok' and d.get('clicked') == '下一步: 开始复制'
+
+    results.append(run('click_start_copy_allows_hidden_zero_skip',
+                       extract(pages.click_start_copy, {'expected_success': 1}),
+                       check_next_clean,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_MOVE_CLEAN))
+
+    # ---------- 历史读取：必须处在筛选态、且只认基线之后的新行 ----------
+    def check_history_baseline_excluded(d):
+        return d.get('status') == 'ok' and d.get('product_id') == PID
+
+    results.append(run('read_history_product_id_excludes_baseline',
+                       extract(pages.read_history_product_id,
+                               {'source_product_id': SOURCE_ID,
+                                'baseline_keys': [SOURCE_ID + '@3850072322857894188']}),
+                       check_history_baseline_excluded,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY))
+
+    def check_history_not_filtered(d):
+        return (d.get('status') == 'layout_changed'
+                and d.get('reason') == 'history_not_filtered_for_source')
+
+    results.append(run('read_history_product_id_requires_source_filter',
+                       extract(pages.read_history_product_id,
+                               {'source_product_id': '999999999999',
+                                'baseline_keys': []}),
+                       check_history_not_filtered,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY))
 
     # ---------- read_review_status ----------
     def check_review(d):

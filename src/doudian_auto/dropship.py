@@ -666,6 +666,26 @@ def _wait_for_fetch_result(pages, *, attempts=12, interval=4):
     return last
 
 
+def _filtered_history_baseline(pages, source_id, *, attempts=6, interval=3):
+    """按来源 ID 筛选历史，再轮询等筛选结果稳定，取可证明完整的基线。
+
+    不筛选时页面「共 59 条」而虚拟滚动只挂载 8 行，基线无法证明完整。
+    筛选后通常只有 0～2 条，DOM 与分页总数能对齐。
+    """
+    from .dropship_pages import HISTORY_PATH
+
+    pages.navigate_miaoshou(HISTORY_PATH)
+    time.sleep(SETTLE_SECONDS)
+    pages.filter_history_by_source(source_product_id=source_id)
+    last = {}
+    for _ in range(attempts):
+        time.sleep(interval)
+        last = pages.read_history_baseline(source_product_id=source_id)
+        if last.get('baseline_complete'):
+            return last
+    return last
+
+
 def _stage_copy(args, job, state, manifest, pages):
     """贴链接 → 抓取 → 落复制意图 → 点复制。"""
     from .dropship_pages import HISTORY_PATH, MOVE_PATH
@@ -684,10 +704,9 @@ def _stage_copy(args, job, state, manifest, pages):
         raise DoudianError('dropship_source_sku_missing',
                            '来源商品没有读到规格，无法建立预期。')
 
-    # 2) 采历史基线：点击复制前已有的行
-    pages.navigate_miaoshou(HISTORY_PATH)
-    time.sleep(SETTLE_SECONDS)
-    baseline = pages.read_history_baseline(source_product_id=source_id)
+    # 2) 采历史基线：先按来源筛选，让本来源的行全部进视口，
+    #    再用「共 N 条」与匹配行数证明基线完整
+    baseline = _filtered_history_baseline(pages, source_id)
     require_no_pending_history(job, baseline.get('pending_rows'))
     # 虚拟滚动只渲染当前视口的行。页面写「共 N 条」而 DOM 只有少数行时，
     # 不能把这几行当完整基线——没看到的那 51 条里可能就有本来源的旧记录，
@@ -695,8 +714,9 @@ def _stage_copy(args, job, state, manifest, pages):
     if not baseline.get('baseline_complete'):
         raise DoudianError(
             'dropship_baseline_incomplete',
-            f"复制历史共 {baseline.get('total_records')} 条，当前只渲染 "
-            f"{baseline.get('rendered_rows')} 行；无法证明基线完整，拒绝复制。")
+            f"按来源筛选后共 {baseline.get('total_records')} 条，匹配 "
+            f"{baseline.get('matched_rows')} 行；"
+            f"{baseline.get('completeness_reason')}，拒绝复制。")
 
     # 3) 贴链接并抓取。抓取是异步的：点完按钮后结果页要过一会儿才有计数器，
     #    所以要轮询等它出现，而不是读一次就下结论。
@@ -743,10 +763,14 @@ def _readback_only(args, job, state, manifest):
 
     target_id = state.get('target_product_id')
     if not target_id:
-        # 还没有目标商品 ID：读复制历史，看这次复制是否其实已经落地
+        # 还没有目标商品 ID：先按来源筛选历史，再找基线之后新增的那一行
         pages.navigate_miaoshou(HISTORY_PATH)
+        time.sleep(SETTLE_SECONDS)
+        pages.filter_history_by_source(source_product_id=manifest['source_product_id'])
+        time.sleep(4)
         history = pages.read_history_product_id(
-            source_product_id=manifest['source_product_id'])
+            source_product_id=manifest['source_product_id'],
+            baseline_keys=state.get('history_baseline') or [])
         result['history'] = history
         # 必须传稳定键 history_row_key：基线里存的是 <源ID>@<商品ID>，
         # 拿整段行文本去比永远对不上，基线检查会被静默绕过。
@@ -762,6 +786,9 @@ def _readback_only(args, job, state, manifest):
 
     # 已有目标商品 ID：读官方页 SKU 与审核状态，原样报告
     pages.navigate_official(target_id)
+    # 编辑页是重前端页面：导航返回后 DOM 还没渲染出 SKU 表，
+    # 立刻读会得到「0 行」并被误报成 layout_changed。实测这个页面需要十几秒。
+    time.sleep(SETTLE_SECONDS)
     skus = pages.read_sku_prices(product_id=target_id)
     review = pages.read_review_status(product_id=target_id)
     result['sku_rows'] = skus.get('sku_rows')

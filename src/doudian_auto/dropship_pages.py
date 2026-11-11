@@ -346,12 +346,19 @@ const WS=String.fromCharCode(32,9,10,13,12288,160);
 // 空白集合要放进字符类里；直接拼 WS+'*' 会被当成「空白串重复」而不是「空白之一」
 const num=(label)=>{const m=t.match(new RegExp(label+'[:：]['+WS+']*([0-9]+)'));
  return m?m[1]:null;};
-const success=num('成功'), skipped=num('跳过');
+const success=num('成功'), skippedRaw=num('跳过');
 const hasList=t.indexOf('商品列表')>=0;
+const allSkipped=t.indexOf('已全部被跳过或抓取失败')>=0;
+// 实抓：跳过为 0 时页面把「跳过」计数器整个隐藏了，只显示「成功：N」。
+// 所以缺失不等于「未知」——在成功数已出现、且没有「已全部被跳过」提示时，
+// 可以把跳过高置信度地规范成 0，并如实标注这是推断值。
+// 但成功数还没有时绝不推断，否则会把未加载完的页面当成一次成功抓取。
+const skipped=(skippedRaw===null && success!==null && !allSkipped) ? '0' : skippedRaw;
+const skippedInferred=(skippedRaw===null && skipped==='0');
 const nextStep=[...document.querySelectorAll('button')]
  .filter(x=>(x.innerText||'').trim()==='下一步: 开始复制');
 return {status:'ok',has_list:hasList,page_url:u.href,
- success_count:success,skipped_count:skipped,
+ success_count:success,skipped_count:skipped,skipped_inferred:skippedInferred,
  // 实测结果页没有独立的「抓取失败」计数器，抓取失败混在跳过里。
  // failed_count 恒为 null 就是如实反映——编一个数字出来才是误导。
  failed_count:null,
@@ -383,7 +390,9 @@ if(t.indexOf('商品列表')<0)return {status:'layout_changed',reason:'result_li
 const WS=String.fromCharCode(32,9,10,13,12288,160);
 const num=(label)=>{const m=t.match(new RegExp(label+'[:：]['+WS+']*([0-9]+)'));
  return m?m[1]:null;};
-const success=num('成功'), skipped=num('跳过');
+const success=num('成功'), skippedRaw=num('跳过');
+const allSkipped=t.indexOf('已全部被跳过或抓取失败')>=0;
+const skipped=(skippedRaw===null && success!==null && !allSkipped) ? '0' : skippedRaw;
 // 实测结果页只有「跳过」和「成功」两个计数器，没有单独的「抓取失败」计数。
 // 抓取失败的商品会混在「跳过」里，页面另给一句
 // 「待搬家的商品已全部被跳过或抓取失败，请查看详情」。
@@ -410,7 +419,7 @@ return {status:'ok',clicked:'下一步: 开始复制',
 
     # ---------- 复制历史页 ----------
 
-    def read_history_product_id(self, *, source_product_id):
+    def read_history_product_id(self, *, source_product_id, baseline_keys=None):
         """按来源 ID 在复制历史里定位本次铺货的那一行，读目标商品 ID。
 
         不能要求「含商品ID的行唯一」：历史里会累积多次铺货记录，实测今天就有多条。
@@ -434,16 +443,28 @@ const p=__PAYLOAD__;
 // 来源 ID 必须是纯数字：它会被拼进正则，带正则字符就能改变匹配含义。
 if(!/^[0-9]{1,24}$/.test(String(p.source_product_id)))
  return {status:'layout_changed',reason:'source_id_invalid'};
+// 必须处在按本来源筛选的状态，否则读到的是全表一屏，可能漏掉本次新增行
+const filterBoxes=[...document.querySelectorAll('input[name="sourceItemId"]')];
+if(filterBoxes.length!==1)
+ return {status:'layout_changed',reason:'source_id_input',count:filterBoxes.length};
+if((filterBoxes[0].value||'')!==String(p.source_product_id))
+ return {status:'layout_changed',reason:'history_not_filtered_for_source'};
 // 空白变体：半角/全角空格、制表、换行，用码点拼，避免转义层级错误
 const WS=String.fromCharCode(32,9,10,13,12288,160);
 // 末尾加数字负向边界：短 ID 不能命中长 ID 的前缀
 const srcRe=new RegExp('源ID[:：]['+WS+']*'+p.source_product_id+'(?![0-9])');
 const idRe=new RegExp('商品ID[:：]['+WS+']*([0-9]{16,22})');
 // 行容器是虚拟滚动表格的 div 行，不是 tr：这页 tr 里只有日历残留
+const baseline=new Set(p.baseline_keys||[]);
 const rows=[...document.querySelectorAll('div.pro-table-custom-body-row')]
  .filter(x=>srcRe.test(x.innerText||''))
- .filter(x=>idRe.test(x.innerText||''));
-if(rows.length!==1)return {status:'layout_changed',reason:'history_row',count:rows.length};
+ .filter(x=>idRe.test(x.innerText||''))
+ .filter(x=>{
+   const m=(x.innerText||'').match(idRe);
+   const key=String(p.source_product_id)+'@'+(m?m[1]:'');
+   return !baseline.has(key);           // 只认基线之后新增的行
+ });
+if(rows.length!==1)return {status:'layout_changed',reason:'new_history_row',count:rows.length};
 const match=(rows[0].innerText||'').match(idRe);
 if(!match)return {status:'layout_changed',reason:'product_id_missing'};
 // row_key 是稳定的行标识：源ID + 商品ID。
@@ -451,16 +472,52 @@ if(!match)return {status:'layout_changed',reason:'product_id_missing'};
 const rowKey=p.source_product_id+'@'+match[1];
 return {status:'ok',product_id:match[1],row_key:rowKey,
  row_text:(rows[0].innerText||'').trim().slice(0,400)};
+})()""".replace('__PAYLOAD__', _js({
+    'source_product_id': str(source_product_id),
+    'baseline_keys': [str(k) for k in (baseline_keys or [])],
+}))
+        return self._evaluate(code, page_name='复制历史页')
+
+    def filter_history_by_source(self, *, source_product_id):
+        """在复制历史页按来源 ID 筛选，让本来源的所有行都进视口。
+
+        实抓确认：筛选框是 input[name="sourceItemId"]（label 是「来源ID」），
+        按钮是「查询」。筛选后页面分页器会写「共 N 条」，且表格只留本来源的行。
+
+        这一步是**基线可证明完整**的前提：不筛选时页面「共 59 条」而虚拟滚动
+        只挂载 8 行，51 条没渲染，本来源的旧记录可能藏在里面。
+        """
+        code = """(()=>{const u=new URL(location.href);
+if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move_history')
+ return {status:'wrong_page'};
+const p=__PAYLOAD__;
+const vis=e=>{const q=e.getBoundingClientRect();return q.width>0&&q.height>0;};
+const boxes=[...document.querySelectorAll('input[name="sourceItemId"]')].filter(vis);
+if(boxes.length!==1)return {status:'layout_changed',reason:'source_id_input',count:boxes.length};
+const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+setter.call(boxes[0],String(p.source_product_id));
+boxes[0].dispatchEvent(new Event('input',{bubbles:true}));
+boxes[0].dispatchEvent(new Event('change',{bubbles:true}));
+if(boxes[0].value!==String(p.source_product_id))
+ return {status:'readback_mismatch',reason:'source_id_value'};
+const btns=[...document.querySelectorAll('button')].filter(vis)
+ .filter(x=>(x.innerText||'').trim()==='查询');
+if(btns.length!==1)return {status:'layout_changed',reason:'query_button',count:btns.length};
+btns[0].click();
+return {status:'ok',value:boxes[0].value,clicked:'查询'};
 })()""".replace('__PAYLOAD__', _js({'source_product_id': str(source_product_id)}))
         return self._evaluate(code, page_name='复制历史页')
 
     def read_history_baseline(self, *, source_product_id=None):
-        """读复制历史里本任务来源的行，作为点击复制前的基线。
+        """读**筛选态**复制历史里本任务来源的行，作为点击复制前的基线。
 
-        用途：复制之后只认基线里没有的新行。少了这一步，
-        「历史里本来就有的那条记录」会被当成本次复制成功。
+        调用前必须先 `filter_history_by_source`。本方法只读取、不再自己筛选：
+        它会校验筛选框里的值确实等于本任务来源，否则拒绝承认基线完整。
 
-        只收本任务来源的行：不同任务之间不该互相干扰。
+        完整性判据：页面分页器「共 N 条」必须等于 DOM 中源 ID 匹配的行数。
+        筛选后通常只有 0～2 行，虚拟滚动不再是障碍；对不上就说明筛选尚未
+        生效或结果还在刷新，一律 `baseline_complete=false`，由编排层拒绝复制。
+
         同时收「只有源ID、还没商品ID」的行——那正是复制进行中的形态，
         漏掉它就分不清「本次还在复制」和「本次已复制完」。
         """
@@ -468,6 +525,11 @@ return {status:'ok',product_id:match[1],row_key:rowKey,
 if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move_history')
  return {status:'wrong_page'};
 const p=__PAYLOAD__;
+// 必须处在按本来源筛选的状态，否则读到的是全表（虚拟滚动只给一屏）
+const filterBoxes=[...document.querySelectorAll('input[name="sourceItemId"]')];
+if(filterBoxes.length!==1)
+ return {status:'layout_changed',reason:'source_id_input',count:filterBoxes.length};
+const filterValue=filterBoxes[0].value||'';
 const WS=String.fromCharCode(32,9,10,13,12288,160);
 const WSRE2=new RegExp('['+WS+']+','g');
 const srcRe=new RegExp('源ID[:：]['+WS+']*([0-9]{1,24})(?![0-9])');
@@ -491,10 +553,20 @@ const bodyText=(document.body.innerText||'').replace(WSRE2,' ');
 const tm=bodyText.match(new RegExp('共['+WS+']*([0-9]+)['+WS+']*条'));
 const total=tm?Number(tm[1]):null;
 const rendered=allRows.length;
-const complete=(total!==null && rendered>=total);
+// 匹配行是本来源真正被渲染出来的数据行
+const matched=allRows.filter(row=>{
+ const sm=(row.innerText||'').match(srcRe);
+ return sm && (!p.source_product_id || sm[1]===String(p.source_product_id));
+}).length;
+const filterOk=(!p.source_product_id || filterValue===String(p.source_product_id));
+const complete=(total!==null && matched===total && filterOk);
 return {status:'ok',baseline_keys:[...new Set(keys)],pending_rows:srcOnly,
- total_records:total,rendered_rows:rendered,baseline_complete:complete,
- completeness_reason: complete?'页面记录已全部渲染':'虚拟滚动只渲染了部分记录，基线不完整'};
+ filter_value:filterValue,total_records:total,rendered_rows:rendered,
+ matched_rows:matched,baseline_complete:complete,
+ completeness_reason: !filterOk?'筛选框不是本任务来源，基线无效'
+   :(total===null?'读不到页面总数'
+   :(matched!==total?'筛选结果与渲染行数不一致，结果可能还在刷新'
+   :'按来源筛选后记录已全部渲染'))};
 })()""".replace('__PAYLOAD__', _js({'source_product_id': str(source_product_id or '')}))
         return self._evaluate(code, page_name='复制历史页')
 
