@@ -127,6 +127,19 @@ class MiaoshouEditor:
         return self.bridge.evaluate(VISIBLE_DOM + '(' + json.dumps(op) + ',' +
                                     json.dumps(params, ensure_ascii=True) + ')')
 
+    def supplier_link(self, product_id, *, timeout=30):
+        """Return the 1688 offer URL for one product row, or None when it has none.
+
+        The shop is stocked from 1688, so the supplier page is where a missing category
+        attribute can actually be read. Requiring exactly one link prevents picking a
+        neighbouring row's offer, which would attribute another product's spec.
+        """
+        result = self.bridge.wait(
+            lambda: self._visible_dom('supplier_link', product_id),
+            lambda value: isinstance(value, dict) and value.get('count') is not None,
+            '妙手商品行的供应商链接未定位。', seconds=timeout)
+        return result.get('url') if result.get('count') == 1 else None
+
     def _mark_control(self, op, product_id=None):
         state = self.bridge.wait(lambda: self._visible_dom(op, product_id),
             lambda value: isinstance(value, dict) and value.get('count') == 1,
