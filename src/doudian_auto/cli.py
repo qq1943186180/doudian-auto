@@ -9,7 +9,7 @@ from . import __version__
 from .bridge import DEFAULT_ENDPOINT, Bridge, is_native_endpoint, normalize_endpoint
 from .editor import Editor
 from .errors import DoudianError
-from .jobs import DATA_ROOT, Lock, load_job, prepare, read_json, resolve_product, write_json
+from .jobs import DATA_ROOT, Lock, load_job, prepare, process_alive, read_json, resolve_product, write_json
 from .workflow import Workflow
 
 
@@ -248,37 +248,6 @@ def parser():
     return root
 
 
-def process_alive(pid):
-    if pid <= 0:
-        return True
-    if os.name == 'nt':
-        import ctypes
-        from ctypes import wintypes
-        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel.OpenProcess.restype = wintypes.HANDLE
-        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel.GetExitCodeProcess.restype = wintypes.BOOL
-        handle = kernel.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return ctypes.get_last_error() != 87  # Access denied is NOT proof of exit.
-        try:
-            exit_code = wintypes.DWORD()
-            if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return True
-            return exit_code.value == 259
-        finally:
-            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-            kernel.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-
-
 def unlock(job=None):
     paths = [DATA_ROOT / 'browser.lock']
     if job:
@@ -295,7 +264,12 @@ def unlock(job=None):
             raise DoudianError('busy', f'锁所属进程 {pid} 仍在运行，未删除。')
         # Recheck bytes immediately before removing, rather than delete a replaced lock.
         if path.read_text().strip() == str(pid):
-            path.unlink()
+            try:
+                path.unlink()
+            except (OSError, SystemExit) as exc:
+                # A blocked delete must not leave the caller without a reason.
+                raise DoudianError('unlock_failed',
+                                   f'锁文件未能删除：{path}（被外部删除保护拦截）。请稍后重试。') from exc
             removed.append(str(path))
     return {'removed': removed}
 
@@ -907,10 +881,13 @@ def run(args):
                 current = (control.get('current') or '').strip()
                 preview[name] = {
                     'kind': control.get('kind'), 'current': current, 'wanted': value,
-                    'writable': control.get('kind') in ('text', 'single')
+                    'writable': control.get('kind') in ('text', 'single', 'measure')
                                 and not control.get('disabled')
                                 and current in ('', '请选择', value),
                 }
+                if control.get('kind') == 'measure':
+                    preview[name]['number_value'] = control.get('number_value')
+                    preview[name]['unit_value'] = control.get('unit_value')
             return {'dry_run': True, 'product_id': args.product_id, 'shop': args.shop,
                     'attributes': preview,
                     'next': '确认无误后加 --apply 填写并发布一次；受理后会重新打开核验。'}

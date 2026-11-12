@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 from .errors import DoudianError
-from .jobs import Lock
+from .jobs import TransportLock
 from .miaoshou_editor import VISIBLE_DOM
 
 
@@ -421,7 +421,7 @@ def recover_stalled_read(bridge, proof_path):
     state_path = root / 'state.json'
     proof_path = Path(proof_path).resolve()
 
-    with Lock(root / 'transport.lock'):
+    with TransportLock(root / 'transport.lock'):
         proof, proof_hash = _read_json(proof_path)
         _validate_proof(proof, session)
         inputs = _read_live_inputs(root, proof, state_path)

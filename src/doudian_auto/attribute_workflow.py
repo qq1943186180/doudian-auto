@@ -156,7 +156,9 @@ def publish_attributes(editor, identity, values, *, root=None, queue_check=None)
         controls = {name: _control(editor, identity, name) for name in values}
         for name, control in controls.items():
             existing = (control.get('current') or '').strip()
-            if control.get('kind') not in ('text', 'single') or control.get('disabled') or (existing not in ('', '请选择', values[name])):
+            # `measure` is a number plus a unit dropdown in one box; its composed
+            # value is read as "12个月", so the same emptiness rule applies.
+            if control.get('kind') not in ('text', 'single', 'measure') or control.get('disabled') or (existing not in ('', '请选择', values[name])):
                 raise DoudianError('attribute_control_unsupported', '目标属性已有不同值、被禁用或控件尚不支持，未填写。')
         if all((controls[k].get('current') or '').strip() == v for k, v in values.items()):
             save('saved', noop=True)

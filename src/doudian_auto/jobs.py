@@ -149,19 +149,149 @@ def load_job(job):
     return data
 
 
+def process_alive(pid):
+    """PID 是否仍在运行。
+
+    无法证明进程已退出时一律按“仍在运行”处理：宁可拒绝操作，也不误抢别人的锁。
+    """
+    if pid <= 0:
+        return True
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != 87  # Access denied is NOT proof of exit.
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259
+        finally:
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 class Lock:
+    """排他文件锁，锁文件记录持有者 PID。
+
+    只有已确认退出的进程留下的锁才会被回收，进程仍在运行时绝不抢占。回收用改名
+    而不是删除：改名是一次原子交接，不会被删除动作的外部守卫拦下，交接后旧锁文件
+    里留着的仍是死进程 PID，下次再遇到照旧回收。
+    """
+
     def __init__(self, path):
         self.path = Path(path)
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            self.fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-        except FileExistsError:
-            raise DoudianError('busy', f'已有操作锁：{self.path}。确认旧进程结束后再使用unlock。') from None
+        for attempt in (0, 1):
+            try:
+                self.fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+                break
+            except FileExistsError:
+                if attempt:
+                    raise DoudianError('busy',
+                                       f'已有操作锁：{self.path}。确认旧进程结束后再使用unlock。') from None
+                self._take_over()
         os.write(self.fd, str(os.getpid()).encode())
         return self
 
+    def _take_over(self):
+        """接管一个属于已退出进程的锁。活锁与异常锁一律拒绝。"""
+        try:
+            raw = self.path.read_text(encoding='ascii').strip()
+            pid = int(raw)
+        except (OSError, ValueError):
+            raise DoudianError('invalid_lock',
+                               f'操作锁内容异常：{self.path}。请人工确认后用unlock清理。') from None
+        if process_alive(pid):
+            raise DoudianError('busy', f'已有操作锁：{self.path}（进程 {pid} 仍在运行）。')
+        # 判活期间锁可能被别的进程换掉，换名前再读一次确认内容没变。
+        try:
+            current = self.path.read_text(encoding='ascii').strip()
+        except FileNotFoundError:
+            return
+        if current != str(pid):
+            raise DoudianError('busy', f'已有操作锁：{self.path}（内容已变化，未接管）。')
+        stale = self.path.with_name(f'{self.path.name}.stale-{pid}-{uuid.uuid4().hex[:8]}')
+        try:
+            os.replace(self.path, stale)
+        except OSError:
+            # 改名被拒时退回删除；删除同样失败就保持现状，交给下一次运行再试。
+            try:
+                self.path.unlink()
+            except (OSError, SystemExit):
+                raise DoudianError('busy',
+                                   f'已有操作锁：{self.path}（进程 {pid} 已退出，但接管失败）。') from None
+            return
+        try:
+            stale.unlink()
+        except (OSError, SystemExit):
+            pass  # 旧锁文件清不掉也不影响接管结果。
+
     def __exit__(self, *_):
         os.close(self.fd)
-        self.path.unlink(missing_ok=True)
+        try:
+            self.path.unlink()
+        except (OSError, SystemExit):
+            # 释放被外部守卫拦下时不能把整条流程打断：文件里留的是本进程 PID，
+            # 下一次运行会按“进程已退出”把它回收掉。
+            pass
+
+
+class TransportLock:
+    """OS 级咨询锁：进程退出时由系统自动释放。
+
+    浏览器会话的传输锁每条命令都要进出一次，用文件锁意味着每条命令都要删除一次
+    锁文件；既容易被外部删除守卫拦下，也会把被杀死的进程留下的死锁留给下一次运行。
+    咨询锁由操作系统在进程退出时释放，没有这两种失败模式。
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT)
+        try:
+            if os.fstat(self.fd).st_size == 0:
+                os.write(self.fd, b'0')
+            if os.name == 'nt':
+                import msvcrt
+                os.lseek(self.fd, 0, os.SEEK_SET)
+                msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(self.fd)
+            raise DoudianError('busy',
+                               f'已有操作锁：{self.path}（另一个进程正在使用同一浏览器会话）。') from exc
+        return self
+
+    def __exit__(self, *_):
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                os.lseek(self.fd, 0, os.SEEK_SET)
+                msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            os.close(self.fd)

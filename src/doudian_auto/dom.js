@@ -2,6 +2,37 @@
   const visible = e => !!e && !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
   const all = (selector, root = document) => [...root.querySelectorAll(selector)];
   const text = e => (e?.innerText || '').replace(/\s+/g, ' ').trim();
+  // Read a dropdown's selected label rather than the control's whole text. The
+  // control wraps a hidden option id, so text(sel) yields "466329 免打孔式" and
+  // every readback then looks different from the plain value.
+  const selectLabel = (sel) => {
+    const item = sel.querySelector('.ecom-g-select-selection-item');
+    if (item) return text(item);
+    const holders = [sel.querySelector('.ecom-g-select-selection-overflow'),
+                     sel.querySelector('.ecom-g-select-selector')];
+    for (const h of holders) {
+      if (!h) continue;
+      const t = text(h).replace(/^\s*\d{4,}\s+/, '').trim();
+      if (t) return t;
+    }
+    return text(sel).replace(/^\s*\d{4,}\s+/, '');
+  };
+  // A measure attribute pairs one number input with one unit dropdown inside the
+  // platform's own measure wrapper (measured on 保质期). The unit dropdown always
+  // carries a default label, so the unit alone never means the attribute is
+  // filled -- only the number does. Any other shape stays out of this branch.
+  const measureParts = (box) => {
+    const inputs = [...box.querySelectorAll('input,textarea')].filter(visible);
+    const selects = [...box.querySelectorAll('.ecom-g-select')].filter(visible);
+    const numbers = inputs.filter(x => !['hidden','search','checkbox','radio'].includes(x.type)
+      && !x.readOnly && x.getAttribute('role') !== 'combobox');
+    if (numbers.length !== 1 || selects.length !== 1) return null;
+    if (selects.some(s => /multiple/.test((s.className||'').toString()))) return null;
+    const wrapped = [...box.querySelectorAll('div')].some(d =>
+      /measure/i.test((d.className||'').toString()));
+    if (!wrapped) return null;
+    return {number: numbers[0], select: selects[0]};
+  };
   const body = document.body?.innerText || '';
   const url = new URL(location.href);
   const success = body.includes('商品提交成功');
@@ -249,6 +280,17 @@
       e.closest('[class*="categoryPropertiesItem"]') && !e.querySelector('[attr-field-id]'));
     const categoryAttributes = categoryFields.map(e => {
       const required = all('[class*="required"]', e).some(x => text(x) === '*');
+      // A measure attribute (number + unit) always shows a unit label, because the
+      // platform pre-selects one. Counting that label as the field's value made an
+      // empty shelf life look filled, while the platform's own 必填项进度 said the
+      // opposite. The number is what decides whether the field is filled.
+      const measure = measureParts(e);
+      if (measure) {
+        const number = String(measure.number.value ?? '').trim();
+        const unit = selectLabel(measure.select);
+        return {name:e.getAttribute('attr-field-id'), required,
+          values: number ? [number + unit] : []};
+      }
       const values = all('[class*="select-selection-item"],[class*="Select_value"]', e)
         .filter(visible).map(text).filter(value => value && !/^(请选择|请输入)/.test(value));
       for (const input of all('input,textarea,select', e).filter(visible)) {
@@ -306,37 +348,34 @@
     const textInputs = inputs.filter(x => !['hidden','search','checkbox','radio'].includes(x.type)
       && !x.readOnly && x.getAttribute('role') !== 'combobox');
     const multi = selects.some(s => /multiple/.test((s.className||'').toString()));
-    const kind = textInputs.length === 1 && selects.length === 0 ? 'text'
+    // A measure attribute is a number input plus a unit dropdown. It is written as
+    // two separate steps (fill the number, then pick the unit), so it must not be
+    // described as a plain text box or a plain dropdown.
+    const measure = measureParts(box);
+    const kind = measure ? 'measure'
+      : textInputs.length === 1 && selects.length === 0 ? 'text'
       : selects.length === 1 && textInputs.length === 0 ? (multi ? 'multi' : 'single')
       : 'unknown';
-    // For a select, read the selected item's own label rather than the control's whole
-    // text. The control wraps a hidden option id, so text(selects[0]) yields
-    // "466329 免打孔式" and every readback then looks different from the plain value.
-    const selectedLabel = (sel) => {
-      const item = sel.querySelector('.ecom-g-select-selection-item');
-      if (item) return text(item);
-      const holders = [sel.querySelector('.ecom-g-select-selection-overflow'),
-                       sel.querySelector('.ecom-g-select-selector')];
-      for (const h of holders) {
-        if (!h) continue;
-        const t = text(h).replace(/^\s*\d{4,}\s+/, '').trim();
-        if (t) return t;
-      }
-      return text(sel).replace(/^\s*\d{4,}\s+/, '');
+    const current = measure
+      ? ((measure.number.value || '').trim() ? (measure.number.value || '').trim() + selectLabel(measure.select) : '')
+      : textInputs.length ? (textInputs[0].value || '')
+      : (selects.length ? selectLabel(selects[0]) : '');
+    const mark = (node, attr) => {
+      if (!node) return null;
+      box.querySelectorAll('[' + attr + ']').forEach(e=>e.removeAttribute(attr));
+      node.setAttribute(attr, p.name);
+      return '[' + attr + '="' + p.name + '"]';
     };
-    const current = textInputs.length ? (textInputs[0].value || '')
-      : (selects.length ? selectedLabel(selects[0]) : '');
     return {name:p.name, kind, required:/^\s*[*＊]/.test(label), current:current.slice(0,60),
       disabled: inputs.some(i=>i.disabled),
-      target: textInputs.length ? 'input' : (selects.length ? '.ecom-g-select' : null),
-      // Mark the exact node so the caller can fill or click this one and nothing else.
-      marked: (() => {
-        const node = textInputs.length ? textInputs[0] : (selects.length ? selects[0] : null);
-        if (!node) return null;
-        box.querySelectorAll('[data-doudian-attr]').forEach(e=>e.removeAttribute('data-doudian-attr'));
-        node.setAttribute('data-doudian-attr', p.name);
-        return `[data-doudian-attr="${p.name}"]`;
-      })()};
+      target: measure ? 'measure' : (textInputs.length ? 'input' : (selects.length ? '.ecom-g-select' : null)),
+      // For a measure attribute the two halves are marked separately: the caller
+      // fills the number and then picks the unit, and each step needs its own node.
+      number_value: measure ? (measure.number.value || '').trim() : undefined,
+      unit_value: measure ? selectLabel(measure.select) : undefined,
+      marked: measure ? mark(measure.number, 'data-doudian-attr-number')
+        : mark(textInputs.length ? textInputs[0] : (selects.length ? selects[0] : null), 'data-doudian-attr'),
+      unit_marked: measure ? mark(measure.select, 'data-doudian-attr-unit') : undefined};
   }
   if (op === 'attribute_options') {
     // Read the open dropdown for one attribute and mark the option matching p.value.
@@ -355,6 +394,35 @@
     if (hit.length !== 1) return {error:'option_not_unique', value:p.value, candidates:labels.slice(0,40)};
     hit[0].setAttribute('data-doudian-option', p.value);
     return {ok:true, selector:`[data-doudian-option="${p.value}"]`, candidates:labels.slice(0,40)};
+  }
+  if (op === 'attribute_unit_options') {
+    // Read the unit dropdown of a measure attribute (number + unit in one box).
+    // The dropdown is rendered outside the attribute box, so it is located through
+    // the select's own `aria-controls` listbox id. Taking "the last visible
+    // dropdown" instead would read another attribute's options whenever a second
+    // dropdown happens to be open on the page.
+    const box = all('[attr-field-id]').filter(el =>
+      el.getAttribute('attr-field-id') === p.name &&
+      el.closest('[class*="categoryPropertiesItem"]') &&
+      !el.querySelector('[attr-field-id]') && visible(el))[0];
+    if (!box) return {error:'attribute_not_found', name:p.name};
+    const measure = measureParts(box);
+    if (!measure) return {error:'attribute_not_measure', name:p.name};
+    const search = measure.select.querySelector('input[role="combobox"]');
+    const listId = search ? search.getAttribute('aria-controls') : null;
+    if (!listId) return {error:'unit_dropdown_unbound', name:p.name};
+    const dds = [...document.querySelectorAll('.ecom-g-select-dropdown')]
+      .filter(e => e.getBoundingClientRect().width > 0);
+    const owned = dds.filter(d => d.querySelector('[id="' + listId + '"]'));
+    if (owned.length !== 1) return {error:'unit_dropdown_not_open', name:p.name, count:owned.length};
+    const items = [...owned[0].querySelectorAll('.ecom-g-select-item-option-content')]
+      .filter(e => e.getBoundingClientRect().width > 0);
+    const labels = items.map(e => (e.innerText||'').trim()).filter(Boolean);
+    if (!p.value) return {ok:true, candidates:labels.slice(0,40)};
+    const hit = items.filter(e => (e.innerText||'').trim() === p.value);
+    if (hit.length !== 1) return {error:'option_not_unique', value:p.value, candidates:labels.slice(0,40)};
+    hit[0].setAttribute('data-doudian-unit-option', p.value);
+    return {ok:true, selector:`[data-doudian-unit-option="${p.value}"]`, candidates:labels.slice(0,40)};
   }
   return {error:'unknown_operation'};
 })

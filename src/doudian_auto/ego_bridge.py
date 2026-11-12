@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .bridge import Bridge
 from .errors import DoudianError, WaitingHuman
-from .jobs import DATA_ROOT, Lock
+from .jobs import DATA_ROOT, TransportLock
 
 
 class EgoBridge(Bridge):
@@ -45,8 +45,11 @@ class EgoBridge(Bridge):
             raise DoudianError('ego_operation_unsettled',
                 'Ego上一操作尚未确认结束；未发出新操作，也未重放。请保留任务并核查晚到结果。')
         # The result remains on disk as evidence. Consuming it never replays it or
-        # changes a product's unknown submission state.
-        pending.unlink()
+        # changes a product's unknown submission state. The marker itself is kept
+        # instead of deleted: every browser command would otherwise delete a file,
+        # which both wears out the filesystem and can be blocked mid-run by an
+        # external delete guard. The next command overwrites it.
+        return token
 
     def _run(self, action, args=None):
         executable = shutil.which('ego-browser.cmd') or shutil.which('ego-browser')
@@ -70,7 +73,7 @@ class EgoBridge(Bridge):
             'executionStopped:e.executionStopped,mayHaveLateEffects:e.mayHaveLateEffects,inputDispatched:e.inputDispatched}}),"utf8"); }', encoding='utf-8')
         # No shell interpolation of product text, selectors or code. Never replay this
         # subprocess after timeout: even a failed command may have dispatched a save.
-        with Lock(root / 'transport.lock'):
+        with TransportLock(root / 'transport.lock'):
             self._check_pending(root)
             pending = root / 'pending-command.json'
             pending.write_text(json.dumps({'token': token, 'action': action,
@@ -89,8 +92,10 @@ class EgoBridge(Bridge):
             if not output.is_file():
                 raise DoudianError('ego_transport_unknown', 'Ego未返回操作结果，未重放；请按队列状态核查。')
             result = json.loads(output.read_text(encoding='utf-8'))
-            if (result.get('error') or {}).get('mayHaveLateEffects') is not True:
-                pending.unlink()
+            if (result.get('error') or {}).get('mayHaveLateEffects') is True:
+                # The marker stays on disk so the next round still refuses to run
+                # until this operation is confirmed settled.
+                pass
         if not result.get('ok'):
             error = result.get('error') or {}
             message = str(error.get('message', ''))

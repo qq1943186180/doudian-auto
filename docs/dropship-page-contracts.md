@@ -830,3 +830,83 @@ detailUrls=https%3A%2F%2Fdetail.1688.com%2Foffer%2F671243686759.html%3F...
 
 **三列状态词必须按位置分开**：商品ID 之后是抖店侧，商品ID 之前是妙手侧。
 混在一起统计会得出「未提审+审核通过+已下架」这种三词组合，无从判断谁是谁。
+
+---
+
+## 第十四轮实抓（2026-11-12 深夜）：类目属性控件三形态 + 状态分类 tab + 发布后时间线
+
+### ① 类目属性的三种控件形态
+
+抖店类目必填属性不止「文本」「单选/多选」两种，还有第三种——**数值输入 + 单位下拉的复合控件**。
+实测 `保质期`（类目 `家清纸品>除臭用品>空气清新/净化/芳香剂`）：
+
+```
+div.styles_measureValue__BknXC
+  └ div.styles_measureContainer__AF_AJ
+      └ div.styles_measureTemplate__AfVoo
+          ├ input.ecom-g-input.styles_value__QXqGx   type=text  （数值）
+          └ div.ecom-g-select.ecom-g-select-single    （单位下拉）
+```
+
+- 单位候选实测：`天 / 月 / 年 / 个月`（默认预选 `天`）。
+- 🔴 **平台会预选单位**，所以「单位标签存在」**不等于**该属性已填。判据必须是
+  「**数值非空**」。旧 missing 启发式把预选的「天」当成值 → 漏判；平台自己的必填进度
+  50%（两个必填项缺一）正好证明平台也认为它没填完。
+- 单位下拉用 **portal** 渲染在 body 下，class 相同但不能按 class 定位。精确定位方式：
+  单位 select 内的 combobox input 带 `aria-controls="rc_select_<N>_list"` → 用这个 id
+  找 listbox。新增 op `attribute_unit_options` 读**真实候选**；写单位前必须在候选里
+  校验存在，否则拒绝写。
+- 读回值形态：`number_value` + `unit_value` 组合还原成 `12个月`。
+
+### ② 商品管理页的状态分类 tab（可直接点开核对分类）
+
+tab 的 DOM id 固定，可直接 `document.querySelector('#<id>').click()`：
+
+| tab id | 文案 | 列结构 |
+|---|---|---|
+| `rc-tabs-0-tab-all` | 全部 | 商品信息/价格/总库存/总销量/质量分/**创建时间**/操作 |
+| `rc-tabs-0-tab-onSale` | 售卖中 | 同上 |
+| `rc-tabs-0-tab-sellOut` | 已售罄 | 同上 |
+| `rc-tabs-0-tab-offline` | 已下架 | 同上，但时间列是「**下架时间降序**」 |
+| `rc-tabs-0-tab-forbidden` | 已封禁 (n) | 同上 |
+| `rc-tabs-0-tab-releaseRecord_in_progress` | 审核中 (n) | 商品信息/**审核状态**/**送审时间**/操作 |
+| `rc-tabs-0-tab-releaseRecord_fail` | 审核驳回 (n) | 商品信息/审核状态/**驳回原因**/**送审时间**/**驳回时间**/操作 |
+| `rc-tabs-0-tab-releaseRecord_success` | 审核通过 | 商品信息/审核状态/**送审时间**/**通过时间** |
+
+- 点 tab 会**丢掉 URL 里的 `product_id` 过滤**（URL 变成 `?sov_goodsType=0&tab=...`），
+  所以核对分类时看到的是该分类**全量**行，要按商品 ID 自己筛。
+- 「全部」tab 的时间列是**创建时间**（妙手建品时间），不是状态变更时间；**状态时间线
+  要去「审核通过」tab 看送审/通过时间**。
+
+### ③ 发布后商品的真实状态（本项目商品的共同形态）
+
+实测商品 `3853482303460343870`（2026-11-12）：
+
+| 环节 | 平台记录 |
+|---|---|
+| 妙手建品 | 创建时间 2026/11/12 01:41:35，落在草稿箱「待提交」 |
+| 点「发布商品」 | **送审时间 2026/11/12 16:40:39**，页面出现原文「商品提交成功」 |
+| 平台审核 | **审核通过，通过时间 2026/11/12 16:41:03** |
+| 当前行状态 | 「已下架」，「查看原因」＝「**商家自主下架**」，操作区有「上架」 |
+
+- 同项目另两件（`3853454064050373417`、`3848315275342643596`）形态完全一致：
+  **通过时间 == 下架时间 == 商家自主下架**。所以「发布商品」这条路径的终态是
+  「**审核通过但未上架**」。
+- 🔴 **「已下架」≠「被平台驳回」**：查看原因给的就是「商家自主下架」；真正的驳回在
+  `rc-tabs-0-tab-releaseRecord_fail` 分类里（实测那件是 2026/10/28 的别的商品，
+  驳回原因「低价SKU作弊」）。**不要因为行里写着「已下架」就推断成审核不通过。**
+- 提交成功的判定顺序（从强到弱）：① 编辑页出现「商品提交成功」原文；② 商品**离开草稿箱**
+  （`product_id_not_in_draft`）；③ 「审核通过」分类里出现它并带送审/通过时间。
+  三条都要查，不能只看其中一条。
+
+### ④ Ego 通道的两个恢复动作（都在原空间内）
+
+- 任务空间 ended（`listTaskSpaces()` 里 `ownership: "user"`）→ 浏览器命令全部报
+  “This task space is no longer assigned to the agent … takeOverTaskSpace() cannot
+  resume an ended task”。用户明确让继续后，按 ego-browser 文档用
+  `claimTaskSpace(<id>)` 接管**原空间**（`takeOverTaskSpace()` 对 ended 空间无效）。
+- 某个 Page 的渲染进程卡死（`page.info()` 一直 CDP 超时、`page.close()` 报
+  “did not close within 2000ms”）→ 用 `page.cdp('Target.getTargets')` 按 URL 找到
+  `targetId`，再 `page.cdp('Target.closeTarget',{targetId})` 在浏览器层强制关闭；
+  之后把死页从 `state.json` 的 `pages` 路由表里摘掉，runtime 会另开新页。
+  **不要为此新建任务空间。**

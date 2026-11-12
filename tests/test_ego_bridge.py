@@ -1,11 +1,13 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from doudian_auto.bridge import Bridge
 from doudian_auto.ego_bridge import EgoBridge
 from doudian_auto.errors import DoudianError
+from doudian_auto.jobs import TransportLock
 
 
 def test_bridge_selects_native_ego_and_isolates_session_files(tmp_path, monkeypatch):
@@ -28,7 +30,13 @@ def test_timeout_never_replays_the_command(tmp_path, monkeypatch):
         Bridge('ego').command('click', {'selector': '[data-verified="yes"]'})
     assert error.value.code == 'ego_transport_unknown'
     assert len(calls) == 1
-    assert not list(tmp_path.rglob('transport.lock'))
+    # The transport lock is an OS-level advisory lock: the file stays on disk but
+    # the kernel drops the lock when the holder exits, so a killed run can never
+    # leave behind a lock that wedges every later run.
+    locks = list(tmp_path.rglob('transport.lock'))
+    assert len(locks) == 1
+    with TransportLock(locks[0]):
+        pass
 
 
 def test_locked_refs_fail_without_retry_and_round_files_are_unique(tmp_path, monkeypatch):
