@@ -320,9 +320,88 @@ globalThis.document = {
   querySelectorAll: sel => {
     if (sel === 'div.preview-item.hover-active') return [card];
     if (sel === 'button') return [{innerText: '下一步: 开始复制'}];
+    // 抽屉里的来源商品链接：实抓确认这是 1688 offer ID 的来源
+    if (sel === 'a') return [{href: 'http://detail.1688.com/offer/671243686759.html?amug_web_biz=fwmkt'}];
     return [];
   },
   body: {innerText: '商品列表 成功： 1'},
+};
+"""
+
+# 机会商品页：抽屉开了但没有 1688 链接 —— 拿不到来源身份就不许算成功
+STUB_OPPORTUNITY_NO_OFFER = STUB_OPPORTUNITY.replace(
+    "    if (sel === 'a') return [{href: 'http://detail.1688.com/offer/671243686759.html?amug_web_biz=fwmkt'}];\n",
+    "    if (sel === 'a') return [];\n")
+
+# 抖店商品管理页：真实行文（2026-11-12 实抓逐字抄）
+STUB_OFFICIAL_LIST = r"""
+const row = {innerText: '黑色隐形BB夹大号小号两种规格含收纳盒 ID：3850071994200621373 '
+  + '货号：A#1077401428037 现货模式 预览 复制链接 ￥10.88 ~ ￥11.88 1971417 0 暂无评价 88分 '
+  + '2026/10/24 16:36:23 售卖中 编辑 下架 新建渠道品 发布相似品 更多'};
+globalThis.document = {
+  querySelectorAll: sel => (sel === 'tr' ? [row] : []),
+  body: {innerText: '共 1 件商品 售卖中'},
+};
+"""
+
+# 同一页里出现两行同一个商品 ID —— 必须判结构变化，不能随便挑一行
+STUB_OFFICIAL_LIST_DUP = STUB_OFFICIAL_LIST.replace(
+    "querySelectorAll: sel => (sel === 'tr' ? [row] : []),",
+    "querySelectorAll: sel => (sel === 'tr' ? [row, row] : []),")
+
+# 抖店草稿箱：真实行文（状态词在 ID 之后、日期之前）
+STUB_OFFICIAL_DRAFT = r"""
+const row = {innerText: '酒店生物酶除味剂空气清新分解型去异味净味卫生间房间专用除臭剂 '
+  + 'ID:3853482303460343870 待提交 2026/11/12 01:41:35 编辑删除'};
+globalThis.document = {
+  querySelectorAll: sel => (sel === 'tr' ? [row] : []),
+  body: {innerText: '共 1 件商品 待提交'},
+};
+"""
+
+# 复制历史页：虚拟滚动 + 分页器。
+# 这段 stub 复刻真实行为：滚动容器 scrollTop 变化时，挂在 DOM 上的行会换掉，
+# 所以只读一屏必然漏数据——采集必须边滚边累计。
+STUB_HISTORY_PAGED = r"""
+const mkView = text => ({
+  querySelector: sel => (sel === 'div.pro-table-custom-body-row'
+    ? {innerText: text} : null),
+});
+const rowText = i => '阿里巴巴商品' + i + '\n发布类目：居家日用>收纳整理工具>收纳筐/收纳篮\n'
+  + '1688分销\n义乌市某某日用品（某某日用品）\n源ID：\n100000000000' + i
+  + '\n默认配置\n已成功复制\n2026-10-24 16:35\n商品ID：\n38500700000000000' + i
+  + '\n已下架\n审核通过\n销量：0';
+const allRows = [0, 1, 2, 3, 4, 5].map(rowText);
+let top = 0;
+const scroller = {
+  scrollTop: 0,
+  scrollHeight: 600,
+  clientHeight: 300,
+};
+Object.defineProperty(scroller, 'scrollTop', {
+  get: () => globalThis.__scrollTop,
+  set: v => {
+    globalThis.__scrollTop = v;
+    // 真实页面：滚动 → 虚拟列表换一批行挂载
+    top = Math.max(0, Math.min(allRows.length - 2, Math.floor(v / 100)));
+  },
+});
+globalThis.__scrollTop = 0;
+const pagerLi = {
+  innerText: '1',
+  className: 'is-active number',
+  click: () => {},
+};
+globalThis.document = {
+  querySelector: sel => (sel === 'div.content-main' ? scroller : null),
+  querySelectorAll: sel => {
+    if (sel === '.el-pager li') return [pagerLi];
+    if (sel === '.vue-recycle-scroller__item-view')
+      return [mkView(allRows[top]), mkView(allRows[top + 1])];
+    if (sel === 'tr') return [];
+    return [];
+  },
+  body: {innerText: '共 6 条 1 20 条/页'},
 };
 """
 
@@ -342,17 +421,20 @@ def run(label, js, expect, page=None, stub=None):
     临时文件写系统临时目录而不是仓库：Node 超时或 Python 异常都可能让清理
     步骤来不及执行，留在仓库里就是污染。
     """
+    # 异步适配器（轮询等待页面渲染）也要能真跑，所以两种 IIFE 都要接住，
+    # 并且用 .mjs + 顶层 await 把 Promise 结算完再打印。
+    js = js.replace('(async()=>{', 'globalThis.__r=(async()=>{', 1)
     js = js.replace('(()=>{', 'globalThis.__r=(()=>{', 1)
-    js += '\nconsole.log(JSON.stringify(globalThis.__r));\n'
+    js += '\nconsole.log(JSON.stringify(await globalThis.__r));\n'
     prefix = ''
     if page:
         prefix = f'setPage({page[0]!r}, {page[1]!r}, {page[2]!r});\n'
     script = STUB_BASE + (stub or '') + prefix + js
     with tempfile.TemporaryDirectory(prefix='dropship-js-') as tmp:
-        path = Path(tmp) / 'case.js'
+        path = Path(tmp) / 'case.mjs'
         path.write_text(script, encoding='utf-8')
         proc = subprocess.run(['node', str(path)], capture_output=True,
-                              text=True, timeout=30)
+                              text=True, timeout=60)
     out = (proc.stdout or '').strip()
     if proc.returncode != 0:
         print(f'[FAIL] {label}: node 执行报错\n{proc.stderr.strip()[:400]}')
@@ -542,8 +624,11 @@ globalThis.document = {
 
     # ---------- click_single_opportunity ----------
     def check_card(d):
+        """点开抽屉后必须同时拿到「下一步」和精确的 1688 offer ID。"""
         return (d.get('status') == 'ok' and d.get('result_visible') is True
-                and d.get('next_step') is True)
+                and d.get('next_step') is True
+                and d.get('source_offer_id') == '671243686759'
+                and 'detail.1688.com/offer/671243686759.html' in (d.get('source_offer_url') or ''))
 
     results.append(run('click_single_opportunity',
                        extract(pages.click_single_opportunity,
@@ -560,6 +645,113 @@ globalThis.document = {
                                {'card_text': '不存在的标题'}), check_card_ambiguous,
                        page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
                        stub=STUB_OPPORTUNITY))
+
+    def check_card_no_offer(d):
+        """抽屉开了却拿不到 1688 offer ID —— 来源身份不成立，不许算成功。"""
+        return d.get('status') == 'layout_changed' and d.get('reason') == 'offer_identity_not_found'
+
+    results.append(run('click_single_opportunity_without_offer_identity',
+                       extract(pages.click_single_opportunity,
+                               {'card_text': '汽车密封条'}), check_card_no_offer,
+                       page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
+                       stub=STUB_OPPORTUNITY_NO_OFFER))
+
+    # ---------- read_opportunity_source_identity ----------
+    def check_source_identity(d):
+        return (d.get('status') == 'ok'
+                and d.get('source_offer_id') == '671243686759'
+                and d.get('source_offer_ids') == ['671243686759'])
+
+    results.append(run('read_opportunity_source_identity',
+                       extract(pages.read_opportunity_source_identity, {}),
+                       check_source_identity,
+                       page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
+                       stub=STUB_OPPORTUNITY))
+
+    def check_source_identity_missing(d):
+        """读不到就是读不到，不许拿别的东西顶上。"""
+        return d.get('status') == 'not_found' and d.get('source_offer_id') is None
+
+    results.append(run('read_opportunity_source_identity_missing',
+                       extract(pages.read_opportunity_source_identity, {}),
+                       check_source_identity_missing,
+                       page=('v2-dd.chengji-inc.com', '/selection/opportunity_product', ''),
+                       stub=STUB_OPPORTUNITY_NO_OFFER))
+
+    # ---------- 抖店商品管理页：平台状态 ----------
+    def check_official_state(d):
+        return (d.get('status') == 'ok'
+                and d.get('platform_state') == '售卖中'
+                and d.get('product_id') == '3850071994200621373')
+
+    results.append(run('read_official_product_status',
+                       extract(pages.read_official_product_status,
+                               {'product_id': '3850071994200621373'}),
+                       check_official_state,
+                       page=('fxg.jinritemai.com', '/ffa/g/list',
+                             'product_id=3850071994200621373&sov_goodsType=0&tab=all'),
+                       stub=STUB_OFFICIAL_LIST))
+
+    def check_official_state_dup(d):
+        """同一个 ID 出现两行时必须停，不能随便挑一行当状态。"""
+        return d.get('status') == 'layout_changed' and d.get('reason') == 'product_id_rows'
+
+    results.append(run('read_official_product_status_ambiguous',
+                       extract(pages.read_official_product_status,
+                               {'product_id': '3850071994200621373'}),
+                       check_official_state_dup,
+                       page=('fxg.jinritemai.com', '/ffa/g/list',
+                             'product_id=3850071994200621373&sov_goodsType=0&tab=all'),
+                       stub=STUB_OFFICIAL_LIST_DUP))
+
+    def check_official_state_wrong_page(d):
+        return d.get('status') == 'wrong_page'
+
+    results.append(run('read_official_product_status_wrong_page',
+                       extract(pages.read_official_product_status,
+                               {'product_id': '3850071994200621373'}),
+                       check_official_state_wrong_page,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=STUB_OFFICIAL_LIST))
+
+    # ---------- 抖店草稿箱：草稿状态 ----------
+    def check_draft_state(d):
+        return (d.get('status') == 'ok'
+                and d.get('platform_state') == '待提交'
+                and d.get('product_id') == '3853482303460343870')
+
+    results.append(run('read_draft_box_status',
+                       extract(pages.read_draft_box_status,
+                               {'product_id': '3853482303460343870'}),
+                       check_draft_state,
+                       page=('fxg.jinritemai.com', '/ffa/g/draft',
+                             'product_id=3853482303460343870'),
+                       stub=STUB_OFFICIAL_DRAFT))
+
+    def check_draft_state_wrong_page(d):
+        """草稿箱状态不能在商品管理页上读——路径写错必须报 wrong_page。"""
+        return d.get('status') == 'wrong_page'
+
+    results.append(run('read_draft_box_status_wrong_page',
+                       extract(pages.read_draft_box_status,
+                               {'product_id': '3853482303460343870'}),
+                       check_draft_state_wrong_page,
+                       page=('fxg.jinritemai.com', '/ffa/g/list', 'product_id=1'),
+                       stub=STUB_OFFICIAL_DRAFT))
+
+    # ---------- 复制历史：翻页 + 细步滚动采全量 ----------
+    def check_history_all(d):
+        """虚拟滚动只挂载 2 行，但必须靠累计采满 6 条（页面写「共 6 条」）。"""
+        return (d.get('status') == 'ok' and d.get('total') == 6
+                and d.get('collected') == 6 and d.get('complete') is True
+                and len(d.get('rows') or []) == 6)
+
+    results.append(run('collect_history_rows_all_pages',
+                       extract(pages.collect_history_rows_all_pages,
+                               {'max_pages': 10}),
+                       check_history_all,
+                       page=('v2-dd.chengji-inc.com', '/move/move_history', ''),
+                       stub=STUB_HISTORY_PAGED))
 
     # ---------- read_source_skus ----------
     def check_source(d):

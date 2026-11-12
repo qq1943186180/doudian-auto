@@ -54,6 +54,10 @@ class DropshipPages:
             raise DoudianError('wrong_page', f'当前页面不是预期的{page_name}。')
         if status == 'readback_mismatch':
             raise DoudianError('readback_mismatch', f'{page_name}即时读回不一致，停止并交人工处理。')
+        if status == 'not_found':
+            # 「查无此项」是**观测结论**，不是结构变化：官方页面上确实没有这个商品。
+            # 交回调用方判断，绝不据此推断成「未提审」之类的状态。
+            return result
         if status != 'ok':
             raise DoudianError('layout_changed', f'{page_name}返回未知状态 {status}。')
         return result
@@ -130,6 +134,174 @@ return {status:'ok',page_url:u.href,host:u.hostname,path:pathname,
    :(u.hostname==='fxg.jinritemai.com'?'doudian':'other')};
 })()"""
         return self._evaluate(code, page_name='会话登录态')
+
+    # ---------- 抖店官方：审核状态读取 ----------
+
+    OFFICIAL_LIST_PATH = '/ffa/g/list'
+    OFFICIAL_DRAFT_PATH = '/ffa/g/draft'
+
+    def navigate_official_readonly(self, path, params=None):
+        """导航到抖店官方只读页（商品管理 / 草稿箱）。
+
+        官方域名在 navigate 白名单里，可以直接导航。查询参数一律走 URL：
+        实测商品管理页按 ID 过滤的参数是 `product_id`，不是 `searchText`
+        （T-008 当时用 searchText，所以永远「共 0 条」）。
+        """
+        if not path.startswith('/ffa/g/'):
+            raise DoudianError('dropship_path_invalid', '抖店只读页路径不合法。')
+        pairs = ['%s=%s' % (key, value) for key, value in (params or {}).items()]
+        url = 'https://%s%s' % (OFFICIAL_HOST, path)
+        if pairs:
+            url += '?' + '&'.join(pairs)
+        self.bridge.command('navigate', {'url': url})
+        return {'status': 'ok', 'url': url}
+
+    def read_official_product_status(self, product_id, *, navigate=True):
+        """读抖店官方商品管理页里某个商品的**平台状态**。**只读**。
+
+        实测（2026-11-12）：`/ffa/g/list?product_id=<ID>&sov_goodsType=0&tab=all`
+        会自动把 ID 填进搜索框并只返回这一行；行内状态词紧跟在时间戳后面。
+
+        行内状态词都是抖店官方用词：售卖中 / 已下架 / 审核驳回 / 审核中 ……
+        实测「审核不通过」（妙手用词）在抖店这边显示为「审核驳回」。
+
+        行里没有状态词就返回 status='not_found'——**不猜**。
+        旧记录（2026-10 批次）里 14 条确实没有状态列，缺失就是缺失。
+
+        页面是异步渲染的：导航后表格要一会儿才出结果，所以这里轮询到
+        「命中 / 明确空 / 超时」三者之一才返回，不靠固定 sleep。
+        """
+        if navigate:
+            self.navigate_official_readonly(self.OFFICIAL_LIST_PATH, {
+                'product_id': str(product_id), 'sov_goodsType': 0, 'tab': 'all'})
+        code = """(async()=>{
+const u=new URL(location.href);
+if(u.hostname!=='fxg.jinritemai.com'||u.pathname!=='/ffa/g/list')
+ return {status:'wrong_page'};
+const p=__PAYLOAD__;
+if(!/^[0-9]{16,22}$/.test(String(p.product_id)))
+ return {status:'layout_changed',reason:'product_id_invalid'};
+const WSRE=new RegExp('['+String.fromCharCode(32,9,10,13,12288,160)+']+','g');
+const clean=s=>(s||'').replace(WSRE,' ').trim();
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const STATES=['审核驳回','审核通过','审核中','已封禁','已售罄','已下架','售卖中','上架中','待审核','草稿箱'];
+const idRe=new RegExp('ID[:：]'+p.product_id+'(?![0-9])');
+let rows=[],empty=0;
+for(let i=0;i<40;i++){
+ rows=[...document.querySelectorAll('tr')].map(tr=>clean(tr.innerText)).filter(t=>t&&idRe.test(t));
+ if(rows.length)break;
+ // 页面会先渲染「暂无数据」再出真实行，所以必须**连续**为空若干轮才认空
+ if(clean(document.body.innerText||'').indexOf('暂无数据')>=0)empty++;else empty=0;
+ if(empty>=10)break;
+ await sleep(250);
+}
+if(rows.length===0)
+ return {status:'not_found',reason:empty>=10?'product_id_not_in_list':'product_list_timeout',
+  product_id:p.product_id,page_url:u.href};
+if(rows.length!==1)return {status:'layout_changed',reason:'product_id_rows',count:rows.length};
+const row=rows[0];
+// 状态词紧跟在时间戳之后；没有时间戳就退回「行内最后一个状态词」
+const tsRe=new RegExp('([0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2})');
+const ts=tsRe.exec(row);
+let state=null;
+if(ts){
+  const tail=row.slice(ts.index+ts[1].length);
+  for(const token of STATES) if(tail.indexOf(token)===0||tail.indexOf(' '+token)===0){state=token;break;}
+}
+if(!state){
+  let last=-1;
+  for(const token of STATES){const at=row.lastIndexOf(token);if(at>last){last=at;state=token;}}
+}
+return {status:'ok',page_url:u.href,product_id:p.product_id,
+ platform_state:state,row_text:row.slice(0,400)};
+})()""".replace('__PAYLOAD__', _js({'product_id': str(product_id)}))
+        return self._evaluate(code, page_name='抖店商品管理页')
+
+    def read_draft_box_status(self, product_id, *, navigate=True):
+        """读抖店官方**草稿箱**里某个草稿商品的状态。**只读**。
+
+        实测（2026-11-12）：草稿箱是独立页 `/ffa/g/draft`，不是商品管理页的
+        一个 tab。商品管理页里没有草稿箱入口，只有页面副标题提到「草稿箱」；
+        入口是右上角一组文字链接「编辑记录 / 草稿箱 / 回收站」。
+
+        `/ffa/g/draft?product_id=<ID>` 会把 ID 填进搜索框并只返回这一行，
+        行结构是「商品信息 | 商品状态 | 创建时间 | 操作」：
+            酒店生物酶除味剂… ID:3853482303460343870 待提交 2026/11/12 01:41:35 编辑删除
+        即状态词在 **ID 之后、日期之前**（与商品管理页的「日期之后」不同）。
+
+        草稿商品**不会**出现在商品管理页：实测 3853482303460343870 在商品管理页
+        是「暂无数据」，在草稿箱才是「待提交」。两页互斥，必须都查。
+        """
+        if navigate:
+            self.navigate_official_readonly(self.OFFICIAL_DRAFT_PATH,
+                                            {'product_id': str(product_id)})
+        code = """(async()=>{
+const u=new URL(location.href);
+if(u.hostname!=='fxg.jinritemai.com'||u.pathname!=='/ffa/g/draft')
+ return {status:'wrong_page'};
+const p=__PAYLOAD__;
+if(!/^[0-9]{16,22}$/.test(String(p.product_id)))
+ return {status:'layout_changed',reason:'product_id_invalid'};
+const WSRE=new RegExp('['+String.fromCharCode(32,9,10,13,12288,160)+']+','g');
+const clean=s=>(s||'').replace(WSRE,' ').trim();
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const STATES=['待提交','审核中','审核驳回','审核通过','未提审','已下架','草稿箱'];
+const idRe=new RegExp('ID[:：]'+p.product_id+'(?![0-9])');
+let rows=[],empty=0;
+for(let i=0;i<40;i++){
+ rows=[...document.querySelectorAll('tr')].map(tr=>clean(tr.innerText)).filter(t=>t&&idRe.test(t));
+ if(rows.length)break;
+ // 页面会先渲染「暂无数据」再出真实行，所以必须**连续**为空若干轮才认空
+ if(clean(document.body.innerText||'').indexOf('暂无数据')>=0)empty++;else empty=0;
+ if(empty>=10)break;
+ await sleep(250);
+}
+if(rows.length===0)
+ return {status:'not_found',reason:empty>=10?'product_id_not_in_draft':'draft_timeout',
+  product_id:p.product_id,page_url:u.href};
+if(rows.length!==1)return {status:'layout_changed',reason:'product_id_rows',count:rows.length};
+const row=rows[0];
+// 状态词在 ID 之后、日期之前
+const at=row.search(idRe);
+const tail=row.slice(at);
+let state=null, best=-1;
+for(const token of STATES){
+  const found=tail.indexOf(token);
+  if(found>=0&&(best<0||found<best)){best=found;state=token;}
+}
+return {status:'ok',page_url:u.href,product_id:p.product_id,
+ platform_state:state,row_text:row.slice(0,400)};
+})()""".replace('__PAYLOAD__', _js({'product_id': str(product_id)}))
+        return self._evaluate(code, page_name='抖店草稿箱')
+
+    def read_target_review_status(self, product_id):
+        """读目标商品的**权威**审核状态：先查商品管理页，再查草稿箱。
+
+        两页互斥（实测），所以要查两次才能下结论：
+        - 在商品管理页命中 → 已提交商品，状态词是售卖中/已下架/审核驳回/审核中…
+        - 商品管理页没有、草稿箱命中 → 草稿商品，状态词是「待提交」
+        - 两页都没有 → 目标商品在抖店根本不存在，**不能**当成未提审
+
+        实测「未提审」是妙手侧用词：它表示商品从没提交过审核。
+        抖店官方对这种商品的说法是「待提交」（草稿箱）或根本查不到（商品管理页）。
+        """
+        listing = self.read_official_product_status(product_id)
+        if listing.get('status') == 'ok':
+            return {'status': 'ok', 'source': 'doudian_product_list',
+                    'product_id': str(product_id),
+                    'platform_state': listing.get('platform_state'),
+                    'row_text': listing.get('row_text')}
+        draft = self.read_draft_box_status(product_id)
+        if draft.get('status') == 'ok':
+            return {'status': 'ok', 'source': 'doudian_draft_box',
+                    'product_id': str(product_id),
+                    'platform_state': draft.get('platform_state'),
+                    'row_text': draft.get('row_text')}
+        return {'status': 'not_found', 'source': 'doudian',
+                'product_id': str(product_id),
+                'platform_state': None,
+                'note': '商品管理页与草稿箱都没有这个商品 ID，不能推断成未提审。'}
+
 
     # ---------- 搬家设置页 ----------
 
@@ -332,8 +504,10 @@ for(const card of cards){
  if(out.length>=p.limit)break;
 }
 return {status:'ok',page_url:u.href,candidate_count:out.length,candidates:out,
- identity_note:'机会卡片不含 1688 offer ID，只有妙手内部 UUID；'
-   +'此清单不能独立建立来源身份，需以标题到 1688 检索并人工核实同一商品。'};
+ identity_note:'机会卡片本身不含 1688 offer ID（只有妙手内部 UUID），'
+   +'所以这份清单还不能独立证明来源身份；'
+   +'点「立即铺货」后抽屉里会给出精确的 offer ID（见 click_single_opportunity），'
+   +'来源身份以那个 ID 为准，不必靠标题到 1688 人工检索。'};
 })()""".replace('__PAYLOAD__', _js({
     'require_cipher': bool(require_cipher),
     'require_dropship': bool(require_dropship),
@@ -342,40 +516,90 @@ return {status:'ok',page_url:u.href,candidate_count:out.length,candidates:out,
         return self._evaluate(code, page_name='抖音官方机会商品页')
 
     def click_single_opportunity(self, *, card_text):
-        """点击机会商品卡片上的「立即铺货」，并要求点击后能确认结果页出现。
+        """点击机会商品卡片上的「立即铺货」，并读回落地抽屉里的 1688 来源身份。
 
-        ⚠️ 这条路径**不能独立证明商品身份**：实抓确认机会卡片上没有任何
-        1688 offer ID 字段（只有 Vue scope id 和妙手内部 UUID），所以
-        card_text 只是一个子串线索，不是身份凭据。官方路径是贴 offer_url，
-        身份由链接本身确定。
+        🔴 2026-11-12 实抓更正了旧结论：这条路径**能**建立精确的来源身份。
+        旧注释说「机会卡片没有任何 1688 offer ID 字段，所以只能靠标题子串猜」——
+        卡片层确实没有，但**点击之后有**，而且有两条独立通道：
 
-        保留这个方法只为人工选品辅助与历史兼容：它要求点击后同时出现
-        「商品列表」与「下一步: 开始复制」，缺一即失败关闭，不返回 ok。
+        1. DOM 通道：抽屉里的来源商品行带 `<a href="http://detail.1688.com/offer/<ID>.html">`，
+           实测点「立即铺货」后约 4.3 秒出现。
+        2. 网络通道：前端提交 `POST /api/v2/move/batch/fetchDetailUrlInfo`，
+           请求体里 `detailUrls=<1688 offer 链接>&copyType=ddClue&clickType=copyProduct`，
+           响应 `productList[<ID>]` 带标题/图片/库存；同批还有
+           `dsCenterUserReviewStat` 的 `copyType=ddClue&clickType=copyProduct`。
+
+        旧实现失败的原因是**时序**：它在 `.click()` 之后同步检查「商品列表」和
+        「下一步: 开始复制」，而抽屉是异步渲染的（实测「下一步」约 2.5 秒、
+        offer 链接约 4.3 秒才出现），所以必然报 click_result_not_confirmed。
+
+        落地形态是**同页抽屉**，不是跳转：URL 仍是 /selection/opportunity_product。
+        「下一步: 开始复制」之前不写任何抖店数据（实测点完草稿箱仍是原来那 1 件）。
         """
-        code = """(()=>{const u=new URL(location.href);
+        code = """(async()=>{const u=new URL(location.href);
 if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/selection/opportunity_product')
  return {status:'wrong_page'};
 const p=__PAYLOAD__;
+const WSRE=new RegExp('['+String.fromCharCode(32,9,10,13,12288,160)+']+','g');
+const clean=s=>(s||'').replace(WSRE,' ').trim();
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const roots=[...document.querySelectorAll('div.preview-item.hover-active')]
  .filter(root=>root.querySelector('.product-card.product-card__ms.product-card__orange'))
- .filter(root=>(root.innerText||'').includes(p.card_text));
+ .filter(root=>(root.innerText||'').indexOf(p.card_text)>=0);
 if(roots.length!==1)return {status:'layout_changed',reason:'card',count:roots.length};
 const actions=[...roots[0].querySelectorAll('div.J_moveCommonPreviewProductBtn')]
  .filter(x=>(x.innerText||'').trim()==='立即铺货');
 if(actions.length!==1)return {status:'layout_changed',reason:'action',count:actions.length};
 actions[0].click();
-const text=(document.body.innerText||'');
-const resultVisible=text.indexOf('商品列表')>=0;
-const nextStep=[...document.querySelectorAll('button')]
- .some(x=>(x.innerText||'').trim()==='下一步: 开始复制');
-// 点击后必须能看到结果页与下一步按钮，否则不能算动作已开始
-if(!resultVisible||!nextStep)
- return {status:'layout_changed',reason:'click_result_not_confirmed',
-  result_visible:resultVisible,next_step:nextStep};
+const offerRe=/detail[.]1688[.]com[/]offer[/]([0-9]+)/;
+let nextStep=false, offerUrl=null, offerId=null, rounds=0;
+for(let i=0;i<40;i++){
+ await sleep(250); rounds++;
+ nextStep=[...document.querySelectorAll('button')]
+  .some(x=>(x.innerText||'').trim().indexOf('下一步: 开始复制')===0);
+ const links=[...document.querySelectorAll('a')].map(a=>a.href||'');
+ for(const href of links){
+  const m=offerRe.exec(href);
+  if(m){offerId=m[1];offerUrl=href;break;}
+ }
+ if(nextStep&&offerId)break;
+}
+if(!nextStep)return {status:'layout_changed',reason:'click_result_not_confirmed',
+ result_visible:nextStep,next_step:false,rounds:rounds};
+if(!offerId)return {status:'layout_changed',reason:'offer_identity_not_found',
+ result_visible:true,next_step:true,rounds:rounds};
 return {status:'ok',clicked:'立即铺货',
- result_visible:resultVisible,next_step:nextStep,
- identity:'card_text_only_not_offer_id'};
-})()""".replace('__PAYLOAD__', _js({'card_text': card_text}))
+ page_url:u.href,rounds:rounds,
+ result_visible:true,next_step:true,
+ source_offer_id:offerId,source_offer_url:offerUrl,
+ identity:'offer_id_from_drawer_dom',
+ identity_note:'offer ID 取自抽屉里来源商品的 1688 链接，是精确身份；'
+  +'卡片标题只是线索，铺货身份以 offer ID 为准。'};
+})()""".replace('__PAYLOAD__', _js({'card_text': str(card_text)}))
+        return self._evaluate(code, page_name='机会商品页')
+
+    def read_opportunity_source_identity(self):
+        """只读已打开的机会商品抽屉，读出 1688 来源身份。
+
+        与 `click_single_opportunity` 读的是同一个东西，但**不点击**，
+        适合「抽屉已经开着」的续跑场景。读不到就返回 not_found，不猜。
+        """
+        code = """(()=>{const u=new URL(location.href);
+if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/selection/opportunity_product')
+ return {status:'wrong_page'};
+const offerRe=/detail[.]1688[.]com[/]offer[/]([0-9]+)/;
+const found=[];
+for(const a of document.querySelectorAll('a')){
+ const href=a.href||'';
+ const m=offerRe.exec(href);
+ if(m&&found.indexOf(m[1])<0)found.push(m[1]);
+}
+const nextStep=[...document.querySelectorAll('button')]
+ .some(x=>(x.innerText||'').trim().indexOf('下一步: 开始复制')===0);
+if(!found.length)return {status:'not_found',reason:'no_1688_offer_link',drawer_open:nextStep};
+return {status:'ok',page_url:u.href,drawer_open:nextStep,
+ source_offer_ids:found,source_offer_id:found.length===1?found[0]:null};
+})()"""
         return self._evaluate(code, page_name='机会商品页')
 
     # ---------- 商品上货页（贴 offer_url 路径） ----------
@@ -500,6 +724,82 @@ return {status:'ok',clicked:'下一步: 开始复制',
         return self._evaluate(code, page_name='抓取结果页')
 
     # ---------- 复制历史页 ----------
+
+    def collect_history_rows_all_pages(self, *, max_pages=10):
+        """采全量复制历史行。**只读**：只翻页与滚动，不点任何写操作。
+
+        实测（2026-11-12，本店 58 条）：这页是 vue-recycle-scroller 虚拟滚动
+        + 分页器（每页 20 条）。一次只挂载 19~20 行 DOM，**读一屏只能拿到
+        20/58**，所以「读一屏」当全量是错的。
+
+        采集办法（两条都实测过）：
+        1. 翻页：点 `.el-pager > li:nth-child(N)`，等 `li.is-active` 变成 N。
+        2. 页内滚动：滚动容器是 `div.content-main`（overflow-y:auto），
+           **不是** window。虚拟列表在容器滚动时会换行，但只在滚动**过程中**
+           重渲染——所以必须细步滚动（实测 150px 一步）并逐步累计，
+           最后再回到顶部补一次。
+        一次性滚到底只能拿到最后一段，中间会漏。
+
+        去重键：源ID + 商品ID + 时间。同一商品被复制两次是两条不同记录，
+        时间不同；虚拟滚动重渲染会短暂挂载同一行两次，时间与 ID 都相同。
+        """
+        code = """(async()=>{const u=new URL(location.href);
+if(u.hostname!=='v2-dd.chengji-inc.com'||u.pathname!=='/move/move_history')
+ return {status:'wrong_page'};
+const p=__PAYLOAD__;
+const WSRE=new RegExp('['+String.fromCharCode(32,9,10,13,12288,160)+']+','g');
+const clean=s=>(s||'').replace(WSRE,' ').trim();
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const scroller=document.querySelector('div.content-main');
+if(!scroller)return {status:'layout_changed',reason:'history_scroller_missing'};
+const pageCount=document.querySelectorAll('.el-pager li').length;
+if(!pageCount)return {status:'layout_changed',reason:'history_pager_missing'};
+const totalMatch=(document.body.innerText||'').match(new RegExp('共'+String.fromCharCode(32)+'*([0-9]+)'+String.fromCharCode(32)+'*条'));
+const total=totalMatch?Number(totalMatch[1]):null;
+const seen=new Map();
+const WSC='['+String.fromCharCode(10,13,32)+']*';
+const grab=()=>{
+ for(const view of document.querySelectorAll('.vue-recycle-scroller__item-view')){
+  const row=view.querySelector('div.pro-table-custom-body-row');
+  if(!row)continue;
+  const text=row.innerText||'';
+  if(!text.trim())continue;
+  const src=(text.match(new RegExp('源ID[:：]'+WSC+'([0-9]+)'))||[])[1]||'';
+  const pid=(text.match(new RegExp('商品ID[:：]'+WSC+'([0-9]{16,22})'))||[])[1]||'';
+  const stamp=(text.match(new RegExp('([0-9]{4}-[0-9]{2}-[0-9]{2}'+String.fromCharCode(32)+'[0-9]{2}:[0-9]{2})'))||[])[1]||'';
+  const key=src+'@'+pid+'@'+stamp;
+  if(!seen.has(key))seen.set(key,text);
+ }
+};
+const pages=Math.min(pageCount,p.max_pages);
+for(let page=1;page<=pages;page++){
+ const li=document.querySelectorAll('.el-pager li')[page-1];
+ if(!li)return {status:'layout_changed',reason:'history_page_missing',page:page};
+ li.click();
+ let ready=false;
+ for(let k=0;k<40;k++){
+  await sleep(150);
+  const active=[...document.querySelectorAll('.el-pager li')]
+   .find(x=>String(x.className).indexOf('is-active')>=0);
+  if(active&&clean(active.innerText)===String(page)){ready=true;break;}
+ }
+ if(!ready)return {status:'layout_changed',reason:'history_page_switch',page:page};
+ scroller.scrollTop=0;
+ await sleep(200);
+ grab();
+ const max=scroller.scrollHeight;
+ for(let y=0;y<=max;y+=150){ scroller.scrollTop=y; await sleep(140); grab(); }
+ scroller.scrollTop=max;
+ await sleep(400); grab();
+ scroller.scrollTop=0;
+ await sleep(250); grab();
+}
+return {status:'ok',page_url:u.href,total:total,collected:seen.size,
+ page_count:pageCount,pages_read:pages,
+ complete:total===null?null:seen.size>=total,
+ rows:[...seen.values()]};
+})()""".replace('__PAYLOAD__', _js({'max_pages': int(max_pages)}))
+        return self._evaluate(code, page_name='复制历史页')
 
     def read_history_product_id(self, *, source_product_id, baseline_keys=None):
         """按来源 ID 在复制历史里定位本次铺货的那一行，读目标商品 ID。

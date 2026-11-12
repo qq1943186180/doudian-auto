@@ -578,7 +578,8 @@ def _check_price_formula(observed, expected, price_input):
 
 
 def verify_target_readback(job, *, product_id, sku_rows,
-                           sku_total_count, price_progress, review_status):
+                           sku_total_count, price_progress, review_status,
+                           platform_review_status=None, platform_review_source=None):
     """确认复制动作的结果，只声明能被证据证明的事。
 
     终态叫 ``copy_confirmed`` 而不是 ``verified``：官方编辑页**结构上**没有
@@ -593,6 +594,12 @@ def verify_target_readback(job, *, product_id, sku_rows,
     3. 价格符合任务公式（所有 SKU 的运费差额一致且非负）。
 
     拿不到的证据一律进 ``unverified_aspects``，如实交人工，不假装已验证。
+
+    ``platform_review_status`` 是**审核状态的权威来源**（2026-11-12 实抓）：
+    抖店商品管理页 ``/ffa/g/list?product_id=<ID>`` 与草稿箱
+    ``/ffa/g/draft?product_id=<ID>`` 两页互斥——已提交商品只在前者，
+    草稿商品只在后者（草稿箱状态词是「待提交」）。两页都查不到就如实说
+    查不到，**不能**当成「未提审」——那是妙手侧用词，含义是「从没提交过审核」。
     """
     job = Path(job)
     state_path = job / 'state.json'
@@ -643,7 +650,16 @@ def verify_target_readback(job, *, product_id, sku_rows,
     elif len(sku_rows) != sku_total_count:
         blockers.append(f'读回行数 {len(sku_rows)} 与页面总数 {sku_total_count} 不一致')
     if not isinstance(review_status, str) or not review_status.strip():
-        unverified_aspects.append('官方编辑页无商品审核状态（需到商品列表页人工确认）')
+        # 审核状态在编辑页上读不到，但**不**就此放弃：抖店商品管理页与草稿箱
+        # 才是权威来源（两页互斥：已提交在商品管理页，草稿在草稿箱）。
+        if isinstance(platform_review_status, str) and platform_review_status.strip():
+            verified_aspects.append(
+                '抖店官方读到平台状态：' + platform_review_status.strip()
+                + '（来源：' + str(platform_review_source) + '）')
+        else:
+            unverified_aspects.append(
+                '抖店商品管理页与草稿箱都没有这个商品 ID，'
+                '无法确认审核状态（可能是从未提审，也可能是商品已被删除）')
     # 规格名：不用全等，用数量标记包含关系。
     # 妙手会改写展示名，所以全等在真实页面上几乎从不成立；
     # 但「数量标记还在」是可判定的，而且两次真实铺货都成立。
@@ -1007,12 +1023,22 @@ def _readback_only(args, job, state, manifest):
     result['review_status_reason'] = review.get('review_status_reason')
     result['sku_status_tokens'] = review.get('sku_status_tokens')
 
+    # 审核状态的权威来源：抖店商品管理页 / 草稿箱（两页互斥）。
+    # 编辑页结构上读不到审核状态，但不代表读不到——之前那句
+    # 「需到商品列表页人工确认」是事实，只是当时没做这一步。
+    platform_review = pages.read_target_review_status(target_id)
+    result['platform_review_status'] = platform_review.get('platform_state')
+    result['platform_review_source'] = platform_review.get('source')
+    result['platform_review_row'] = platform_review.get('row_text')
+
     verification = verify_target_readback(
         job, product_id=target_id,
         sku_rows=skus.get('sku_rows') or [],
         sku_total_count=skus.get('sku_total_count'),
         price_progress=skus.get('price_progress'),
-        review_status=review.get('review_status'))
+        review_status=review.get('review_status'),
+        platform_review_status=platform_review.get('platform_state'),
+        platform_review_source=platform_review.get('source'))
     result['verification'] = verification
     result['stage'] = verification.get('stage', state.get('stage'))
     result['next'] = ('已按页面证据确认复制结果；官方编辑页拿不到的证据'

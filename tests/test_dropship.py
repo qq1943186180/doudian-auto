@@ -445,6 +445,12 @@ def test_readback_only_reports_the_review_status_as_unavailable(tmp_path):
                     'review_status_reason': '商品审核状态不在编辑页',
                     'sku_status_tokens': ['已上架']}
 
+        def read_target_review_status(self, product_id):
+            # 2026-11-12 实抓：审核状态的权威来源是商品管理页/草稿箱，不是编辑页。
+            return {'status': 'ok', 'source': 'doudian_product_list',
+                    'product_id': product_id, 'platform_state': '审核驳回',
+                    'row_text': '……审核驳回 查看原因 申诉 编辑'}
+
     class FakeBridge:
         def require_ready(self):
             return True
@@ -469,6 +475,9 @@ def test_readback_only_reports_the_review_status_as_unavailable(tmp_path):
     assert out['review_status'] is None
     assert out['sku_status_tokens'] == ['已上架']
     assert out['sku_rows'][0]['price'] == '15.48'
+    # 编辑页读不到审核状态，但商品管理页/草稿箱读得到——不能就此放弃
+    assert out['platform_review_status'] == '审核驳回'
+    assert out['platform_review_source'] == 'doudian_product_list'
 
 
 def test_offer_url_accepts_http_but_normalises_to_https(tmp_path):
@@ -723,6 +732,34 @@ def test_official_page_has_no_review_status_but_that_is_not_a_blocker(tmp_path):
         sku_total_count=None, price_progress=100, review_status=None)
     assert report['stage'] == 'copy_confirmed'
     assert any('审核状态' in x for x in report['unverified_aspects'])
+
+
+def test_platform_review_status_moves_the_review_aspect_to_verified(tmp_path):
+    """编辑页读不到审核状态，但商品管理页/草稿箱读得到——不能就此放弃。
+
+    实测（2026-11-12）：两页互斥——已提交商品在商品管理页（售卖中/已下架/
+    审核驳回/审核中），草稿商品在草稿箱（待提交）。
+    """
+    job = _confirm_job(tmp_path)
+    report = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
+        sku_total_count=None, price_progress=100, review_status=None,
+        platform_review_status='审核驳回', platform_review_source='doudian_product_list')
+    assert report['stage'] == 'copy_confirmed'
+    assert any('审核驳回' in x for x in report['verified_aspects'])
+    assert not any('无法确认审核状态' in x for x in report['unverified_aspects'])
+
+
+def test_platform_review_not_found_does_not_become_a_state(tmp_path):
+    """两页都查不到就如实说查不到，不能写成「未提审」之类。"""
+    job = _confirm_job(tmp_path)
+    report = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
+        sku_total_count=None, price_progress=100, review_status=None,
+        platform_review_status=None, platform_review_source='doudian')
+    assert report['stage'] == 'copy_confirmed'
+    assert any('无法确认审核状态' in x for x in report['unverified_aspects'])
+    assert not any('未提审' in x for x in report['verified_aspects'])
 
 
 def test_miaoshou_rewriting_spec_names_is_checked_by_quantity_markers(tmp_path):

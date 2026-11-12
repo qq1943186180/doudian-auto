@@ -56,10 +56,43 @@ OBSERVED_MISSING_ATTRIBUTES = (
 # 复制历史行里出现过的渠道标记。下一行就是来源供应商（名称（店铺名））。
 _CHANNEL_LINES = ('1688分销', '阿里巴巴', '淘宝', '天猫', '拼多多', '分销')
 
+# 供应商段落的排除词：这些是行里的**字段**而不是供应商名，不能当供应商。
+_NOT_SUPPLIER_LINES = (
+    '默认配置', '已成功复制', '复制失败', '跳过复制', '已取消复制', '正在复制中',
+    '审核通过', '审核不通过', '关联失败', '关联成功', '商品快速编辑', '去抖店编辑',
+)
+
 # 复制历史行里出现过的目标商品状态词。都是抖店官方用词，不是推测。
 _TARGET_STATE_TOKENS = (
     '草稿箱', '未提审', '审核通过', '审核中', '审核未通过',
     '售卖中', '已下架', '待审核',
+)
+
+# 🔴 2026-11-12 全量 58 条实采后补的词汇表（证据：work/optimizer-20261111/history-all-rows.json）。
+# 抖店侧「商品状态」与「审核状态」是两列，妙手侧还有第三列，词不一样：
+#   抖店商品状态：草稿箱 / 已下架 / 上架中 / 售卖中 / 已售罄 / 已封禁
+#   抖店审核状态：审核通过 / 审核不通过 / 审核驳回 / 未提审 / 审核中
+#   妙手搬运审核：审核通过 / 审核不通过 / 关联失败 / 关联成功
+# 三者混在一起统计会得出「未提审+审核通过+已下架」这种三词组合，无从判断谁是谁，
+# 所以解析时按**位置**分开：商品ID 之后的属抖店侧，之前的属妙手侧。
+PLATFORM_STATE_TOKENS = (
+    '草稿箱', '已下架', '上架中', '售卖中', '已售罄', '已封禁', '待审核',
+)
+PLATFORM_AUDIT_TOKENS = (
+    '审核通过', '审核不通过', '审核驳回', '未提审', '审核中',
+)
+MIAOSHOU_AUDIT_TOKENS = (
+    '审核通过', '审核不通过', '关联失败', '关联成功',
+)
+COPY_STATE_TOKENS = (
+    '已成功复制', '复制失败', '跳过复制', '已取消复制', '正在复制中',
+)
+
+# 复制历史行里，类目路径之后紧跟的「复制类型」标记。
+# 实测 58 条里 57 条是「1688分销」，1 条是「翻新复制」（且那行没有供应商）。
+COPY_TYPE_MARKERS = (
+    '1688分销', '淘宝分销', '天猫分销', '拼多多分销', '京东分销',
+    '翻新复制', '授权复制',
 )
 
 
@@ -109,54 +142,122 @@ def extract_missing_attribute_names(text):
 def parse_history_row_facts(row_text):
     """从复制历史行原文里抽出已经写在页面上的事实。
 
-    实测行文（2026-11-12，商品 3853482303460343870）：
+    实测行文（2026-11-12，商品 3853482303460343870，DOM innerText 原样）：
 
         阿里巴巴酒店生物酶除味剂…
         发布类目：家清纸品>除臭用品>空气清新/净化/芳香剂
         1688分销
         明丞生物科技有限公司（明丞生物科技有限公司）
-        源ID：922368518409
+        源ID：
+        922368518409
+        默认配置
         已成功复制
         "保质期,生产企业名称"未填写，导致复制失败，系统自动放至草稿箱
-        商品ID：3853482303460343870
+        2026-11-12 01:40
+        商品ID：
+        3853482303460343870
         草稿箱
         未提审
+        销量：--
 
     这些字段以前采到了却没被利用，人工补值时还得自己翻页面。
     这里只做**读取**与透传：类目、来源供应商、目标状态、商品ID、源ID。
     供应商名只作参考，不当成「生产企业名称」的答案——那是另一回事。
+
+    🔴 2026-11-12 全量 58 条实采后修了四处真实缺陷（都有真实行做反例）：
+    1. 类目正则原来是 `([^\\n\\r]+)`，遇到被折叠成**单行**的文本会把整行
+       （含供应商、源ID、时间、状态）都当成类目。现在止于下一行或复制类型标记。
+    2. 供应商原来只认 `名称（店铺名）`，58 条里有 8 条供应商是**纯名称**
+       （如 `瑞安市激濠五金商行`、`孕产批发`），现在也认。
+    3. 源ID 原来只认 `源ID：`，漏了 `翻新复制` 行的 `新源ID：`。
+    4. 状态词原来全表扫，妙手侧「审核通过」与抖店侧「审核通过」混在一起，
+       统计出「未提审+审核通过+已下架」这种三词组合。现在按**位置**分开：
+       商品ID 之后是抖店侧，之前是妙手侧。
     """
-    text = str(row_text or '')
-    facts = {'category': None, 'source_supplier': None, 'source_shop': None,
-             'target_states': [], 'product_id': None, 'source_product_id': None}
+    raw = str(row_text or '')
+    facts = {
+        'category': None, 'source_supplier': None, 'source_shop': None,
+        'copy_type': None, 'copy_state': None,
+        'platform_states': [], 'platform_audit_state': None,
+        'miaoshou_audit_state': None, 'failure_reason': None,
+        'target_states': [], 'product_id': None, 'source_product_id': None,
+    }
+    if not raw.strip():
+        return facts
 
-    m = re.search(r'发布类目：\s*([^\n\r]+)', text)
-    if m:
-        facts['category'] = m.group(1).strip()
-    m = re.search(r'源ID：\s*[\r\n\t ]*(\d+)', text)
-    if m:
-        facts['source_product_id'] = m.group(1)
-    m = re.search(r'商品ID：\s*[\r\n\t ]*(\d+)', text)
-    if m:
-        facts['product_id'] = m.group(1)
+    lines = [line.strip() for line in raw.split('\n') if line.strip()]
 
-    lines = [line.strip() for line in re.split(r'[\r\n]+', text)]
-    for index, line in enumerate(lines):
-        if not line or len(line) > 12:
-            continue
-        if not any(channel in line for channel in _CHANNEL_LINES):
-            continue
-        for follow in lines[index + 1:]:
-            if not follow:
-                continue
-            m = re.match(r'^([^（(]{2,60})[（(]([^）)]*)[）)]$', follow)
-            if m:
-                facts['source_supplier'] = m.group(1).strip()
-                facts['source_shop'] = m.group(2).strip() or None
+    # 类目：取「发布类目：」之后到行尾/复制类型标记为止的一段。
+    match = re.search(r'发布类目[:：]([^\n\r]*)', raw)
+    if match:
+        segment = match.group(1)
+        cut = len(segment)
+        for marker in tuple(COPY_TYPE_MARKERS) + ('源ID：', '新源ID：', '源ID:', '新源ID:'):
+            index = segment.find(marker)
+            if 0 <= index < cut:
+                cut = index
+        facts['category'] = segment[:cut].strip() or None
+
+    # 复制类型：必须两侧是空白，否则标题里出现同名词会误判。
+    type_match = re.search(
+        r'(?:^|\s)(' + '|'.join(re.escape(m) for m in COPY_TYPE_MARKERS) + r')(?=\s|$)',
+        raw)
+    if type_match:
+        facts['copy_type'] = type_match.group(1)
+
+    # 来源 ID：「源ID：」与「翻新复制」行的「新源ID：」都要认。
+    match = re.search(r'(?:新?源ID)[:：]\s*(\d+)', raw)
+    if match:
+        facts['source_product_id'] = match.group(1)
+    match = re.search(r'商品ID[:：]\s*(\d+)', raw)
+    if match:
+        facts['product_id'] = match.group(1)
+
+    # 供应商：紧跟复制类型标记、在来源 ID 之前的那一段。
+    if type_match:
+        after = raw[type_match.end():]
+        stop = re.search(r'新?源ID[:：]', after)
+        segment = after[:stop.start()] if stop else after
+        candidates = [line.strip() for line in segment.split('\n') if line.strip()]
+        if candidates:
+            candidate = candidates[0].strip()
+            paired = re.match(r'^(.+?)[（(]([^）)]*)[）)]$', candidate)
+            if paired:
+                facts['source_supplier'] = paired.group(1).strip()
+                facts['source_shop'] = paired.group(2).strip() or None
+            elif (2 <= len(candidate) <= 40
+                  and not re.search(r'[：:，,。、]', candidate)
+                  and candidate not in _NOT_SUPPLIER_LINES):
+                facts['source_supplier'] = candidate
+
+    # 状态按位置分侧：商品ID 之后是抖店侧，之前是妙手侧。
+    product_marker = re.search(r'商品ID[:：]', raw)
+    if product_marker:
+        head, tail = raw[:product_marker.start()], raw[product_marker.start():]
+    else:
+        head, tail = '', raw
+    facts['platform_states'] = [t for t in PLATFORM_STATE_TOKENS if t in tail]
+    for token in PLATFORM_AUDIT_TOKENS:
+        if token in tail:
+            facts['platform_audit_state'] = token
             break
-        break
+    for token in MIAOSHOU_AUDIT_TOKENS:
+        if token in head:
+            facts['miaoshou_audit_state'] = token
+            break
+    for token in COPY_STATE_TOKENS:
+        if token in raw:
+            facts['copy_state'] = token
+            break
+    for line in lines:
+        if '未填写' in line or '导致复制失败' in line:
+            facts['failure_reason'] = line.strip()
+            break
 
-    states = [token for token in _TARGET_STATE_TOKENS if token in text]
+    # 兼容字段：target_states 只保留抖店侧（商品状态 + 审核状态）。
+    states = list(facts['platform_states'])
+    if facts['platform_audit_state']:
+        states.append(facts['platform_audit_state'])
     facts['target_states'] = states
     return facts
 

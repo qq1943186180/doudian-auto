@@ -137,6 +137,16 @@ def parser():
     dropship_session.add_argument('--session', default='doudian-auto-dropship')
     dropship_session.add_argument('--navigate', action='store_true',
                                   help='先进入妙手机会商品页再检查（会开新标签页）')
+    dropship_status = dropship_sub.add_parser(
+        'product-status',
+        help='只读查一个商品在抖店的平台状态（商品管理页 + 草稿箱两页互斥）')
+    dropship_status.add_argument('--product-id', required=True, help='抖店商品 ID（19 位数字）')
+    dropship_status.add_argument('--session', default='doudian-auto-dropship')
+    dropship_history = dropship_sub.add_parser(
+        'history-dump', help='只读采全量复制历史行（翻页 + 细步滚动，含虚拟滚动）')
+    dropship_history.add_argument('--session', default='doudian-auto-dropship')
+    dropship_history.add_argument('--out', help='把采到的行原文写成 JSON 文件')
+    dropship_history.add_argument('--max-pages', type=int, default=10)
     for name, help_text in (('apply', '按阶段推进铺货任务；不带 --apply 为预览'),
                             ('verify', '只读核查铺货结果，不触发任何页面写入')):
         action = dropship_sub.add_parser(name, help=help_text)
@@ -800,6 +810,37 @@ def run(args):
                 import time as _t
                 _t.sleep(14)
             return pages.check_session()
+        if args.dropship_command == 'product-status':
+            from .dropship_pages import DropshipPages
+            from .ego_bridge import EgoBridge
+            bridge = EgoBridge(session=args.session)
+            bridge.require_ready()
+            pages = DropshipPages(bridge)
+            return pages.read_target_review_status(args.product_id)
+        if args.dropship_command == 'history-dump':
+            from .dropship_pages import HISTORY_PATH, DropshipPages
+            from .ego_bridge import EgoBridge
+            bridge = EgoBridge(session=args.session)
+            bridge.require_ready()
+            pages = DropshipPages(bridge)
+            pages.navigate_miaoshou(HISTORY_PATH)
+            import time as _t
+            _t.sleep(12)
+            collected = pages.collect_history_rows_all_pages(max_pages=args.max_pages)
+            rows = collected.get('rows') or []
+            if args.out:
+                from .jobs import write_json
+                write_json(args.out, rows)
+            # 采不全就是采不全：总数对不上必须如实报出来，不能只报采到的条数
+            return {
+                'status': collected.get('status'),
+                'total_on_page': collected.get('total'),
+                'collected': collected.get('collected'),
+                'complete': collected.get('complete'),
+                'page_count': collected.get('page_count'),
+                'out': args.out,
+                'rows': rows if not args.out else None,
+            }
         if args.dropship_command == 'prepare':
             return prepare_task(
                 source_product_id=args.source_product_id,
