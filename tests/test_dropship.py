@@ -430,6 +430,9 @@ def test_readback_only_reports_the_review_status_as_unavailable(tmp_path):
         def __init__(self, bridge):
             pass
 
+        def check_session(self):
+            return {'status': 'ok', 'login_required': False, 'page_url': 'https://x'}
+
         def navigate_official(self, product_id):
             return {'status': 'ok'}
 
@@ -722,14 +725,34 @@ def test_official_page_has_no_review_status_but_that_is_not_a_blocker(tmp_path):
     assert any('审核状态' in x for x in report['unverified_aspects'])
 
 
-def test_miaoshou_rewriting_spec_names_is_listed_not_a_blocker(tmp_path):
-    """妙手改写规格名是常态，按价格排序核对公式；改写事实如实列出。"""
+def test_miaoshou_rewriting_spec_names_is_checked_by_quantity_markers(tmp_path):
+    """妙手改写规格名是常态。
+
+    所以「规格名全等」不能当判据——真实页面上它几乎从不成立。
+    改成问一个可判定的问题：来源规格里的数量标记还在不在官方规格名里。
+    实测来源「生物酶除臭剂【2500ml】送喷壶」→ 官方「2500ml（生物酶除臭剂）」，
+    数量标记 2500ml 保留，所以这一项从「永远未验证」变成可自动判定。
+    """
     job = _confirm_job(tmp_path)
     report = verify_target_readback(
         job, product_id=LIVE_TARGET, sku_rows=LIVE_SHOP_ROWS,
         sku_total_count=None, price_progress=100, review_status=None)
     assert report['stage'] == 'copy_confirmed'
-    assert any('改写了规格名' in x for x in report['unverified_aspects'])
+    assert report['spec_identity']['status'] == 'matched'
+    assert any('规格名数量标记' in x for x in report['verified_aspects'])
+    assert not any('规格名' in x for x in report['unverified_aspects'])
+
+
+def test_spec_identity_fails_when_the_quantity_marker_disappears(tmp_path):
+    """数量标记都对不上时，规格名核对必须如实报未通过，而不是默默放过。"""
+    job = _confirm_job(tmp_path)
+    rows = [{'sku': '红色（生物酶除臭剂）', 'price': '85.88'},
+            {'sku': '蓝色（生物酶除臭剂）', 'price': '139.88'}]
+    report = verify_target_readback(
+        job, product_id=LIVE_TARGET, sku_rows=rows,
+        sku_total_count=None, price_progress=100, review_status=None)
+    assert report['spec_identity']['status'] == 'mismatch'
+    assert any('规格名核对未通过' in x for x in report['unverified_aspects'])
 
 
 def test_price_formula_mismatch_stays_pending(tmp_path):

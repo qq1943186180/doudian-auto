@@ -718,6 +718,41 @@ globalThis.document = {
 };
 """))
 
+    # ---------- check_session ----------
+    # 实测（2026-11-12）：抖店与妙手会话过期后都会落到
+    # https://fxg.jinritemai.com/login/common?...，适配器若不先判登录态，
+    # 只会在几分钟后报「当前页面不是预期的XX页」，把根因埋掉。
+    def check_login(d):
+        return (d.get('status') == 'ok'
+                and d.get('login_required') is True
+                and d.get('login_marker') == '验证码登录'
+                and d.get('host') == 'fxg.jinritemai.com')
+
+    results.append(run('check_session',
+                       extract(pages.check_session, {}), check_login,
+                       page=('fxg.jinritemai.com', '/login/common', 'next=x'),
+                       stub=r"""
+globalThis.document = {
+  querySelectorAll: () => [],
+  body: {innerText: '优质流量 自主经营 手机登录 邮箱登录 发送验证码 登录 收不到验证码'},
+};
+"""))
+
+    def check_alive(d):
+        return (d.get('status') == 'ok'
+                and d.get('login_required') is False
+                and d.get('channel') == 'miaoshou')
+
+    results.append(run('check_session_alive',
+                       extract(pages.check_session, {}), check_alive,
+                       page=('v2-dd.chengji-inc.com', '/move/move', ''),
+                       stub=r"""
+globalThis.document = {
+  querySelectorAll: () => [],
+  body: {innerText: '商品上货 立即上架 放入仓库 放至草稿箱 开始批量抓取商品'},
+};
+"""))
+
     print(f'\n{sum(results)}/{len(results)} 段 JS 真跑通过')
     return 0 if all(results) else 1
 

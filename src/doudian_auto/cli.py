@@ -132,6 +132,11 @@ def parser():
         'manual-queue', help='只读汇总铺货任务与批量队列里等待人工补值的属性')
     dropship_queue.add_argument('--data-root')
     dropship_queue.add_argument('--limit', type=int, default=200)
+    dropship_session = dropship_sub.add_parser(
+        'session-check', help='只读检查浏览器会话是否还登录着（会话过期时页面会跳登录页）')
+    dropship_session.add_argument('--session', default='doudian-auto-dropship')
+    dropship_session.add_argument('--navigate', action='store_true',
+                                  help='先进入妙手机会商品页再检查（会开新标签页）')
     for name, help_text in (('apply', '按阶段推进铺货任务；不带 --apply 为预览'),
                             ('verify', '只读核查铺货结果，不触发任何页面写入')):
         action = dropship_sub.add_parser(name, help=help_text)
@@ -784,6 +789,17 @@ def run(args):
             from .dropship_policy import build_manual_queue_report
             return build_manual_queue_report(data_root=args.data_root,
                                              limit=args.limit)
+        if args.dropship_command == 'session-check':
+            from .dropship_pages import DropshipPages, OPPORTUNITY_PATH
+            from .ego_bridge import EgoBridge
+            bridge = EgoBridge(session=args.session)
+            bridge.require_ready()
+            pages = DropshipPages(bridge)
+            if args.navigate:
+                pages.navigate_miaoshou(OPPORTUNITY_PATH)
+                import time as _t
+                _t.sleep(14)
+            return pages.check_session()
         if args.dropship_command == 'prepare':
             return prepare_task(
                 source_product_id=args.source_product_id,

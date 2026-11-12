@@ -442,6 +442,96 @@ def record_copy_observation(job, *, outcome, evidence=None, target_product_id=No
     return {'stage': 'copied', 'target_product_id': str(target_product_id)}
 
 
+def _require_shop_session(pages, *, page_name):
+    """页面动作前先确认浏览器会话还登录着。
+
+    实测（2026-11-12）：会话过期时抖店与妙手都会跳到
+    ``https://fxg.jinritemai.com/login/common?...``。此时继续跑，
+    适配器只会在几分钟后报「当前页面不是预期的XX页」，
+    根因（掉线）被埋掉了。掉线只能由人重新登录，程序不能替人登录，
+    也不能在登录页上重放写操作——所以这里失败关闭。
+    """
+    session = pages.check_session()
+    if session.get('login_required'):
+        raise DoudianError(
+            'dropship_login_required',
+            f'浏览器会话已过期：{page_name} 当前停在登录页'
+            f'（{session.get("page_url")}，标记：{session.get("login_marker")}）。'
+            f'请人工在浏览器里重新登录抖店，再重跑同一条命令；'
+            f'程序不会代登录，也不会在登录页上重放任何写操作。')
+    return session
+
+
+def _normalize_spec(name):
+    """规格名归一化：去掉空白与装饰符号，便于做包含关系比较。"""
+    text = str(name or '').lower()
+    for ch in ' \t\r\n-_/·*×x，,、.。()（）[]【】{}':
+        text = text.replace(ch, '')
+    return text
+
+
+# 规格名里的「数量-单位」核心标记。妙手会改写规格展示名，但数量标记保留：
+#   来源「4个装」                            → 官方「极氪车门限位器-4个装」
+#   来源「生物酶除臭剂【2500ml】送喷壶」      → 官方「2500ml（生物酶除臭剂）」
+# 两次真实铺货都如此，所以标记包含比规格名全等更可靠。
+_SPEC_MARKER_RE = re.compile(r'(\d+(?:\.\d+)?)\s*([a-zA-Z]{1,4}|[一-龥]{1,2})')
+
+
+def _spec_markers(name):
+    """从规格名里提取数量标记；没有数量就没有标记（如「红色」）。"""
+    text = _normalize_spec(name)
+    markers = []
+    for match in _SPEC_MARKER_RE.finditer(text):
+        marker = match.group(1) + match.group(2)
+        if marker not in markers:
+            markers.append(marker)
+    return markers
+
+
+def _check_spec_identity(expected, observed):
+    """核对规格名：用「数量标记包含关系」，不用规格名全等。
+
+    两次真实铺货都证明妙手会改写规格展示名，所以「集合相等」在真实页面上
+    几乎从不成立——把它当判据等于永远不可达。这里只问一个可判定的子问题：
+    来源规格里的数量标记，有没有出现在官方规格名里。
+
+    返回三态：matched / partial / mismatch。partial 与 mismatch 都**不阻断**
+    copy_confirmed（定价公式才是强证据），只如实写进核验报告。
+    """
+    if not expected or not observed:
+        return {'status': 'not_checkable', 'reason': '缺少预期或读回的规格名'}
+    if len(expected) != len(observed):
+        return {'status': 'mismatch',
+                'reason': f'SKU 数量不一致（来源 {len(expected)} / 官方 {len(observed)}）'}
+    official_text = ' '.join(_normalize_spec(n) for n in observed)
+    matched, partial, unmatched = [], [], []
+    for name in expected:
+        markers = _spec_markers(name)
+        if not markers:
+            partial.append({'source_spec': name, 'reason': '规格名里没有数量标记'})
+            continue
+        found = [m for m in markers if m in official_text]
+        if found:
+            matched.append({'source_spec': name, 'markers': markers, 'found': found})
+        else:
+            unmatched.append({'source_spec': name, 'markers': markers, 'found': []})
+    result = {
+        'status': 'matched',
+        'matched': matched,
+        'source_specs': sorted(expected),
+        'official_specs': sorted(observed),
+        'rule': '官方规格名包含来源规格的数量标记（妙手改写展示名时保留数量）',
+    }
+    if unmatched:
+        result.update(status='mismatch', unmatched=unmatched,
+                      reason='来源规格的数量标记没有出现在官方规格名里')
+        return result
+    if partial:
+        result.update(status='partial', not_checkable=partial,
+                      reason='部分来源规格没有数量标记，无法用标记核对')
+    return result
+
+
 def _check_price_formula(observed, expected, price_input):
     """验证「售价 = 源价 × 倍数 + 加价 + 统一运费」。
 
@@ -554,10 +644,20 @@ def verify_target_readback(job, *, product_id, sku_rows,
         blockers.append(f'读回行数 {len(sku_rows)} 与页面总数 {sku_total_count} 不一致')
     if not isinstance(review_status, str) or not review_status.strip():
         unverified_aspects.append('官方编辑页无商品审核状态（需到商品列表页人工确认）')
-    if expected and set(observed) != set(expected):
+    # 规格名：不用全等，用数量标记包含关系。
+    # 妙手会改写展示名，所以全等在真实页面上几乎从不成立；
+    # 但「数量标记还在」是可判定的，而且两次真实铺货都成立。
+    spec_identity = _check_spec_identity(expected, observed)
+    if spec_identity.get('status') == 'matched':
+        verified_aspects.append('规格名数量标记与来源一致（妙手只改写了展示名）')
+    elif spec_identity.get('status') == 'partial':
         unverified_aspects.append(
-            '妙手改写了规格名：来源 ' + '、'.join(sorted(expected))
-            + ' → 官方 ' + '、'.join(sorted(observed)))
+            '部分来源规格名没有数量标记，无法用标记核对规格名：'
+            + '、'.join(x.get('source_spec', '') for x in spec_identity.get('not_checkable') or []))
+    elif spec_identity.get('status') == 'mismatch':
+        unverified_aspects.append('规格名核对未通过：' + spec_identity.get('reason', ''))
+    elif expected:
+        unverified_aspects.append('缺少规格名对照依据，无法核对')
 
     if blockers:
         state.update(stage='verification_pending', sku_rows_observed=len(sku_rows),
@@ -578,6 +678,7 @@ def verify_target_readback(job, *, product_id, sku_rows,
         'product_id': str(product_id),
         'sku_rows': sku_rows,
         'price_check': price_check,
+        'spec_identity': spec_identity,
         'verified_aspects': verified_aspects,
         'unverified_aspects': unverified_aspects,
         'sku_total_count': sku_total_count,
@@ -656,6 +757,10 @@ def _advance(args, job, state, manifest):
     pages = DropshipPages(bridge)
     stage = state.get('stage')
 
+    # 掉线早失败：会话过期时页面会跳登录页，继续跑只会得到
+    # 「当前页面不是预期的XX页」，把根因埋掉。
+    _require_shop_session(pages, page_name='当前标签页')
+
     if stage == 'prepared':
         return _stage_settings(args, job, state, manifest, pages)
     if stage == 'settings_verified':
@@ -675,6 +780,7 @@ def _stage_settings(args, job, state, manifest, pages):
     job_state_path = job / 'state.json'
     pages.navigate_miaoshou(SETTING_PATH)
     time.sleep(SETTLE_SECONDS)
+    _require_shop_session(pages, page_name='搬家设置页')
 
     before = pages.read_settings()
     target = dict(before.get('values') or {})
@@ -779,6 +885,7 @@ def _stage_copy(args, job, state, manifest, pages):
     # 1) 读来源商品的规格：复制前唯一的先验
     pages.navigate_source(offer_url)
     time.sleep(SETTLE_SECONDS)
+    _require_shop_session(pages, page_name='1688来源商品页')
     source_skus = pages.read_source_skus(offer_url=offer_url)
     expected = {row['sku']: row['source_price']
                 for row in source_skus.get('sku_rows') or []}
@@ -804,6 +911,7 @@ def _stage_copy(args, job, state, manifest, pages):
     #    所以要轮询等它出现，而不是读一次就下结论。
     pages.navigate_miaoshou(MOVE_PATH)
     time.sleep(SETTLE_SECONDS)
+    _require_shop_session(pages, page_name='商品上货页')
     pages.paste_offer_and_fetch(offer_url=offer_url)
     fetch = _wait_for_fetch_result(pages)
     if fetch.get('timed_out'):
@@ -842,12 +950,14 @@ def _readback_only(args, job, state, manifest):
     bridge.require_ready()
     pages = DropshipPages(bridge)
     result = {'task_id': args.task_id, 'readback_only': True, 'stage': state.get('stage')}
+    _require_shop_session(pages, page_name='当前标签页')
 
     target_id = state.get('target_product_id')
     if not target_id:
         # 还没有目标商品 ID：先按来源筛选历史，再找基线之后新增的那一行
         pages.navigate_miaoshou(HISTORY_PATH)
         time.sleep(SETTLE_SECONDS)
+        _require_shop_session(pages, page_name='复制历史页')
         pages.filter_history_by_source(source_product_id=manifest['source_product_id'])
         time.sleep(4)
         history = pages.read_history_product_id(
@@ -885,6 +995,7 @@ def _readback_only(args, job, state, manifest):
     # 编辑页是重前端页面：导航返回后 DOM 还没渲染出 SKU 表，
     # 立刻读会得到「0 行」并被误报成 layout_changed。实测这个页面需要十几秒。
     time.sleep(SETTLE_SECONDS)
+    _require_shop_session(pages, page_name='抖店官方商品编辑页')
     skus = pages.read_sku_prices(product_id=target_id)
     review = pages.read_review_status(product_id=target_id)
     result['sku_rows'] = skus.get('sku_rows')

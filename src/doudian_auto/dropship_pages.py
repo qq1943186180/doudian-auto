@@ -96,6 +96,41 @@ class DropshipPages:
         })
         return {'status': 'ok', 'product_id': str(product_id)}
 
+    # ---------- 会话登录态 ----------
+
+    def check_session(self):
+        """检查当前浏览器会话是否还登录着。**只读**，不改任何东西。
+
+        实测（2026-11-12）：抖店或妙手会话过期后，页面会跳到
+        ``https://fxg.jinritemai.com/login/common?...``（妙手则先跳
+        服务市场授权再落到同一个登录页）。这时适配器只会在几分钟后报
+        「当前页面不是预期的XX页」，完全看不出根因是登录过期。
+        这里把登录态单独读出来，让程序第一秒就说清「需要人工重新登录」。
+
+        只看当前标签页；判断依据是 URL 路径与登录页文案，两者都命中才算
+        登录失效，避免把正常页面里的「登录」字样误判成掉线。
+        """
+        code = """(()=>{
+const u=new URL(location.href);
+const text=(document.body&&document.body.innerText)||'';
+const pathname=u.pathname||'';
+const shopHost=(u.hostname==='fxg.jinritemai.com'||u.hostname==='fuwu.jinritemai.com');
+const loginPath=pathname.startsWith('/login');
+// 登录页特有的两句文案：普通页面不会出现，用它们兜住「URL 没变但弹了登录」的形态。
+const loginPageText=text.includes('收不到验证码')||text.includes('手机号停用或忘记');
+let marker=null;
+if(loginPath||loginPageText){
+  marker=text.includes('收不到验证码')?'验证码登录'
+    :(text.includes('扫码登录')?'扫码登录':'登录页');
+}
+return {status:'ok',page_url:u.href,host:u.hostname,path:pathname,
+ login_required:shopHost&&(loginPath||loginPageText),
+ login_marker:marker,
+ channel:u.hostname==='v2-dd.chengji-inc.com'?'miaoshou'
+   :(u.hostname==='fxg.jinritemai.com'?'doudian':'other')};
+})()"""
+        return self._evaluate(code, page_name='会话登录态')
+
     # ---------- 搬家设置页 ----------
 
     def read_settings(self):
