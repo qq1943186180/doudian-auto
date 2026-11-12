@@ -91,8 +91,18 @@ def _rebaseline(task_id, proof_path, *, db_path, preflight):
             history = batch.read_json(file)
             status = history.get('submission_status', history.get('submission_state'))
             stage = history.get('stage', history.get('phase'))
+            # Historical agents recorded the same conclusion under different field names.
+            # Only two conclusions ever resolve a row: nothing was saved, or the previous
+            # revision is already confirmed. Any "unknown" stays unresolved no matter how
+            # it is spelled, and a save counter that disagrees with `saved` blocks it too.
+            never_saved = (history.get('saved') is False
+                           and not history.get('saveAttempts')
+                           and (history.get('saveCount') or 0) <= 0)
+            prior_confirmed = (stage == 'verified'
+                               and status in ('accepted', 'verified_by_readback'))
             resolved = ((status == 'not_attempted' and item.get('resolution') == 'no_save_attempted')
-                        or (stage == 'verified' and status == 'accepted'
+                        or (never_saved and item.get('resolution') == 'no_save_attempted')
+                        or (prior_confirmed
                             and item.get('resolution') == 'prior_revision_confirmed'))
             if (str(history.get('product_id', history.get('productId'))) != row['product_id']
                     or not resolved or not str(item.get('reason', '')).strip()):

@@ -910,3 +910,78 @@ tab 的 DOM id 固定，可直接 `document.querySelector('#<id>').click()`：
   `targetId`，再 `page.cdp('Target.closeTarget',{targetId})` 在浏览器层强制关闭；
   之后把死页从 `state.json` 的 `pages` 路由表里摘掉，runtime 会另开新页。
   **不要为此新建任务空间。**
+
+---
+
+## 第十五轮实抓（2026-11-13 凌晨）：妙手可见性依赖真实布局 + 抖店两条渲染上限
+
+这一轮是**第一次真跑 `batch rebaseline`**，暴露的四个事实里有三个会直接决定「能不能读到数据」，
+而且报错文案都会把人带偏。
+
+### ① Ego 把每个 Page 钉死在任务的固定视口，页面不会自己适配
+
+`ego_runtime.mjs` 每次操作前都会把每个 Page 覆盖成 `state.viewport`（注释写的是
+"keep the task's measured viewport fixed across Pages"）。实测本次任务空间是 **904×788**，
+而妙手 `quick_edit` 的「查询」按钮 `getBoundingClientRect().left = 1017`。
+
+- `miaoshou_dom.js` 的 `visible()` 判据里有一条 `r.left >= innerWidth → false`
+  → **控件真实存在、样式正常、`offsetParent` 非空，却被判成不可见**。
+- 下游报错是 `妙手当前可见控件或商品行未唯一定位；未点击`（`page_timeout`），
+  读起来像「页面改版」或「登录态掉了」，**实际根因是视口太窄**。
+- 修法：把任务空间 `state.viewport` 调到 `1440×900`（`state.json` 的 `viewport`）。
+  这不是改代码，是调任务参数。
+
+排查时注意：`offsetParent !== null` 在后台标签页/窄视口下**仍然为真**，
+不能拿它当可见性证据；要看 `getBoundingClientRect().left < innerWidth`。
+
+### ② 全屏 `op.jinritemai.com` 组件 iframe 会拦截整页点击
+
+实测妙手页里挂着一个：
+
+```
+<iframe class="__op__bixi_524 _o_p_b svelte-1hj8tfa _o_"
+        src="https://op.jinritemai.com/open/component/common?appId=7641889070456782908&cId=524">
+```
+
+- 尺寸 **1440×900（正好等于视口）**、`z-index: 10000`、`pointer-events: auto`、`opacity: 1`
+- 后果：`document.elementFromPoint(x, y)` **永远返回这个 iframe**，
+  所有控件的 `actionable` 判定都是 false → 点击、`_mark_control` 全废。
+- 它不是页面内容，也不会随 SPA 路由切换自动消失；**重新加载页面即消失**。
+- 排查特征：`elementFromPoint` 返回 `IFRAME.__op__bixi_*` 而不是目标元素本身或其子节点。
+
+### ③ 抖店「价格库存」SKU 表格只渲染约 7 行（结构上限，不是预算）
+
+商品 `3848316916011762046`（磁吸折叠扫把簸箕）：
+
+| 来源 | SKU 数 |
+|---|---|
+| 官方 API（`data.model.sku_detail.value`） | **24**，全部 `sku_status: true`，24 个不同 `spec_detail_ids` |
+| 页面 DOM `tr[data-row-key]` | **7**（点「全屏」后 8） |
+| 逐 SKU 读到的商家编码 | **6** |
+
+实测排除项：
+
+- 滚动 `#goodsEditScrollContainer`（`scrollHeight 4348 / clientHeight 644`）到 3704（到底）
+  → 行数**不变**，SKU 集合不变。
+- 视口高度 900 → 2600（`innerHeight` 2889）→ 行数**仍 7**。
+- 那个 `[id="goodsEditScrollContainer-价格库存"]` 元素 `scrollHeight == clientHeight`，
+  根本不是滚动容器。
+- 另一件 `3848317566716084561` 9 个 SKU，同样只读到 7 个。
+
+**结论**：`official_sku_code_incomplete` 对 SKU 数 > 7 的商品是**必然结果**。
+`collect_official_sku_codes` 的 30 秒上限是刻意的，**放大预算也读不到，因为那些行不在 DOM 里**。
+要突破必须先找到抖店的展开/分页机制；截至目前没有观察到入口。
+
+### ④ 抖店详情槽位固定 28
+
+商品 `3850072398019821856`（狗狗玩具）：
+
+```
+detail_declared = 37    detail_cards = 37    detail_slots = 28    loaded = 28
+detail_status  = ambiguous
+```
+
+连续 8 轮 `editor.dom('scroll', kind='details')` + 每轮等 2 秒，槽位与 loaded **恒为 28**。
+→ `detail_source_not_ready`。所以「详情图超过 28 张」的商品同样过不了双端基线。
+
+与 ③ 是同一类：**平台页面存在内容量硬上限，加时间、加预算、加视口都无效**。

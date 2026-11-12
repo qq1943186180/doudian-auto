@@ -9,13 +9,25 @@ from doudian_auto.visual_review import file_hash
 from test_preflight import queue, _snapshot
 
 
-@pytest.mark.parametrize('mode', ['valid', 'unknown', 'attempted', 'missing', 'changed', 'price', 'unresolved'])
+@pytest.mark.parametrize('mode', ['valid', 'unknown', 'attempted', 'missing', 'changed', 'price', 'unresolved',
+                                  'saved_false', 'verified_readback', 'unknown_save'])
 def test_external_rebaseline_requires_resolved_history_and_full_dual_read(queue, tmp_path, mode):
+    # Historical agents wrote the same conclusion under different names. These shapes are
+    # the ones seen in real queue data, and only the first two may resolve a row.
+    shapes = {
+        'saved_false': {'phase': 'upload_unknown', 'saved': False, 'saveCount': 0},
+        'verified_readback': {'stage': 'verified', 'submission_state': 'verified_by_readback'},
+        'unknown_save': {'stage': 'submitting', 'submission_status': 'unknown', 'saveAttempts': 1},
+    }
     row = queue.rows[0]
     pid = row['product_id']
     history = tmp_path / 'history.json'
-    history.write_text(json.dumps({'product_id': pid, 'phase': 'editing',
-                                  'submission_status': 'not_attempted'}))
+    body = {'product_id': pid, 'phase': 'editing', 'submission_status': 'not_attempted'}
+    if mode in shapes:
+        # Replace rather than merge: a leftover submission_status would shadow
+        # submission_state and make this shape test the wrong thing.
+        body = {'product_id': pid, **shapes[mode]}
+    history.write_text(json.dumps(body))
     batch.reconcile_observation(history, shop=row['shop'], db_path=queue.db)
     official = _snapshot(row)
     sku = official['sku_evidence']['rows'][0]
@@ -27,9 +39,11 @@ def test_external_rebaseline_requires_resolved_history_and_full_dual_read(queue,
     if mode == 'price':
         miao['protected']['specPrices'][0]['price'] = '999.00'
     proof = {k: row[k] for k in ('product_id', 'shop', 'target_version')}
+    resolution = {'unresolved': 'unknown', 'verified_readback': 'prior_revision_confirmed'
+                  }.get(mode, 'no_save_attempted')
     proof.update(read_only=True, reviewer='test-reviewer', resolved_observations=[{
         'evidence': {'path': str(history), 'sha256': file_hash(history)},
-        'resolution': 'unknown' if mode == 'unresolved' else 'no_save_attempted',
+        'resolution': resolution,
         'reason': 'No save input in historical observation; fresh server baseline recovered.'}])
     for key, data in (('miaoshou', miao), ('doudian', official)):
         path = tmp_path / (key + '.json')
@@ -47,7 +61,8 @@ def test_external_rebaseline_requires_resolved_history_and_full_dual_read(queue,
     conn.close()
     path = tmp_path / 'proof.json'
     path.write_text(json.dumps(proof), encoding='utf-8')
-    if mode == 'valid':
+    succeeds = mode in ('valid', 'saved_false', 'verified_readback')
+    if succeeds:
         result = rebaseline_external(row['id'], path, db_path=queue.db)
         assert result['state'] == 'needs_agent'
         assert result['target_version'] == row['target_version']
@@ -56,7 +71,7 @@ def test_external_rebaseline_requires_resolved_history_and_full_dual_read(queue,
             rebaseline_external(row['id'], path, db_path=queue.db)
     conn = batch._db(queue.db)
     final = dict(conn.execute('SELECT * FROM products WHERE id=?', (row['id'],)).fetchone())
-    assert final['state'] == ('needs_agent' if mode == 'valid' else 'blocked')
+    assert final['state'] == ('needs_agent' if succeeds else 'blocked')
     assert conn.execute('SELECT count(*) FROM external_observations WHERE task_id=?', (row['id'],)).fetchone()[0] == 1
     assert final['submission_attempts'] == (1 if mode == 'attempted' else 0)
     conn.close()

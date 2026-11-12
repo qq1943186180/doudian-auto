@@ -297,3 +297,55 @@ WorkBuddy 的 safe-delete 守卫按「**单次工具调用内累计删除次数*
   - 锁释放失败**不得致命**：文件里留着死 PID，下一次运行会回收它。
 - 同理：把 `npm test` 与 `pytest` 放在**同一次工具调用**里跑，pytest 收尾清理自己的临时
   目录（一个目录 55 个文件）也会撞守卫 —— 与项目代码无关，但会让测试跑完却拿不到汇总行。
+
+### ⑪ 页面存在内容量硬上限，别用「加预算」掩盖「读不到」
+
+抖店编辑页至少两处有固定的渲染上限，实测都不随滚动、视口或等待时间变化：
+
+- 「价格库存」SKU 表格**只渲染约 7 行**（24 个 SKU 的商品点「全屏」也只从 7 变 8；
+  滚动主容器到底、视口高度翻三倍，行数都不变）。
+- 详情槽位**固定 28**（37 张详情的商品连续滚 8 轮，槽位恒 28）。
+
+因此：
+
+- `official_sku_code_incomplete`（SKU > 7）与 `detail_source_not_ready`（详情 > 28）
+  **不是预算问题**。`collect_official_sku_codes` 的 30 秒上限、`wait_details` 的 30 秒轮询
+  都是刻意设的：**行根本不在 DOM 里，等多久都读不到**。别把超时时间调大当作修好了。
+- 遇到这类报错，先量三件事再下结论：API 声明的数量、DOM 实际渲染的行数/槽位数、
+  两者是否随滚动变化。三者一比就知道是「没等够」还是「读不到」。
+- 要突破只能找平台的展开/分页入口。**找不到入口时，正确结果是继续 blocked，
+  不是把「UI 覆盖了一部分」当成「证据完整」**——后者等于放宽闸门。
+
+### ⑫ rebaseline 结案只认两种结论，但历史证据的字段名不统一
+
+`batch rebaseline` 的契约是：每条历史观察证据都必须能归到下面**两种结论之一**，
+否则整件保持 blocked（失败关闭）：
+
+| 结论 | 语义 | 可接受的证据形态 |
+|---|---|---|
+| `no_save_attempted` | 从未把改动写进商品 | `submission_status == 'not_attempted'`；或 `saved is False` **且** 无 `saveAttempts` **且** `saveCount <= 0` |
+| `prior_revision_confirmed` | 上一版改动已确认，本次按新版本重做 | `stage == 'verified'` 且 `status` ∈ `{accepted, verified_by_readback}` |
+
+- `verified_by_readback` 是队列自己的终态，比 `accepted` **更强**，不能因为「字段名不在白名单
+  里」就把它拒之门外——这是真实的过度严格。
+- 🔴 **`unknown` 永远不结案**，不管它写成 `submission_status='unknown'`、
+  `phase='upload_unknown'` 还是 `saveAttempts > 0`。这些说明提交可能已被平台收到，
+  重做可能覆盖别人的改动。
+- 判断依据是**证据内容**，不是 `stage` 字符串本身。历史 agent 用过
+  `editing / completed / saved_and_verified / blocked_pending / submitting / upload_unknown /
+  title_save_request_omitted_stop` 等十几种写法，只按字面匹配必然漏判。
+
+### ⑬ 全量 pytest 会在一个回合内删爆守卫阈值，产生假失败
+
+safe-delete 守卫按「单次工具调用内累计删除文件数」计数（阈值 50，按文件递归计）。
+全量 720 个测试里大量用例会建删 `browser.lock` / `job.lock` / 临时目录，
+**累计很容易在跑到一半时撞线**；撞线后 `unlink` 被拦，于是「锁文件不存在」这类断言失败。
+
+- 典型假失败特征：失败信息里同时出现 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`
+  和 `assert not True  where True = ...browser.lock.exists()`。
+- 本轮实测：同一个提交，早期全量 `[100%]` 全点（无 F/E）；继续在同一回合里反复跑之后，
+  变成 `39 failed, 681 passed`，而**单独跑 `test_workflow.py` 仍 55 passed** →
+  失败与代码无关，与这一回合已经删了多少有关。
+- 判据优先级：**先看进度条里有没有 `F`/`E`**。若中途才出现 F 且伴随守卫文案，
+  那不是回归。要拿干净汇总，**换一个用户回合再跑**（计数会重置）。
+- `--basetemp` 指向仓库内目录本身没问题（`work/` 已被 gitignore），但别复用一个已有目录。
