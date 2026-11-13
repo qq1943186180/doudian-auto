@@ -10,14 +10,30 @@ from test_preflight import queue, _snapshot
 
 
 @pytest.mark.parametrize('mode', ['valid', 'unknown', 'attempted', 'missing', 'changed', 'price', 'unresolved',
-                                  'saved_false', 'verified_readback', 'unknown_save'])
+                                  'saved_false', 'verified_readback', 'unknown_save',
+                                  'saved_none', 'saved_negative', 'saved_str_zero', 'saved_no_counter',
+                                  'uploads_started', 'status_conflict', 'status_unknown_pair'])
 def test_external_rebaseline_requires_resolved_history_and_full_dual_read(queue, tmp_path, mode):
     # Historical agents wrote the same conclusion under different names. These shapes are
-    # the ones seen in real queue data, and only the first two may resolve a row.
+    # the ones seen in real queue data, plus the values a sloppy history could carry; only
+    # `saved_false` and `verified_readback` may resolve a row.
     shapes = {
         'saved_false': {'phase': 'upload_unknown', 'saved': False, 'saveCount': 0},
         'verified_readback': {'stage': 'verified', 'submission_state': 'verified_by_readback'},
         'unknown_save': {'stage': 'submitting', 'submission_status': 'unknown', 'saveAttempts': 1},
+        # A counter that is absent, null, negative or a string is not a zero.
+        'saved_none': {'phase': 'upload_unknown', 'saved': False, 'saveCount': None},
+        'saved_negative': {'phase': 'upload_unknown', 'saved': False, 'saveCount': -1},
+        'saved_str_zero': {'phase': 'upload_unknown', 'saved': False, 'saveCount': '0'},
+        'saved_no_counter': {'phase': 'upload_unknown', 'saved': False},
+        # An upload that started leaves assets behind even when no save was recorded.
+        'uploads_started': {'phase': 'upload_unknown', 'saved': False, 'saveCount': 0,
+                            'saveAttempts': 0, 'uploadsStarted': True},
+        # One status field must not outvote another, and "unknown" wins any tie.
+        'status_conflict': {'stage': 'verified', 'submission_status': 'accepted',
+                            'submission_state': 'unknown'},
+        'status_unknown_pair': {'stage': 'verified', 'submission_status': 'unknown',
+                                'submission_state': 'verified_by_readback'},
     }
     row = queue.rows[0]
     pid = row['product_id']

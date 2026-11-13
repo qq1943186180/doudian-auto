@@ -1,6 +1,6 @@
 # 抖店本地上传
 
-更新：2026-11-13 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261113-012（队列恢复实操：3 件重新基线成功／结案契约补齐／两条页面渲染上限实抓）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝18 verified / 40 blocked / 3 needs_agent（2026-11-13 02:28 实读 batch.sqlite3）；blocked 原因分布很杂，其中明确「平台必填属性缺失」8 件，其余为图片槽位不足、视觉质量复核失败、需重新基线、商品已删除等，不可笼统归为缺属性。
+更新：2026-11-13 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261113-012（队列恢复实操：3 件重新基线成功／结案契约补齐并经 Codex 交叉审查收紧／两处「读不全」已辨明不是平台上限）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝18 verified / 40 blocked / 3 needs_agent（2026-11-13 02:28 实读 batch.sqlite3）；blocked 原因分布很杂，其中明确「平台必填属性缺失」8 件，其余为图片槽位不足、视觉质量复核失败、需重新基线、商品已删除等，不可笼统归为缺属性。
 
 > **现在需要人做的是两类事，都不阻塞程序自解**：
 > ① **10 件缺真实资料**（安装方式 4 / 尺寸 3 / 硬度 2 / 材质+适用年龄 1 / 承重+适配基面 1）——1688 源头没有这些值，程序不猜。只要给值，就能像 T-20261112-011 那样逐件补齐并提审（那条链路已 43 秒跑通）。其中 4 件缺「安装方式」的商品，标题/卖点里就写着「免打孔」「吸盘」，但**未经你确认我不按标题推断属性**。
@@ -10,7 +10,7 @@
 
 ## 给人的说明
 
-### T-20261113-012 · 194-76 · 队列恢复实操：3 件重新基线成功／结案契约补齐／两条页面渲染上限实抓
+### T-20261113-012 · 194-76 · 队列恢复实操：3 件重新基线成功／结案契约补齐／两处「读不全」的机制辨析
 
 - 状态：**done**。Agent workbuddy，2026-11-13 凌晨。未调用 Codex。**本轮解开的是「队列停摆」而不是新功能**：43 件 blocked 里 14 件标着 `external_work_requires_rebaseline`，但此前从来没人真跑过 `batch rebaseline`，也没人验证过它到底能不能处理这 14 件。
 - ① **先查清队列为什么会停**：`products.id`（数字主键）才是 `--task-id` 认的值，**不是抖店商品 ID**；`external_observations.task_id` 同样指向数字主键。用商品 ID 去查会得到「0 条观察证据」的假结论。这 14 件其实各有 1–2 条观察证据，前置条件（`baseline_hash`/`artifacts_path`/`upload_map`/租约）全部干净。
@@ -19,14 +19,15 @@
   - 🔴 **全屏 `op.jinritemai.com` 组件 iframe 会拦截整页点击**：实测一个 `1440×900 / z-index:10000 / pointer-events:auto` 的 iframe（`appId=7641889070456782908&cId=524`）覆盖整个妙手页，`document.elementFromPoint` 永远返回它 → 所有控件的 `actionable` 都是 false。它不是页面内容，**刷新即消失**（SPA 路由切换会把它留下）。
   - 采集顺序改为**先妙手、后抖店**：抖店侧 `_stable_doudian_snapshot` 自己会开 `Emulation.setFocusEmulationEnabled`，能容忍后台页；妙手侧的可见性判定依赖真实布局，必须前台。
 - ③ **恢复 3 件成功**：`task 2`（3850072900438720563 男士内裤）、`task 11`（3850071893537325881 男童休闲裤）、`task 37`（3848317504447447331 桌下收纳盒）→ `blocked → needs_agent`，`target_version` 与历史保留不变。每件都是**双端新鲜快照 + 逐条观察证据结案**：妙手 5 主图 / 5·7·15 详情、抖店同数量且 `detail_status=ready`、标题与图片 `resource_key` 序列两侧完全相等、`verify_miaoshou_skus` 通过。
-- ④ **结案契约补齐（`rebaseline.py`）**：历史 agent 把同一个结论写成了不同字段名，原契约只认 `status == 'not_attempted'` 和 `(stage=='verified' and status=='accepted')` 两种精确组合，导致 11 件即便证据明确也永远结不了案。新增两条**等强或更强**的判定（`unknown` 一律不结案）：
-  - `saved is False` **且** 无 `saveAttempts` **且** `saveCount <= 0` → 视为 `no_save_attempted`（真实样本：`{'phase':'upload_unknown','saved':false,'saveCount':0}`）。
-  - `submission_state == 'verified_by_readback'` → 视为 `prior_revision_confirmed`（这是队列自己的终态，比 `accepted` 更强）。
-  - 新增 3 个测试参数：`saved_false`（可结案）、`verified_readback`（可结案）、`unknown_save`（`saveAttempts=1` + `unknown`，**必须失败**）。
-- ⑤ 🔴 **两条页面渲染硬上限（本轮最重要的新事实，决定多 SKU / 大详情商品能否走完流程）**：
-  - **SKU 表格只渲染约 7 行**。商品 `3848316916011762046`：API 返回 **24 个 SKU**（全部 `sku_status=true`、24 个不同 `spec_detail_ids`），DOM 里 `tr[data-row-key]` **只有 7 行**；滚动 `#goodsEditScrollContainer` 到 3704（到底）行数不变；视口高度 900→2600（`innerHeight` 2889）行数仍 7；点「全屏」只从 7 变 8。商品 `3848317566716084561` 9 个 SKU 同样只读到 7 个。→ **逐 SKU 读商家编码对 SKU>7 的商品结构上做不到**，报 `official_sku_code_incomplete`。这就解释了队列里那 2 件同码商品，**不是读取预算不足**（`collect_official_sku_codes` 的 30 秒上限是刻意设的，放大也读不到，因为行根本不在 DOM 里）。
-  - **详情槽位固定在 28**。商品 `3850072398019821856`：`detail_declared=37`、`detail_cards=37`、`detail_slots=28`；连续 8 轮 `scroll kind=details` + 每轮 2 秒，槽位恒为 28、`loaded` 恒为 28 → `detail_status=ambiguous` → `detail_source_not_ready`。
-  - 结论：**task 7 / 35 / 40 这 3 件当前不可恢复**，不是证据不足，是平台的页面容量上限。要动它们必须先找到抖店页面的展开/分页机制，或者在契约层重新定义「部分 UI 覆盖」的证据强度——**后者等于放宽闸门，本轮不做**。
+- ④ **结案契约补齐（`rebaseline.py`，经交叉审查后收紧两轮）**：历史 agent 把同一个结论写成了不同字段名，原契约只认 `status == 'not_attempted'` 和 `(stage=='verified' and status=='accepted')` 两种精确组合，导致 11 件即便证据明确也永远结不了案。新增两条**等强或更强**的判定（`unknown` 一律不结案）：
+  - `saved is False` **且** 计数（`saveAttempts`/`saveCount`）**至少存在一个且全部为明确的非负整数 0** **且** `uploadsStarted` 为假 → 视为 `no_save_attempted`（真实样本：`{'phase':'upload_unknown','saved':false,'saveCount':0}`）。🔴 计数缺失、`None`、负数、布尔、字符串 `"0"`（`"0" <= 0` 会直接抛 `TypeError`）**一律拒绝**；`uploadsStarted=True` 也拒绝——素材可能已经传到妙手侧，不能笼统算「什么都没发生」。
+  - `submission_state == 'verified_by_readback'` → 视为 `prior_revision_confirmed`（这是队列自己的终态，比 `accepted` 更强）。🔴 但 `submission_status` 与 `submission_state` **同时存在时必须一致**：任一为 `unknown` 或两者冲突（如 `accepted` + `unknown`）一律不结案，不允许字段顺序决定答案。
+  - 测试参数从 7 个扩到 **17 个**（`tests/test_rebaseline.py`，32 项全通过）：新增 `saved_none` / `saved_negative` / `saved_str_zero` / `saved_no_counter` / `uploads_started` / `status_conflict` / `status_unknown_pair`，全部**必须失败**。
+- ⑤ 🔴 **两处「读不全」的机制辨析（经 Codex 交叉审查后修正过一次结论）**：
+  - **SKU 表格在这两件商品上只露出 7 行**。商品 `3848316916011762046`：API 返回 **24 个 SKU**（全部 `sku_status=true`、24 个不同 `spec_detail_ids`），DOM 里 `tr[data-row-key]` **只有 7 行**；滚动 `#goodsEditScrollContainer` 到 3704（到底）行数不变；视口高度 900→2600（`innerHeight` 2889）行数仍 7；点「全屏」只从 7 变 8。商品 `3848317566716084561` 9 个 SKU 同样只读到 7 个。
+    🔴 **但「7 行是平台上限」这个结论是错的**：同一套采集代码在 `3850072900438720563`（**25** 个 SKU）和 `3850071893537325881`（**32** 个 SKU）上完整读到了全部商家编码并通过 `verify_miaoshou_skus`——页面显然能露出 7 行以上。机制侧的真因是策略：`official_sku_codes.py:165` 只在**存在占位行**（`pending_count > 0`）时才滚动，`official_sku_code_dom.js:63-68` 也只滚动最后一个占位行；这两件正好是「7 真行 + 0 占位行」，**整轮 30 秒一次滚动都没发起过**，只是反复重读同一批可见行。真正的行滚动容器尚未定位（已排除的是外层容器与 `-价格库存` 节点）。
+  - **详情槽位停在 28**。商品 `3850072398019821856`：`detail_declared=37`、`detail_cards=37`、`detail_slots=28`；连续 8 轮 `scroll kind=details` + 每轮 2 秒，槽位恒为 28、`loaded` 恒为 28 → `detail_status=ambiguous` → `detail_source_not_ready`。这条的排除强度更弱：`wait_details` 只轮询不滚动，8 轮滚动是临时脚本做的、**逐轮输出没落盘**，也没试过「全部展开」类入口。
+  - 结论：**task 7 / 35 / 40 这 3 件当前仍不可恢复**，但原因是「采集策略未覆盖这类页面状态」+「详情侧证据还不够」，**不是已证实的平台容量上限**。下一轮该做的是在实页定位 SKU 表格真正的行滚动容器（无占位行时也尝试滚动）并落盘详情逐轮证据；**在拿到证据前不要把它写成平台限制**——那等于把「我的策略没覆盖」记成「对方不给」，会永久放弃一个可修的问题。
 - ⑥ **队列账（2026-11-13 02:28 实读）**：`blocked 43 → 40`、`needs_agent 3`、`verified 18` 不变。`task 36`（3848317525922283791）是 `doudian_product_deleted`，策略里已归 `closed`（不再重试），但**没有受支持的命令把它移出 blocked**，所以仍计入 40；这不影响执行，只是统计口径。
 - **验证**：`pytest tests/ -q` 全量通过（进度条 `[100%]` 全程无 `F`/`E`）。⚠️ 本轮同一回合里反复跑之后变成 `39 failed, 681 passed`，逐个查全部是 **safe-delete 守卫撞线**导致的假失败：失败文案里带 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` 且断言是「`browser.lock` 应不存在」，而**单独跑 `tests/test_workflow.py` 仍 55 passed**；同一提交早期全量是全绿的。判据与处理写进 `docs/dropship-policy.md` ⑬（换一个回合再跑以重置计数）。新增/改动：`rebaseline.py` 结案判断、`tests/test_rebaseline.py` 3 个新参数。
 - **工具**：`work/rebaseline-20261113/`（`read_pair.py` 双端采集、`make_proof.py` 出 proof、`run_batch.py` 批量、`probe_*` 四个只读探查）。

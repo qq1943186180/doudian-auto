@@ -89,15 +89,35 @@ def _rebaseline(task_id, proof_path, *, db_path, preflight):
             if digest not in remaining or not any(Path(x['evidence_path']).resolve() == file for x in observations):
                 raise fail()
             history = batch.read_json(file)
-            status = history.get('submission_status', history.get('submission_state'))
-            stage = history.get('stage', history.get('phase'))
-            # Historical agents recorded the same conclusion under different field names.
+            if not isinstance(history, dict):
+                raise fail()
+            # Historical agents recorded the same conclusion under different field names,
+            # so read every submission-status field that is present. One cannot outvote
+            # another: a disagreement, or an "unknown" spelled in any of them, leaves the
+            # row unresolved instead of letting field order pick the answer.
+            submitted = {key: str(history[key]).strip().lower()
+                         for key in ('submission_status', 'submission_state')
+                         if history.get(key) is not None}
+            status = (next(iter(submitted.values()))
+                      if len(set(submitted.values())) == 1 and 'unknown' not in submitted.values()
+                      else None)
+            stage = str(history.get('stage') if history.get('stage') is not None
+                        else (history.get('phase') or '')).strip().lower()
+
+            def _idle_count(value):
+                # Only an explicit zero means "nothing moved". A missing counter, None, a
+                # negative number, a bool or a string must not be coerced into agreement --
+                # `'0' <= 0` would even raise instead of refusing the row.
+                return isinstance(value, int) and not isinstance(value, bool) and value == 0
+
             # Only two conclusions ever resolve a row: nothing was saved, or the previous
-            # revision is already confirmed. Any "unknown" stays unresolved no matter how
-            # it is spelled, and a save counter that disagrees with `saved` blocks it too.
+            # revision is already confirmed. `saved: false` alone is not a conclusion, and
+            # an upload that started leaves assets behind even when no save was recorded.
+            counters = {key: history[key] for key in ('saveAttempts', 'saveCount') if key in history}
             never_saved = (history.get('saved') is False
-                           and not history.get('saveAttempts')
-                           and (history.get('saveCount') or 0) <= 0)
+                           and bool(counters)
+                           and all(_idle_count(value) for value in counters.values())
+                           and history.get('uploadsStarted') in (None, False, 0))
             prior_confirmed = (stage == 'verified'
                                and status in ('accepted', 'verified_by_readback'))
             resolved = ((status == 'not_attempted' and item.get('resolution') == 'no_save_attempted')
