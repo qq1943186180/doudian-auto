@@ -385,3 +385,29 @@ safe-delete 守卫按「单次工具调用内累计删除文件数」计数（�
   写不进队列的结论**不要**反过来说成「妙手缺数据」。
 - 判据：`page_timeout` 落在 `_mark_control` 上时，先确认**这件商品在妙手是否存在**，
   再决定是重试还是记成不可达。判存在的证据必须是「商品信息 (1)」，不是「列表里好像有」。
+
+### ⑮ 妙手 `page_timeout` 的第三个成因：Ego 窗口被最小化，内宽只有 901
+
+`batch run --apply` 连续两次在 `_mark_control('edit_button')` 上 `page_timeout`，报「妙手当前可见控件或商品行未唯一定位」。
+前两个已知成因（视口写死在 `state.viewport`、残留全屏组件 iframe）都排查过且都不成立，第三次才抓到真因：
+
+- **Ego 浏览器窗口当时处于最小化**，`pageInfo()` 报 `w=901 h=638`；`Browser.getWindowForTarget` 报
+  `bounds 915×756 windowState=minimized`。妙手「查询」按钮实测 `left=1017 > innerWidth=901`，
+  直接撞上 `visible()` 的 `r.left >= innerWidth → false`，于是控件存在却被判不可见。
+- **修法不是改 `state.viewport`**：每个 `batch run` 会新建并收尾自己的任务空间，起始的
+  `state.viewport` 是从真实窗口观测出来的（901×638），手工先写 1440×900 会被 run 覆盖回去；
+  而且 session 用完即 `ego_session_finished`，下一次必须换 session 名。
+- **真正的修法是放大窗口本身**：
+  ```js
+  const t = await useOrCreateTaskSpace('window-fit');
+  const {targetInfos} = await cdp('Target.getTargets', {});
+  const page = targetInfos.find(x => x.type === 'page');
+  const {windowId} = await cdp('Browser.getWindowForTarget', {targetId: page.targetId});
+  await cdp('Browser.setWindowBounds', {windowId, bounds: {width: 1520, height: 1010, windowState: 'normal'}});
+  ```
+  之后窗口变 `maximized`（外框 1722×928，内宽 ≈1708），同一条 `batch run --apply` **一次通过**：
+  task 40 → `verified` / `verified_by_readback`，`miao_matches` 与 `doudian_matches` 均为真。
+- 判据顺序（下次省时间）：`pageInfo().w` 与 `Browser.getWindowForTarget().bounds.windowState`
+  → 再看 `state.viewport` → 最后才怀疑页面改版。**窗口最小化时 `innerWidth` 只有 901，
+  比任何「布局改版」都更像改版。**
+- 副作用要说清：`setWindowBounds` 改的是用户真实浏览器窗口（本次是把它从最小化恢复并最大化）。

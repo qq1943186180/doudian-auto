@@ -1,6 +1,6 @@
 # 抖店本地上传
 
-更新：2026-11-14 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-015（妙手清单逐件对照：6 件不在妙手／不可证历史定案／5 件素材已核清就绪）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝18 verified / 38 blocked / 5 needs_agent（2026-11-14 03:08 实读 batch.sqlite3）；blocked 原因分布很杂，其中明确「平台必填属性缺失」8 件，其余为图片槽位不足、视觉质量复核失败、需重新基线、商品已删除等，不可笼统归为缺属性。
+更新：2026-11-14 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-016（**试点成功**：task 40 生成 9 图→写入→双端 `verified`；根因是 Ego 窗口被最小化）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝19 verified / 38 blocked / 4 needs_agent（2026-11-14 04:46 实读 batch.sqlite3）；blocked 原因分布很杂，其中明确「平台必填属性缺失」8 件，其余为图片槽位不足、视觉质量复核失败、需重新基线、商品已删除等，不可笼统归为缺属性。
 
 > **现在需要人做的是两类事，都不阻塞程序自解**：
 > ① **10 件缺真实资料**（安装方式 4 / 尺寸 3 / 硬度 2 / 材质+适用年龄 1 / 承重+适配基面 1）——1688 源头没有这些值，程序不猜。只要给值，就能像 T-20261112-011 那样逐件补齐并提审（那条链路已 43 秒跑通）。其中 4 件缺「安装方式」的商品，标题/卖点里就写着「免打孔」「吸盘」，但**未经你确认我不按标题推断属性**。
@@ -9,6 +9,19 @@
 > 其余 31 件 blocked 里，程序能自己推进的已推完一遍（累计 5 件成功），剩下的是素材缺口、写入器限制（如详情重复原图）与需人补的真实属性，见 T-20261114-014 与 T-20261113-012。
 
 ## 给人的说明
+
+### T-20261114-016 · 194-76 · 试点打通：task 40 九图重建 → 写入妙手 → 双端 verified
+
+- 状态：**done，真写商品**（本项目第 19 件 verified）。`submission_attempts=1`，`state=verified`、`submission_state=verified_by_readback`。
+- ① **素材**：9 张全部走 `builtin-imagegen` 图生图（`input_fidelity=high`），每张以**对应原图**为输入，提示词把身份件写死（一把长方形刷头扫把 + 一只口沿带橙色梳齿条的簸箕、清水蓝塑料、橙色磁吸椭圆扣、不锈钢圆杆），并禁止添加刮水器/第三件/任何文字。**风格选择：9 张全部无中文覆盖字**——原图那套营销字是排版层，而模型渲染中文有畸变风险；skill 里那条「不能用 Pillow 加字排版冒充 AI 重构」约束的是**拼贴**，不是要求必须带字。若要带卖点文案，是下一轮单独动作。
+- ② **ImageGen 水印**：出图右下角必带「AI生成 WORKBUDDY」。按项目既定做法（`docs/handoff-history/194-54.md`）用 `cv2.inpaint` 修，**但只按「近纯白+低饱和」判据会留残影**（水印压在橙色/深色产品上时亮度不够）。最终三判据并用：浅底用「比局部中值更亮」、深色角落用「紧框内偏离中值 ≥6」、最后**只在掩膜内羽化混入大核中值**，消除 TELEA 在平滑渐变上的噪点与边界。工具 `work/materials-20261114/dewatermark.py`（非 ASCII 路径走 `np.fromfile`）。
+- ③ **`page_timeout` 的真因是 Ego 窗口被最小化**（不是页面改版、也不是 `state.viewport`）。`pageInfo()` 报 `w=901 h=638`、`Browser.getWindowForTarget` 报 `windowState=minimized`；妙手「查询」按钮 `left=1017 > innerWidth=901` → 撞 `visible()` 的 `r.left >= innerWidth` 判据。手工先写 `state.viewport=1440×900` 会被 run 覆盖（每个 run 新建并收尾自己的任务空间，起始视口由真实窗口观测而来），**必须用 CDP 把窗口本体放大**：`Browser.setWindowBounds{windowState:'normal', 1520×1010}`，随后窗口变 maximized（内宽 ≈1708），同一条命令一次通过。详见 `docs/dropship-policy.md` ⑮。
+- ④ **素材交付契约**：`source.json` 五类事实（identity/color/quantity/printing/specification）逐张被 9 条目视记录引用，每条 `observed` 写的是实际看见的东西（不是「通过」两个字），并绑定对应原图 sha256；`facts_sha256` 与 `source_snapshot.sha256` 双绑定。离线 `validate_agent_artifacts` 一次通过（`approved=True`、零失败槽位），再 `agent complete` → `ready`。
+- ⑤ **写入与读回**：`batch run --product-id 3848316916011762046 --limit 1 --apply` →
+  妙手与抖店**两端**均 `complete=true`、`main_count=5`、`detail_count=4`、`matches_target=true`、`protected_match=true`，
+  标题一致 `磁吸折叠扫把簸箕家用梳齿刮毛发不锈钢杆扫地工具2件3件套多色`（58 units，零错误零告警，原 33 units）。
+  当前仍 `shelf_status=1`（下架/在仓）；`startSaleType` 由 0 → 1，这是 `preserve_warehouse_v1` 允许的审核去向，**不等于上架**，`shelf_mode_matches_original=false` 是如实记录该差异，不是失败。
+- ⑥ **队列**：`verified 18 → 19`、`needs_agent 5 → 4`。剩 4 件（task 2 / 11 / 35 / 37）素材已核清（各 5 主图 + ≥4 详情、前 4 张详情源图唯一、`detail_ready`），**每件还需生成 9 张图**（共 36 张），要花生图额度，等确认再动。
 
 ### T-20261114-015 · 194-76 · 妙手清单逐件对照：6 件不在妙手／不可证历史定案／5 件素材已核清就绪
 
