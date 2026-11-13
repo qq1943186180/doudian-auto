@@ -115,8 +115,19 @@ class Editor:
         # pre-publish check and verify all share one detail-read semantic.
         def ready(snapshot):
             return snapshot.get('detail_status') in ('ready', 'empty')
+
+        def probe():
+            snapshot = self.read(manifest)
+            # Detail slides are lazy images: a slide below the fold keeps its 1x1
+            # placeholder until it intersects the viewport, so a listing with more slides
+            # than fit on screen never turns ready by waiting alone. Nudge one unloaded
+            # slide into view between reads; each round loads the next one.
+            if not ready(snapshot):
+                self.dom('scroll', manifest, kind='details')
+            return snapshot
+
         try:
-            return self.bridge.wait(lambda: self.read(manifest), ready, '详情图数据源未就绪。', seconds=seconds)
+            return self.bridge.wait(probe, ready, '详情图数据源未就绪。', seconds=seconds)
         except DoudianError as exc:
             if exc.code != 'page_timeout':
                 raise

@@ -62,6 +62,35 @@ class FakeBridge:
             time.sleep(0.01)
 
 
+def test_wait_details_nudges_unloaded_slides_instead_of_only_waiting():
+    # A measured listing mounts every slide but lazy-loads the images below the fold, so
+    # polling alone can never turn an "ambiguous" 28/37 read into a ready one. Each nudge
+    # must walk one more slide into view until the read is complete.
+    bridge = FakeBridge()
+    bridge.snapshot.update({'detail_status':'ambiguous','detail_declared':37,'detail_cards':37,
+                            'detail_slots':28,'details':[f'd{i}' for i in range(28)]})
+    nudges, original = [], bridge.evaluate
+
+    def evaluate(code):
+        op,args = json.loads('['+code.rsplit('\n})(',1)[1][:-1]+']')
+        if op != 'scroll':
+            return original(code)
+        bridge.snapshot['detail_slots'] += 1
+        bridge.snapshot['details'] = [f'd{i}' for i in range(bridge.snapshot['detail_slots'])]
+        if bridge.snapshot['detail_slots'] == 37:
+            bridge.snapshot['detail_status'] = 'ready'
+        nudges.append(args.get('kind'))
+        return {'ok':True,'unloaded':True}
+
+    bridge.evaluate = evaluate
+    snapshot = Editor(bridge).wait_details({'product_id':'3790019980637110699','shop':'样板店'})
+    assert snapshot['detail_status'] == 'ready'
+    assert len(snapshot['details']) == 37
+    assert nudges == ['details'] * 9
+    # The nudge must never invent the missing slides: it scrolls, and the read supplies them.
+    assert bridge.snapshot['detail_slots'] == 37
+
+
 def test_adapter_clears_all_old_slots_then_uploads_absolute_manifest_paths():
     bridge = FakeBridge()
     editor = Editor(bridge)

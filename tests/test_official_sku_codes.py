@@ -63,6 +63,18 @@ def test_scrolls_skeletons_and_accumulates_all_skus_by_identity_with_explicit_em
     assert REFERENCE == original
 
 
+def test_scrolls_the_virtual_holder_when_no_placeholder_row_is_mounted(probe):
+    # A measured page can mount real rows without any skeleton row; scrolling the
+    # skeleton then never happens, so the holder itself has to advance or every
+    # round re-reads the same rows until the budget runs out.
+    probe.frames = [_frame([_row(SKUS[0])]),
+                    _frame([_row(SKUS[1])]),
+                    _frame([_row(SKUS[2])])]
+    proof = _collect(probe)
+    assert [row['sku_id'] for row in proof['rows']] == SKUS
+    assert [call[0] for call in probe.calls] == ['read', 'scroll_rows', 'scroll_rows']
+
+
 def test_incomplete_coverage_exhausts_budget_without_filling_missing_code(probe):
     probe.frames = [_frame([_row(SKUS[0])], pending=2)]
     with pytest.raises(DoudianError, match='1/3') as caught:

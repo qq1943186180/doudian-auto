@@ -13,7 +13,7 @@
   const identity = {product_id: url.searchParams.get('product_id'), page_url: location.href,
     navigation_id: performance.timeOrigin};
   const fail = error => ({...identity, error});
-  if (!['read', 'scroll_pending'].includes(op)) return fail('official_sku_code_operation');
+  if (!['read', 'scroll_pending', 'scroll_rows'].includes(op)) return fail('official_sku_code_operation');
   if (url.protocol !== 'https:' || url.hostname !== 'fxg.jinritemai.com' ||
       url.pathname !== '/ffa/g/create' || identity.product_id !== p.product_id)
     return fail('wrong_identity');
@@ -63,7 +63,25 @@
   if (op === 'scroll_pending' && pending.length) {
     pending[pending.length - 1].scrollIntoView({block: 'center'});
   }
+  // The measured table keeps every row in a virtual holder whose own scrollTop
+  // decides which rows are mounted; the surrounding form scroller moves the whole
+  // block without changing them. When no placeholder row is mounted there is
+  // nothing to scrollIntoView, so advance this holder instead - by half a page so
+  // consecutive views overlap - and wrap to the top once it cannot move further.
+  let rowScrolled = false;
+  if (op === 'scroll_rows') {
+    const holder = root.querySelector('.ecom-g-table-tbody-virtual-holder');
+    if (holder && holder.scrollHeight - holder.clientHeight > 1) {
+      const top = holder.scrollTop;
+      holder.scrollTop = top + Math.max(1, Math.floor(holder.clientHeight / 2));
+      rowScrolled = holder.scrollTop !== top;
+      if (!rowScrolled) {
+        holder.scrollTop = 0;
+        rowScrolled = holder.scrollTop !== top;
+      }
+    }
+  }
   return {...identity, shop_confirmed: true, ready: nodes.length > 0,
     code_column: '商家编码', rows, row_count: nodes.length, pending_count: pending.length,
-    scrolled: op === 'scroll_pending' && pending.length > 0};
+    scrolled: (op === 'scroll_pending' && pending.length > 0) || rowScrolled};
 })

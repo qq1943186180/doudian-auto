@@ -40,7 +40,22 @@ function fixture() {
   }
   const call = (op = 'read', args = {}) => JSON.parse(JSON.stringify(window.eval(script + '(' +
     JSON.stringify(op) + ',' + JSON.stringify({product_id: pid, shop: '样板店', navigation_id: null, ...args}) + ')')));
-  return {page, doc, root, row, call, scrolled};
+  function holder(scrollHeight, clientHeight, top = 0) {
+    // jsdom reports zero for scroll metrics, so model the measured virtual holder
+    // explicitly, including the clamp a real element applies at either end.
+    const el = doc.createElement('div');
+    el.className = 'ecom-g-table-tbody-virtual-holder';
+    let value = top;
+    Object.defineProperty(el, 'scrollHeight', {get: () => scrollHeight});
+    Object.defineProperty(el, 'clientHeight', {get: () => clientHeight});
+    Object.defineProperty(el, 'scrollTop', {
+      get: () => value,
+      set: (next) => { value = Math.max(0, Math.min(next, scrollHeight - clientHeight)); },
+    });
+    root.append(el);
+    return el;
+  }
+  return {page, doc, root, row, call, scrolled, holder};
 }
 
 test('reads actual empty and nonempty codes from standalone rows and leaves input values unchanged', () => {
@@ -67,6 +82,36 @@ test('an empty skeleton never becomes an empty code and only the last skeleton i
 test('a pending row that finishes before scrolling returns its observed value without guessing a scroll target', () => {
   const f = fixture(); f.row(sku1);
   assert.equal(f.call('scroll_pending').scrolled, false);
+  assert.deepEqual(f.scrolled, []);
+});
+
+test('scroll_rows advances the measured virtual holder by half a page, without touching a row', () => {
+  const f = fixture(); f.row(sku1, 'ERP-1');
+  const holder = f.holder(2707, 523, 0);
+  const result = f.call('scroll_rows');
+  assert.equal(result.scrolled, true);
+  assert.equal(result.pending_count, 0);
+  assert.deepEqual(result.rows, [{sku_id: sku1, code: 'ERP-1', observed: true, input_count: 1}]);
+  assert.equal(holder.scrollTop, 261);
+  // The row scroll and the placeholder scroll are different mechanisms: only the
+  // holder may move here, and no row may be scrolled into view.
+  assert.deepEqual(f.scrolled, []);
+});
+
+test('scroll_rows wraps to the top once the virtual holder is already at its end', () => {
+  const f = fixture(); f.row(sku1);
+  const holder = f.holder(2707, 523, 2184);
+  const result = f.call('scroll_rows');
+  assert.equal(result.scrolled, true);
+  assert.equal(holder.scrollTop, 0);
+});
+
+test('scroll_rows on a layout with no virtual holder reports no scroll and keeps the read', () => {
+  const f = fixture(); f.row(sku1, 'ERP-1');
+  const result = f.call('scroll_rows');
+  assert.equal(result.scrolled, false);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.rows.map((row) => row.sku_id), [sku1]);
   assert.deepEqual(f.scrolled, []);
 });
 

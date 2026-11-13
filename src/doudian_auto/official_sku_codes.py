@@ -162,7 +162,15 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
             return evidence
         pending = result.get('pending_count')
         _require(type(pending) is int and pending >= 0)
-        operation = 'scroll_pending' if result['ready'] and pending else 'read'
+        if not result['ready']:
+            operation = 'read'
+        elif pending:
+            operation = 'scroll_pending'
+        else:
+            # No placeholder row is mounted, so there is nothing to scrollIntoView.
+            # The rows themselves live in a virtual holder; advance that instead,
+            # otherwise every round re-reads the same few rows until the budget ends.
+            operation = 'scroll_rows'
         sleep(min(0.2, max(0, deadline - monotonic())))
     if initial_shop_error is not None:
         raise initial_shop_error

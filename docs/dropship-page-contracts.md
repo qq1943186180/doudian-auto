@@ -949,60 +949,105 @@ tab 的 DOM id 固定，可直接 `document.querySelector('#<id>').click()`：
 - 它不是页面内容，也不会随 SPA 路由切换自动消失；**重新加载页面即消失**。
 - 排查特征：`elementFromPoint` 返回 `IFRAME.__op__bixi_*` 而不是目标元素本身或其子节点。
 
-### ③ 抖店「价格库存」SKU 表格在这两件商品上只露出 7 行（机制未查明，**不是**已证实的平台上限）
+### ③ 抖店「价格库存」SKU 表格：真实滚动容器是 `.ecom-g-table-tbody-virtual-holder`（已修复）
 
 商品 `3848316916011762046`（磁吸折叠扫把簸箕）：
 
 | 来源 | SKU 数 |
 |---|---|
 | 官方 API（`data.model.sku_detail.value`） | **24**，全部 `sku_status: true`，24 个不同 `spec_detail_ids` |
-| 页面 DOM `tr[data-row-key]` | **7**（点「全屏」后 8） |
-| 逐 SKU 读到的商家编码 | **6** |
+| 页面 DOM 同时挂载的 `tr[data-row-key]` | **6–7** 行（视口相关） |
+| 修复前逐 SKU 读到的商家编码 | **6** |
+| 修复后读到的商家编码 | **24**（`official_sku_codes` 实测，见下） |
 
-实测排除项：
+🔴 **先记住一个反例，别重犯**：曾经把这个现象写成「平台最多渲染 7 行」。错的。同一套采集代码在
+`3850072900438720563`（**25** 个 SKU）和 `3850071893537325881`（**32** 个 SKU）上完整读到了全部
+商家编码——页面能露出 7 行以上。
 
-- 滚动 `#goodsEditScrollContainer`（`scrollHeight 4348 / clientHeight 644`）到 3704（到底）
-  → 行数**不变**，SKU 集合不变。
-- 视口高度 900 → 2600（`innerHeight` 2889）→ 行数**仍 7**。
-- 那个 `[id="goodsEditScrollContainer-价格库存"]` 元素 `scrollHeight == clientHeight`，
-  根本不是滚动容器。
-- 另一件 `3848317566716084561` 9 个 SKU，同样只读到 7 个。
+**真正的容器（2026-11-14 实抓，可重放）**。表格是虚拟列表，行在
+`div.ecom-g-table-tbody-virtual-holder` 里：
 
-🔴 **不能由此断言「平台最多只渲染 7 行」——同一套采集代码在别的商品上完整读到过 25 和 32 个
-SKU 编码**（`work/rebaseline-20261113/3850072900438720563` 25 行、
-`3850071893537325881` 32 行，均为 `collect_official_sku_codes` 的产物，且通过
-`verify_miaoshou_skus`）。页面显然能露出 7 行以上，所以「7 行」是**这两件商品的页面状态**，
-不是产品能力上限。
+```
+.ecom-g-table-tbody-virtual-holder   scrollHeight 2707 / clientHeight 523   ← 真滚动容器
+  └─ 内层 div（transform 只在滚动时变化）
+       └─ tr[data-row-key]（只挂载可见的 6–7 行）
+```
 
-已知的机制侧事实（`official_sku_codes.py:163-165` + `official_sku_code_dom.js:63-68`）：
+`2707 ÷ 24 ≈ 113px/行`——**holder 自己知道有 24 行**，只是只挂载可见的那几行。
 
-- JS 只把「空 SKU 格 + 无 input + 无文本」的 `tr` 认作**占位行**，`pending_count` 就是占位行数；
-  只有 `op == 'scroll_pending'` 且存在占位行时才 `scrollIntoView`。
-- Python 侧 `operation = 'scroll_pending' if result['ready'] and pending else 'read'`
-  ——**`pending_count == 0` 时永远不滚动**，只在 30 秒预算内反复重读同一批可见行。
-- 这两件商品的 DOM 正好是「7 行真行 + 0 占位行」，所以整轮循环**一次滚动都没发起过**。
+实测对照（同一页面，逐步改 `scrollTop` 后读行键）：
+
+| 操作 | 行键 |
+|---|---|
+| 初始 | 107–112 |
+| 滚外层 `#goodsEditScrollContainer` +300 / +600 / … / +2400 | **107–112 不变** |
+| `holder.scrollTop = 300` | 109–115 |
+| `holder.scrollTop = 600` | 112–118 |
+| `holder.scrollTop = 900` | 114–120 |
+| `holder.scrollTop = 1200` | 117–123 |
+
+→ **滚外层容器完全无用**（只是把整块内容移进视野），**必须滚 holder**。这解释了为什么之前
+「滚到底 + 加高视口 + 点全屏」全都读不到：三个动作动的都不是这个 holder。
+
+**代码修复**（`official_sku_code_dom.js` + `official_sku_codes.py`）：
+
+- JS 新增 `op = 'scroll_rows'`：`holder.scrollTop += clientHeight / 2`（半页步进保证相邻视图重叠），
+  到底后回到 0 继续，避免漏掉上方的行；`scrolled` 只在真的移动时为真。
+- Python 的操作选择从「有占位行才滚，否则只读」改成三分支：
+
+```python
+if not result['ready']:
+    operation = 'read'
+elif pending:
+    operation = 'scroll_pending'      # 老路径：滚动占位行
+else:
+    operation = 'scroll_rows'         # 新路径：无占位行时滚虚拟 holder
+```
+
+- 校验强度**未降低**：每行仍要 16 位 SKU、唯一可见 input、`input_count == 1`，跨轮冲突拒绝，
+  空字符串只在「观察到真实 input」时才算空。
+
+**验证**：把改后的适配器 JS 原样注入实页循环调用，`mounted` 一直是 6–7 行，累计到
+**24/24** 个 SKU（`3385336720213797` … `3385336720219685`），全部 `observed=True`。
 
 **结论**：`official_sku_code_incomplete` 的直接原因是采集策略在这类页面上不滚动，而不是读取预算、
 也不是平台拒绝渲染。真正的行滚动容器尚未定位（上面排除的是外层容器，虚拟行的 scroller 是别的
 节点）。下一步是在实页找到它并在无占位行时也尝试滚动，**不要再用「加预算」的思路**；在找到之前，
 这两件商品应如实记为「读取策略未覆盖的页面状态」，**不能写成平台硬上限**。
 
-### ④ 抖店详情槽位停在 28（同样**未**证明是平台上限）
+### ④ 抖店详情槽位：懒加载图片要「逐张滚进视野」才会加载（已修复）
 
-商品 `3850072398019821856`（狗狗玩具）：
+商品 `3850072398019821856`（狗狗玩具，商详 37 张）：
 
 ```
 detail_declared = 37    detail_cards = 37    detail_slots = 28    loaded = 28
 detail_status  = ambiguous
 ```
 
-连续 8 轮 `editor.dom('scroll', kind='details')` + 每轮等 2 秒，槽位与 loaded **恒为 28**。
-→ `detail_source_not_ready`。
+**真因（2026-11-14 实抓）**：37 个缩略卡片都在 DOM 里，但**后 9 张的 `<img>` 还停在 1×1 的
+占位 GIF 上**（`src=data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7`，
+`loading="lazy"`，`naturalWidth=1`）。真实地址由页面在卡片进入视口时才写入，所以：
 
-但这条的排除强度弱于 ③：`editor.py:113` 的 `wait_details` **只轮询状态、不滚动**；
-`batch.py` 是在重载后滚动重试直至一次成功即收手；上面 8 轮滚动是临时脚本做的，**逐轮输出没有落盘**。
-也就是说「滚了 8 轮没变化」目前只有一次性观察，没有可重放的证据，也没试过「全部展开」类入口。
+- 卡片 0–27（前 28 张）已加载 → `detail_slots = 28`；
+- 卡片 28–36 从未进入视口 → 永远不加载；
+- `declared(37) ≠ slots(28)` → `detail_status = ambiguous` → `detail_source_not_ready`。
 
-**结论**：详情 > 28 的商品目前**过不了双端基线**（这是可复现的事实），但把它归因为「平台硬上限」
-同样过早。修复方向是先落盘逐轮证据，再找详情的展开/翻页入口。
+**关键实测**：对**第一张未加载的卡片**做一次 `scrollIntoView({block:'center'})`，
+`detail_slots` **28 → 37，一次就全部加载**，`detail_status` 转 `ready`。
+
+- 只把整个「商品详情」块 `scrollIntoView` **不管用**（那把块的中心移进视野，只覆盖前 28 张）。
+- 块内部**没有**自己的滚动容器（没有 `overflow: auto` 的后代，也没有虚拟 holder），
+  所以「滚块内某个容器」这条路不存在。
+
+**代码修复**：
+
+- `dom.js` 的 `op === 'scroll'`：当 `kind === 'details'` 时，不再滚整块，而是找**第一张未加载的
+  卡片**滚进视野；没有未加载卡片才退回滚整块。返回值新增 `unloaded` 标记。
+- `editor.py` 的 `wait_details`：轮询时，只要快照未 ready 就发一次 nudge（滚下一条未加载卡片），
+  每轮加载一张，最多 `秒数/0.4` 轮。校验强度不变——仍然要求 `declared == slots == cards` 全部相等。
+
+**验证**：改后重跑该商品，`details 37/37`、`detail_status=ready`、`details_equal=true`，
+`SKU PASS`（这件有 **56 个 SKU**，也一并读全）。它现在卡在**另一件**事上：
+`writer_detail_source_collision` —— 前 4 张详情存在重复原图，妙手按图片查找替换会同时改动多处，
+写入器不支持逐位置替换。这是**写入契约的限制，不是读取限制**。
 

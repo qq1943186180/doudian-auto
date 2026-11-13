@@ -1,14 +1,24 @@
 # 抖店本地上传
 
-更新：2026-11-13 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261113-012（队列恢复实操：3 件重新基线成功／结案契约补齐并经 Codex 交叉审查收紧／两处「读不全」已辨明不是平台上限）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝18 verified / 40 blocked / 3 needs_agent（2026-11-13 02:28 实读 batch.sqlite3）；blocked 原因分布很杂，其中明确「平台必填属性缺失」8 件，其余为图片槽位不足、视觉质量复核失败、需重新基线、商品已删除等，不可笼统归为缺属性。
+更新：2026-11-14 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-014（两处「读不全」实抓到真因并修复／task 35、40 恢复）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝18 verified / 38 blocked / 5 needs_agent（2026-11-14 03:08 实读 batch.sqlite3）；blocked 原因分布很杂，其中明确「平台必填属性缺失」8 件，其余为图片槽位不足、视觉质量复核失败、需重新基线、商品已删除等，不可笼统归为缺属性。
 
 > **现在需要人做的是两类事，都不阻塞程序自解**：
 > ① **10 件缺真实资料**（安装方式 4 / 尺寸 3 / 硬度 2 / 材质+适用年龄 1 / 承重+适配基面 1）——1688 源头没有这些值，程序不猜。只要给值，就能像 T-20261112-011 那样逐件补齐并提审（那条链路已 43 秒跑通）。其中 4 件缺「安装方式」的商品，标题/卖点里就写着「免打孔」「吸盘」，但**未经你确认我不按标题推断属性**。
 > ② **上架**：本项目 3 件商品（含 `3853482303460343870`）都是「审核通过但已下架（商家自主下架）」，行内有「上架」按钮。上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208` 也是这么写的：初版只允许放入仓库）。
 >
-> 其余 33 件 blocked 里，程序能自己推进的已经推完一遍（3 件成功），剩下的是页面硬上限与素材缺口，见 T-20261113-012。
+> 其余 31 件 blocked 里，程序能自己推进的已推完一遍（累计 5 件成功），剩下的是素材缺口、写入器限制（如详情重复原图）与需人补的真实属性，见 T-20261114-014 与 T-20261113-012。
 
 ## 给人的说明
+
+### T-20261114-014 · 194-76 · 两处「读不全」实抓到真因并修复／恢复 2 件
+
+- 状态：**done**，有商品侧实质进展但**未写任何商品字段**。零商品写入：只读采集 + 队列状态流转。
+- ① **先纠正上一轮的错误结论**：Codex 审查指出「SKU 表格只渲染 7 行、详情槽位固定 28 是平台上限」证据不足，我核实后确认**确实错了**——同一套采集代码在 25 / 32 / **56** 个 SKU 的商品上读全过。于是回实页定位真因，而不是继续给结论打补丁。
+- ② **SKU：真滚动容器是 `.ecom-g-table-tbody-virtual-holder`**。表格是虚拟列表，`scrollHeight 2707 ≈ 24 × 113px`、clientHeight 523，只挂载 6–7 行；`#goodsEditScrollContainer` 只是把整块内容移进视野，**滚它行键一个都不变**（107–112 恒定），改 `holder.scrollTop` 才换行（300→109-115、600→112-118、900→114-120、1200→117-123）。修复：JS 新增 `op='scroll_rows'`（半页步进、到底回绕），Python 在「ready 且无占位行」时走这条。**校验强度未降**（16 位 SKU、唯一可见 input、跨轮冲突拒绝）。
+- ③ **详情：后 9 张是懒加载没触发**。37 个缩略卡片都在，但卡片 28–36 的 `<img>` 停在 1×1 占位 GIF（`loading="lazy"`，真实地址等进视口才写入）。关键实测：对**第一张未加载卡片**做一次 `scrollIntoView`，`28 → 37 一次全部加载`；只滚整块没用，块内部也没有滚动容器。修复：`op='scroll'` 在 `kind='details'` 时改滚第一张未加载卡片，`wait_details` 每轮 nudge 一次；仍要求 `declared == slots == cards`。
+- ④ **实测结果**：task 40（24 SKU）与 task 35（9 SKU）双端 `SKU PASS + official_validate PASS`，**已恢复 `blocked → needs_agent`**。task 7（56 SKU / 37 详情）读取也全过了，但撞上 `writer_detail_source_collision`——前 4 张详情有重复原图，妙手按图查找替换会同时改多处，**写入器不支持逐位置替换**。这是写入契约限制，不是读取限制，仍 blocked 且原因已如实更新。
+- ⑤ **验证**：JS 15 项（新增 3 项 `scroll_rows`：半页步进 / 到底回绕 / 无 holder 时不报错）、`test_editor.py` 10 项（新增「每轮 nudge 一张未加载详情」）、`test_official_sku_codes.py` 21 项（新增「无占位行时走 `scroll_rows`」）、`test_workflow + test_title` 130 项全过；适配器仍零反斜杠。
+- ⑥ 队列：`blocked 40 → 38`、`needs_agent 3 → 5`、`verified 18`。下一轮可继续处理 `external_work_requires_rebaseline` 里剩下的件——它们的阻塞理由需要逐件重查，**不要再假设是「页面硬上限」**。
 
 ### T-20261113-012 · 194-76 · 队列恢复实操：3 件重新基线成功／结案契约补齐／两处「读不全」的机制辨析
 
@@ -23,12 +33,12 @@
   - `saved is False` **且** 计数（`saveAttempts`/`saveCount`）**至少存在一个且全部为明确的非负整数 0** **且** `uploadsStarted` 为假 → 视为 `no_save_attempted`（真实样本：`{'phase':'upload_unknown','saved':false,'saveCount':0}`）。🔴 计数缺失、`None`、负数、布尔、字符串 `"0"`（`"0" <= 0` 会直接抛 `TypeError`）**一律拒绝**；`uploadsStarted=True` 也拒绝——素材可能已经传到妙手侧，不能笼统算「什么都没发生」。
   - `submission_state == 'verified_by_readback'` → 视为 `prior_revision_confirmed`（这是队列自己的终态，比 `accepted` 更强）。🔴 但 `submission_status` 与 `submission_state` **同时存在时必须一致**：任一为 `unknown` 或两者冲突（如 `accepted` + `unknown`）一律不结案，不允许字段顺序决定答案。
   - 测试参数从 7 个扩到 **17 个**（`tests/test_rebaseline.py`，32 项全通过）：新增 `saved_none` / `saved_negative` / `saved_str_zero` / `saved_no_counter` / `uploads_started` / `status_conflict` / `status_unknown_pair`，全部**必须失败**。
-- ⑤ 🔴 **两处「读不全」的机制辨析（经 Codex 交叉审查后修正过一次结论）**：
-  - **SKU 表格在这两件商品上只露出 7 行**。商品 `3848316916011762046`：API 返回 **24 个 SKU**（全部 `sku_status=true`、24 个不同 `spec_detail_ids`），DOM 里 `tr[data-row-key]` **只有 7 行**；滚动 `#goodsEditScrollContainer` 到 3704（到底）行数不变；视口高度 900→2600（`innerHeight` 2889）行数仍 7；点「全屏」只从 7 变 8。商品 `3848317566716084561` 9 个 SKU 同样只读到 7 个。
-    🔴 **但「7 行是平台上限」这个结论是错的**：同一套采集代码在 `3850072900438720563`（**25** 个 SKU）和 `3850071893537325881`（**32** 个 SKU）上完整读到了全部商家编码并通过 `verify_miaoshou_skus`——页面显然能露出 7 行以上。机制侧的真因是策略：`official_sku_codes.py:165` 只在**存在占位行**（`pending_count > 0`）时才滚动，`official_sku_code_dom.js:63-68` 也只滚动最后一个占位行；这两件正好是「7 真行 + 0 占位行」，**整轮 30 秒一次滚动都没发起过**，只是反复重读同一批可见行。真正的行滚动容器尚未定位（已排除的是外层容器与 `-价格库存` 节点）。
-  - **详情槽位停在 28**。商品 `3850072398019821856`：`detail_declared=37`、`detail_cards=37`、`detail_slots=28`；连续 8 轮 `scroll kind=details` + 每轮 2 秒，槽位恒为 28、`loaded` 恒为 28 → `detail_status=ambiguous` → `detail_source_not_ready`。这条的排除强度更弱：`wait_details` 只轮询不滚动，8 轮滚动是临时脚本做的、**逐轮输出没落盘**，也没试过「全部展开」类入口。
-  - 结论：**task 7 / 35 / 40 这 3 件当前仍不可恢复**，但原因是「采集策略未覆盖这类页面状态」+「详情侧证据还不够」，**不是已证实的平台容量上限**。下一轮该做的是在实页定位 SKU 表格真正的行滚动容器（无占位行时也尝试滚动）并落盘详情逐轮证据；**在拿到证据前不要把它写成平台限制**——那等于把「我的策略没覆盖」记成「对方不给」，会永久放弃一个可修的问题。
-- ⑥ **队列账（2026-11-13 02:28 实读）**：`blocked 43 → 40`、`needs_agent 3`、`verified 18` 不变。`task 36`（3848317525922283791）是 `doudian_product_deleted`，策略里已归 `closed`（不再重试），但**没有受支持的命令把它移出 blocked**，所以仍计入 40；这不影响执行，只是统计口径。
+- ⑤ 🔴 **两处「读不全」已定位并修复（先经 Codex 交叉审查撤回错误结论，再实抓到真因）**：
+  - **SKU 表格在这两件商品上只挂载 6–7 行**。商品 `3848316916011762046`：API 返回 **24 个 SKU**（全部 `sku_status=true`、24 个不同 `spec_detail_ids`），DOM 里 `tr[data-row-key]` 只有 6–7 行；滚动 `#goodsEditScrollContainer` 到 3704（到底）行数不变；视口高度 900→2600（`innerHeight` 2889）行数仍 7；点「全屏」只从 7 变 8。商品 `3848317566716084561` 9 个 SKU 同样只读到 7 个。
+    🔴 **「7 行是平台上限」这个结论是错的**（同一套采集代码在 25 / 32 个 SKU 的商品上读全过），而且 **2026-11-14 已定位真因并修好**：表格是虚拟列表，真正决定挂载哪些行的是 **`div.ecom-g-table-tbody-virtual-holder` 的 `scrollTop`**（`scrollHeight 2707 ≈ 24 × 113px`，clientHeight 523），而 `#goodsEditScrollContainer` 只是把整块内容移进视野——**滚外层容器时行键一个都不变**（实测 107–112 恒定），改 `holder.scrollTop` 才换行（300→109-115、600→112-118、900→114-120、1200→117-123）。修复：JS 新增 `op='scroll_rows'`（半页步进、到底回绕），Python 在「ready 且无占位行」时走这条路径；**校验强度未降**（16 位 SKU、唯一可见 input、跨轮冲突拒绝）。实测 24/24 个编码读全，task 40 双端快照 `SKU PASS` + `official_validate PASS`，**已恢复 `blocked → needs_agent`**。详见 `docs/dropship-page-contracts.md` ③。
+  - **详情槽位停在 28**。商品 `3850072398019821856`：`detail_declared=37`、`detail_cards=37`、`detail_slots=28`。**2026-11-14 已查清并修好**：37 个缩略卡片都在，但**后 9 张的 `<img>` 停在 1×1 占位 GIF**（`loading="lazy"`，真实地址等卡片进视口才写入）→ 前 28 张有图、9 张永远不加载 → `declared≠slots` → `ambiguous`。关键实测：对**第一张未加载卡片**做一次 `scrollIntoView`，`28 → 37 一次全部加载`、状态转 `ready`；而只滚整个「商品详情」块不管用（块内部没有自己的滚动容器）。修复：`dom.js` 的 `op='scroll'` 在 `kind='details'` 时改滚第一张未加载卡片，`wait_details` 每轮 nudge 一次；校验仍要求 `declared == slots == cards`。
+  - 结论：**task 35 / 40 已恢复（`blocked → needs_agent`）**。**task 7 仍 blocked，但原因变了**：详情与 SKU 现在都读全（37/37 详情、56/56 SKU、`details_equal=true`、`SKU PASS`），卡在 `writer_detail_source_collision` —— 前 4 张详情存在重复原图，妙手按图片查找替换会同时改动多处，**写入器不支持逐位置替换**。这是**写入契约的限制，不是读取限制**，也不该再用「平台读不到」解释。
+- ⑥ **队列账（2026-11-14 03:08 实读）**：`blocked 40 → 38`、`needs_agent 3 → 5`、`verified 18` 不变（本轮恢复 task 35、40；加上 11-13 的 2/11/37 共 5 件）。`task 36`（3848317525922283791）是 `doudian_product_deleted`，策略里已归 `closed`（不再重试），但**没有受支持的命令把它移出 blocked**，所以仍计入 38；这不影响执行，只是统计口径。
 - **验证**：`pytest tests/ -q` 全量通过（进度条 `[100%]` 全程无 `F`/`E`）。⚠️ 本轮同一回合里反复跑之后变成 `39 failed, 681 passed`，逐个查全部是 **safe-delete 守卫撞线**导致的假失败：失败文案里带 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` 且断言是「`browser.lock` 应不存在」，而**单独跑 `tests/test_workflow.py` 仍 55 passed**；同一提交早期全量是全绿的。判据与处理写进 `docs/dropship-policy.md` ⑬（换一个回合再跑以重置计数）。新增/改动：`rebaseline.py` 结案判断、`tests/test_rebaseline.py` 3 个新参数。
 - **工具**：`work/rebaseline-20261113/`（`read_pair.py` 双端采集、`make_proof.py` 出 proof、`run_batch.py` 批量、`probe_*` 四个只读探查）。
 

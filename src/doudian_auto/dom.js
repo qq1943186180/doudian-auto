@@ -313,7 +313,18 @@
       coverage:'仅DOM实际加载字段；虚拟SKU列表未逐行遍历。程序只写标题、方主图及标准详情。',
       errors:errorsSeen};
   }
-  if (op === 'scroll') { (p.kind === 'mains' ? main : detail).scrollIntoView({block:'center'}); return {ok:true}; }
+  if (op === 'scroll') {
+    if (p.kind === 'details') {
+      // Detail slots are lazy images: a slide below the fold keeps its 1x1 placeholder
+      // until it intersects the viewport, so scrolling the whole block into view only
+      // loads the first screenful. Walk the unloaded slides instead, one per call.
+      const slide = all('[class*="previewInstanceImgSortableItem"]', detail).filter(visible)
+        .find(e => !all('img', e).some(i => visible(i) && material(i)));
+      if (slide) { slide.scrollIntoView({block:'center'}); return {ok:true, unloaded:true}; }
+    }
+    (p.kind === 'mains' ? main : detail).scrollIntoView({block:'center'});
+    return {ok:true, unloaded:false};
+  }
   if (op === 'delete') {
     const elements = deletes(p.kind);
     if (!elements.length) return {ok:true,empty:true};
