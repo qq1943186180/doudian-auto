@@ -1,14 +1,34 @@
 # 抖店本地上传
 
-更新：2026-11-14 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-016（**试点成功**：task 40 生成 9 图→写入→双端 `verified`；根因是 Ego 窗口被最小化）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝19 verified / 38 blocked / 4 needs_agent（2026-11-14 04:46 实读 batch.sqlite3）；blocked 原因分布很杂，其中明确「平台必填属性缺失」8 件，其余为图片槽位不足、视觉质量复核失败、需重新基线、商品已删除等，不可笼统归为缺属性。
+更新：2026-11-14 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-017（**4 件收尾：3 件 verified，1 件定性为「基线渲染窗口不全」保持 blocked**）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 05:56 实读 batch.sqlite3）；`needs_agent` 已清空，blocked 里只剩 3 件 `submission_state=unknown`（task 11 本轮定性、task 19/42 缺真实参数）。
 
-> **现在需要人做的是两类事，都不阻塞程序自解**：
+> **现在需要人做的是三类事，都不阻塞程序自解**：
 > ① **10 件缺真实资料**（安装方式 4 / 尺寸 3 / 硬度 2 / 材质+适用年龄 1 / 承重+适配基面 1）——1688 源头没有这些值，程序不猜。只要给值，就能像 T-20261112-011 那样逐件补齐并提审（那条链路已 43 秒跑通）。其中 4 件缺「安装方式」的商品，标题/卖点里就写着「免打孔」「吸盘」，但**未经你确认我不按标题推断属性**。
 > ② **上架**：本项目 3 件商品（含 `3853482303460343870`）都是「审核通过但已下架（商家自主下架）」，行内有「上架」按钮。上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208` 也是这么写的：初版只允许放入仓库）。
+> ③ **task 11 要不要按「权威 SKU 摘要一致」结案**（本轮唯一新产生的分歧）：写入在妙手侧全对、抖店侧只差「价格库存」的渲染窗口（基线抓到 7/32 行、读回 8/32 行，数据侧 `sku_evidence` 32/32 完全相同）。按失败关闭原则我没放宽闸门，它现在 `blocked`。要么等你一句「按摘要结案」，要么先修采集侧让窗口与视口无关（见 `docs/dropship-policy.md` ⑯）。
 >
-> 其余 31 件 blocked 里，程序能自己推进的已推完一遍（累计 5 件成功），剩下的是素材缺口、写入器限制（如详情重复原图）与需人补的真实属性，见 T-20261114-014 与 T-20261113-012。
+> 其余 blocked 里，程序能自己推进的已推完一遍（累计 8 件成功），剩下的是素材缺口、写入器限制（如详情重复原图）与需人补的真实属性，见 T-20261114-017 / 014 与 T-20261113-012。
 
 ## 给人的说明
+
+### T-20261114-017 · 194-76 · 4 件收尾：3 件双端 verified，task 11 定性为「基线渲染窗口不全」
+
+- 状态：**done（3 件真写，1 件定案保持 blocked）**。队列 `verified 19 → 22`、`needs_agent 4 → 0`、`blocked 38 → 39`，总数 61 不变。
+- ① **task 35**（`3848317566716084561` 银丝洗碗布，9 SKU）→ `verified`。9 图（`main-1..5` 1024²、`detail-1..4` 1024×1536）逐张去水印后目视复核 → `build_from_spec` → `agent complete` → `batch run --apply` 当轮 `submission` 阶段 `batch_apply_response_unknown`（只点了 1 次保存）→ **`readback_one.py` 单件只读复核**得 `verified / verified_by_readback`（`miao_matches` 与 `doudian_matches` 均真）。标题 `银丝洗碗布家用厨房锅具灶台清洁抹布单层双层多种数量可选`。**结论：保存其实成功了，只是当轮没等到响应。**
+- ② **task 2**（`3850072900438720563` 男士平角内裤，25 SKU）→ `verified`，一次通过，**5 分 46 秒**。`main-4`/`main-5` 各重做一次：第一版 `main-4` 出现「COKUMAN」重影字、`main-5` 红色偏酒红 → 重写提示词（「每个腰头恰好 COKUMAN 一次、居中、不与其它文字重叠」/「亮正红，不要 maroon、不要 burgundy」），并加 `recenter.py` 居中 + 二次去水印（两次都 `no watermark pixels found`）。**观察记录必须写「腰头织白色 COKUMAN」**，`printing` 不能写成「无印字」。
+- ③ **task 37**（`3848317504447447331` 桌下抽屉收纳盒，2 SKU）→ `verified`，**5 分 5 秒**，`miao_matches` 与 `doudian_matches` 均真。**前 3 版全弃**（存 `assets/rejected/`）：`21-36-15`、`21-36-56` 把开口浅盘画成带铰链翻盖；`21-37-36` 大号出现双层内盘。改用 **image1 参考图编辑**（`input_fidelity: high`），全部只保留「开口浅盘 + 薄外套贴桌板」的几何后才过。
+- ④ **task 11**（`3850071893537325881` 男童直筒休闲裤，32 SKU）→ **素材已交付、写入已发生，仍 `blocked`**（`submission_state=unknown`、`last_error=readback_mismatch`）。妙手侧全对（`matches_target=true`、9 张图 URL 全中）；抖店侧 `main_count=5`、`detail_count=7`（4 换 + 3 留）、标题一致、`rejected=false`、`draft_loaded=false`，**唯一分歧是 `compare_protected` 抛 `commercial_changed`**。
+- ⑤ **定性过程（本轮最花时间的一段，结论推翻了中途三个错误判断）**：
+  - 🔴 先用错了对象：把**外层** `baseline_json` 当 `before` 传进 `compare_protected`，得到 `official_sku_incomplete`，差点写成「SKU 证据缺失」。正确对象是内层 `baseline['doudian_baseline']`。
+  - 拿对之后：8 个分区**只有「价格库存」不同**，其余 7 个逐字节相同；两侧观测状态都是合法的 `ready`/`empty_block`，所以**不是** `protected_snapshot_incomplete`。
+  - 差异只在 `inputs`：**基线 167 条、读回 173 条**。多重集差 `0 删 / 6 增`；**前缀**不成立（第 160 位分叉）；**保序子序列成立** —— 即没有任何一条被删或被改。
+  - 6 条增量 = 一整行 SKU 的控件；`sku_evidence` 两侧 `count=32`、`sha256=d0b6fd86…` **完全相同**，且那一行 `LC弯刀裤黑标-灰色170`（49.88）**本来就在基线 `raw_rows` 里** → 原先就有、只是没渲染。
+  - 决定性一步：拿 SKU 编码去 DOM 点命中数 —— **基线 7/32、读回 8/32**，两次都是**顶部对齐**（0–6 行 vs 0–7 行）。`价格库存` 的 `inputs` 本质是**视口窗口**，不是全表。
+  - 真因串起来：task 11 的基线是在 Ego 窗口**最小化（内宽 901）**时抓的，读回是按 ⑮ 把窗口放大到内宽 ≈1708 之后抓的 → 一屏多装一行 → 多 6 个 input。**同一个「窗口」问题第二次咬人，这次咬在数据判定上。**
+- ⑥ **为什么不放闸门**：采集器自己在快照里写着 `coverage: 仅DOM实际加载字段；虚拟SKU列表未逐行遍历`、`sku_coverage: 不受虚拟表格可见行数限制`，也就是**声明了这是部分窗口、全量证明由 `sku_evidence` 承担**；但 `compare_protected` 对这块做逐条严格相等，等于把部分窗口当完整快照比 —— 这是代码内部自相矛盾，`protected_complete=true` 因此是**假完整**（四件全 True，task 11 只覆盖 7/32 行）。**但**：该函数的 docstring 明确记录过子多重集容忍被移除，`tests/test_workflow.py:469` 更是把「更长的字段列表就是变更」钉死 —— 子序列判据会让这条测试失效，等于推翻既有安全结论。**为了让某一件过闸而顺手放宽，正是这个项目反复拒绝的做法**，所以保持 blocked，理由写成「基线对该分区只覆盖 7/32 行、与读回窗口高度不同」，**不写「价格被改」、不写「平台不给」**。
+- ⑦ **该修的是采集侧（下一步，需复核）**：让 `价格库存` 快照与视口无关 —— 把渲染行区间（首末行索引、`innerHeight`）写进快照、两侧区间不同即视为不可比并**重采同一视口**；或借现成 `scroll_rows` 逐屏累计覆盖全部 32 行。两条都以「同一商品连采两次、`inputs` 条数必须相等」做回归。
+- ⑧ **Codex 这轮没给到意见**：`codex exec` 直接报 `You've hit your usage limit … try again at 6:52 AM`，所以上述判定全部由我自己按成文规则做，未获第二意见 —— 这也是我选择「不放宽闸门」而不是「按摘要结案」的原因之一。
+- ⑨ 工具沉淀（`work/materials-20261114/`）：`build_from_spec.py`（读 `spec.json` → `source.json`+`artifacts.json`，`prompts`/`assets` 由 `kind+slot` 推导）、`recenter.py`（白底居中，不改颜色不裁主体）、`ensure-window.mjs`（CDP 放大窗口，**必须先跑再 `batch run --apply`**）、`readback_one.py`（单件只读复核，绕开 CLI 不支持按商品过滤）、`probe_official.py`（只读抓抖店编辑页图片 URL + 字节 sha256）、`dewatermark.py`（**只能逐文件列路径，传目录会 PermissionError**）。
 
 ### T-20261114-016 · 194-76 · 试点打通：task 40 九图重建 → 写入妙手 → 双端 verified
 
