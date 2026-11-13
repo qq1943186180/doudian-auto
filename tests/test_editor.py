@@ -67,8 +67,8 @@ def test_wait_details_nudges_unloaded_slides_instead_of_only_waiting():
     # polling alone can never turn an "ambiguous" 28/37 read into a ready one. Each nudge
     # must walk one more slide into view until the read is complete.
     bridge = FakeBridge()
-    bridge.snapshot.update({'detail_status':'ambiguous','detail_declared':37,'detail_cards':37,
-                            'detail_slots':28,'details':[f'd{i}' for i in range(28)]})
+    bridge.snapshot.update({'detail_status':'ambiguous','detail_source':'standard','detail_declared':37,
+                            'detail_cards':37,'detail_slots':28,'details':[f'd{i}' for i in range(28)]})
     nudges, original = [], bridge.evaluate
 
     def evaluate(code):
@@ -89,6 +89,27 @@ def test_wait_details_nudges_unloaded_slides_instead_of_only_waiting():
     assert nudges == ['details'] * 9
     # The nudge must never invent the missing slides: it scrolls, and the read supplies them.
     assert bridge.snapshot['detail_slots'] == 37
+
+
+def test_wait_details_does_not_scroll_a_structurally_ambiguous_panel():
+    # An unavailable live panel reports zero slots with a nonzero declaration. That is a
+    # structure problem, not an unloaded-image problem, so it must fail closed untouched.
+    bridge = FakeBridge()
+    bridge.snapshot.update({'detail_status':'ambiguous','detail_source':'unavailable','detail_declared':37,
+                            'detail_cards':37,'detail_slots':0,'details':[]})
+    nudges, original = [], bridge.evaluate
+
+    def evaluate(code):
+        op,args = json.loads('['+code.rsplit('\n})(',1)[1][:-1]+']')
+        if op == 'scroll':
+            nudges.append(args.get('kind'))
+        return original(code)
+
+    bridge.evaluate = evaluate
+    with pytest.raises(DoudianError) as caught:
+        Editor(bridge).wait_details({'product_id':'3790019980637110699','shop':'样板店'}, seconds=0.05)
+    assert caught.value.code == 'detail_source_not_ready'
+    assert nudges == []
 
 
 def test_adapter_clears_all_old_slots_then_uploads_absolute_manifest_paths():

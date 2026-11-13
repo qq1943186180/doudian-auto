@@ -116,14 +116,29 @@ class Editor:
         def ready(snapshot):
             return snapshot.get('detail_status') in ('ready', 'empty')
 
+        def shiftable(snapshot):
+            # Only the measured lazy-load shape: the standard branch found fewer slots than
+            # the page declares, so the tail slides simply have not been asked to load yet.
+            # A structural ambiguity reports source 'unavailable' and must fail closed
+            # instead of being scrolled at.
+            return (snapshot.get('detail_source') == 'standard'
+                    and bool(snapshot.get('detail_declared')) and bool(snapshot.get('detail_slots'))
+                    and snapshot['detail_declared'] > snapshot['detail_slots'])
+
         def probe():
             snapshot = self.read(manifest)
             # Detail slides are lazy images: a slide below the fold keeps its 1x1
             # placeholder until it intersects the viewport, so a listing with more slides
             # than fit on screen never turns ready by waiting alone. Nudge one unloaded
             # slide into view between reads; each round loads the next one.
-            if not ready(snapshot):
-                self.dom('scroll', manifest, kind='details')
+            if not ready(snapshot) and shiftable(snapshot):
+                try:
+                    self.dom('scroll', manifest, kind='details')
+                except DoudianError:
+                    # A nudge must never change this call's error contract. The next read
+                    # re-validates identity and layout, so a failed scroll is only a
+                    # missed attempt, not a new outcome.
+                    pass
             return snapshot
 
         try:

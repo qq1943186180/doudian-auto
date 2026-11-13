@@ -115,6 +115,30 @@ test('scroll_rows on a layout with no virtual holder reports no scroll and keeps
   assert.deepEqual(f.scrolled, []);
 });
 
+test('scroll_rows still moves when the visible height is too small for a half page', () => {
+  const f = fixture(); f.row(sku1);
+  const holder = f.holder(500, 1, 0);
+  const result = f.call('scroll_rows');
+  assert.equal(result.scrolled, true);
+  assert.equal(holder.scrollTop, 1);
+});
+
+test('scroll_rows lands on the last reachable offset when the range is not a multiple of the step', () => {
+  const f = fixture(); f.row(sku1);
+  const holder = f.holder(1000, 300, 600);
+  const result = f.call('scroll_rows');
+  assert.equal(result.scrolled, true);
+  assert.equal(holder.scrollTop, 700);
+});
+
+test('scroll_rows cannot move a holder that fits its own content', () => {
+  const f = fixture(); f.row(sku1);
+  const holder = f.holder(400, 400, 0);
+  const result = f.call('scroll_rows');
+  assert.equal(result.scrolled, false);
+  assert.equal(holder.scrollTop, 0);
+});
+
 for (const kind of ['absent', 'hidden', 'duplicate', 'wrong_type', 'wrong_placeholder']) {
   test(`rejects ${kind} code input instead of claiming an empty value`, () => {
     const f = fixture(), row = f.row(sku1), input = row.querySelector('input');
