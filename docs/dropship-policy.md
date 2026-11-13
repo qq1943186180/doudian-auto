@@ -358,3 +358,30 @@ safe-delete 守卫按「单次工具调用内累计删除文件数」计数（�
 - 判据优先级：**先看进度条里有没有 `F`/`E`**。若中途才出现 F 且伴随守卫文案，
   那不是回归。要拿干净汇总，**换一个用户回合再跑**（计数会重置）。
 - `--basetemp` 指向仓库内目录本身没问题（`work/` 已被 gitignore），但别复用一个已有目录。
+
+### ⑭ 队列里有 6 件商品根本不在妙手，`page_timeout` 不等于「等一下就好」
+
+`batch rebaseline` 及一切妙手写入路径都从「按商品ID搜到那唯一一行」开始。2026-11-14 把队列
+61 件逐件拿去妙手搜了一遍（`work/rebaseline-20261113/harvest_inventory.py`，产物
+`miaoshou-inventory.json`），结果是 **55 件在、6 件不在**：
+
+| 队列 task | 抖店侧真实状态 | 队列既有错误 |
+|---|---|---|
+| 12 | `checkStatus=1 draftStatus=0`，正常下架 | `external_work_requires_rebaseline` |
+| 22 | `checkStatus=4 draftStatus=4` | `doudian_draft_or_rejected` |
+| 33 | `checkStatus=4 draftStatus=4` | `writer_image_slots_incomplete`（主图 3 张） |
+| 36 | 编辑页「商品不存在或已彻底删除」 | `doudian_product_deleted` |
+| 46 | `checkStatus=4 draftStatus=4` | `doudian_draft_or_rejected` |
+| 52 | `checkStatus=4 draftStatus=4` | `doudian_draft_or_rejected` |
+
+- 对照实验是这条结论的支点：同一路径同一输入框，搜一件确定在妙手的 ID 得 `商品信息 (1)`，
+  搜 task 12 得 `商品信息 (0)` + `暂无数据` + `共 0 条`，再搜对照又回到 `(1)`。
+  没有这个对照，「搜不到」也可能只是搜索没生效。
+- **task 12 的 `page_timeout` 是结构性的，不是瞬时抖动**：重试两次都在 `edit_button` 上超时，
+  因为妙手侧没有这一行可标。它的历史无法 rebaseline（妙手基线不可能存在），
+  只能保持 blocked。别再用「再试一次」消耗一轮。
+- 其余 5 件本来就有各自更精确的阻塞理由，妙手无行只是同一事实的另一面：
+  抖店侧是草稿/驳回/已删除的商品不会出现在妙手「商品快速编辑」列表里。
+  写不进队列的结论**不要**反过来说成「妙手缺数据」。
+- 判据：`page_timeout` 落在 `_mark_control` 上时，先确认**这件商品在妙手是否存在**，
+  再决定是重试还是记成不可达。判存在的证据必须是「商品信息 (1)」，不是「列表里好像有」。
