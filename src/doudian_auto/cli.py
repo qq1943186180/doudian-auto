@@ -178,6 +178,9 @@ def parser():
     batch_recheck = batch_sub.add_parser('recheck', help='凭新鲜只读预检报告，把「因预检失败而 blocked」的件对齐到最新事实')
     batch_recheck.add_argument('--task-id', required=True, type=int)
     batch_recheck.add_argument('--proof', required=True, help='preflight --report-dir 产出的 summary.json')
+    batch_block = batch_sub.add_parser('block', help='把「待准备、从未写过」的任务收回 blocked，必须写明原因')
+    batch_block.add_argument('--task-id', required=True, type=int)
+    batch_block.add_argument('--reason', required=True)
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
@@ -933,6 +936,8 @@ def run(args):
                                           check_miaoshou=args.check_miaoshou)
             if args.batch_command == 'recheck':
                 return batch_queue.apply_preflight_report(args.task_id, args.proof)
+            if args.batch_command == 'block':
+                return batch_queue.block_task(args.task_id, args.reason)
             if args.batch_command == 'quarantine':
                 return batch_queue.quarantine_product(args.product_id, args.reason)
             if args.batch_command == 'reconcile':

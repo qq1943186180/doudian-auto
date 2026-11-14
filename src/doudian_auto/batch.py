@@ -1898,6 +1898,10 @@ def apply_preflight_report(task_id, proof_path, *, db_path=None):
                     'last_error': row['last_error'], 'attempt': reason}
         # Keep the prefix so the row stays eligible for another re-check later.
         new_error = 'preflight_exception: {0}; {1}'.format(reason, message or '')
+        if evidence.get('miaoshou_listed') is False:
+            # The official-side reason alone would read as fixable. It is not: the product
+            # is missing from the list every write goes through.
+            new_error += '；妙手快速编辑列表中没有该商品，写入路径不可用。'
         detail.update(outcome='reason_refreshed', new_error=new_error)
         conn.execute('UPDATE products SET last_error=?,updated_at=? WHERE id=? AND state=?',
                      (new_error, now, task_id, 'blocked'))
@@ -1909,6 +1913,56 @@ def apply_preflight_report(task_id, proof_path, *, db_path=None):
         conn.commit()
         return {'task_id': task_id, 'state': 'blocked', 'outcome': 'reason_refreshed',
                 'prior_error': row['last_error'], 'last_error': new_error}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def block_task(task_id, reason, *, db_path=None):
+    """Move a ready row back to blocked, with a stated reason.
+
+    Only `needs_agent` may be withheld. That is the one state where nothing has been
+    written, claimed or prepared, so moving it backwards cannot hide an outcome -- and it
+    is the state `apply_preflight_report` can produce. Rows further along are refused:
+    blocking an `editing` or `verified` row would erase the record of work that may have
+    reached the listing, and there is a separate recovery path for those.
+
+    The reason is stored with a `manual_block:` prefix rather than the preflight one, so
+    a hand-made decision is not silently reversed by the next automatic recheck.
+    """
+    if not isinstance(reason, str) or len(reason.strip()) < 10:
+        raise DoudianError('block_reason_required', '收回任务必须写明至少10个字的原因。')
+    conn = _db(db_path)
+
+    def fail(message):
+        raise DoudianError('block_not_allowed', message)
+
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        record = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
+        if record is None:
+            raise DoudianError('unknown_task', '队列里没有这个任务。')
+        row = dict(record)
+        if (row['state'] != 'needs_agent' or row['submission_state'] != 'not_attempted'
+                or int(row['submission_attempts'] or 0) != 0
+                or row['baseline_hash'] or row['artifacts_path'] or row['artifacts_hash']
+                or json.loads(row['upload_map_json'] or '[]') != []):
+            fail('只有「待准备、从未写过」的任务可以收回；更后面的状态需走对应恢复路径。')
+        now = time.time()
+        error = 'manual_block: ' + reason.strip()
+        detail = {'blocked_by': 'manual', 'reason': reason.strip(), 'prior_state': row['state'],
+                  'prior_error': row['last_error']}
+        conn.execute("UPDATE products SET state='blocked',last_error=?,updated_at=? "
+                     "WHERE id=? AND state='needs_agent'", (error, now, task_id))
+        if conn.execute('SELECT changes()').fetchone()[0] != 1:
+            fail('任务在收回期间发生变化。')
+        conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                     'VALUES(?,?,?,?,?)', (task_id, 'needs_agent', 'blocked', now,
+                                           json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+        conn.commit()
+        return {'task_id': task_id, 'state': 'blocked', 'last_error': error}
     except Exception:
         conn.rollback()
         raise

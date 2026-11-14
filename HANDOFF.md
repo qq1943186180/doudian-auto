@@ -17,9 +17,9 @@
 - ① **假恢复怎么发生的**：T-20261114-020 后 task 22 被放到 `needs_agent`（重检 `eligible=true`，抖店侧主图 5、详情 19、属性齐）。打算给它出 9 张图时，`prepare_one.py` 连续两次卡在妙手 `_mark_control('edit_button')` 的 `page_timeout`。查 2026-11-14 的对照实验：**task 22 根本不在妙手**（`listed=0`，且重试过一次）。
 - ② **根因是闸门缺口**：`preflight` 只读**抖店**官方页，证明的是「抖店侧可写」；而**写入实际走妙手**。两者缺一都不能放行，恢复路径当时只看了前者。
 - ③ **补法**：`batch preflight --check-miaoshou` 用新增的 `MiaoshouEditor.row_present()` 做**纯只读**探测（导航到快速编辑页 → 搜索 → 数按商品 ID 匹配的行，**不点编辑按钮、不打开商品**），结果写进报告 `evidence.miaoshou_listed`；读不到时写 `None`，**绝不把「读失败」当成「不存在」**。`apply_preflight_report` 的**放回分支**要求 `miaoshou_listed is True`，否则报 `miaoshou_listing_unproven`；**刷新理由的分支不要求**。
-- ④ **实测**：task 22 同时 `eligible=true` 与 `miaoshou_listed=false` → 被闸门正确挡住。已手工收回 blocked（**没有受支持命令能把 `needs_agent` 改回 blocked，这是另一个待补的口子**），`last_error` 改为 `preflight_exception: miaoshou_product_absent; ...` 并写入 `product_events` 记录这次更正。
+- ④ **实测**：task 22 同时 `eligible=true` 与 `miaoshou_listed=false` → 被闸门正确挡住。当时**没有受支持命令能把 `needs_agent` 改回 `blocked`**，先手工收回并写 `product_events`；随后补上 `batch block --task-id --reason`（只允许 `needs_agent → blocked`，理由必填 ≥10 字，落 `manual_block:` 前缀，**不参与自动重检**）。刷新理由时若 `miaoshou_listed=false`，还会在末尾追加「妙手侧无此商品，写入路径不可用」。
 - ⑤ **已知不在妙手的 6 件**：12 / 22 / 33 / 36 / 46 / 52。它们的 `page_timeout` 都是**结构性**的，别再当瞬时抖动重试；33 还叠加「商品在抖店侧不存在（`product-status` 返回 `not_found`）」，36 是已删除。
-- ⑥ 代码：`MiaoshouEditor.row_present`、`preflight_products(..., check_miaoshou=)`、`apply_preflight_report` 的妙手闸门、CLI `--check-miaoshou`。测试 `tests/test_reopen_blocked.py` 12 → **14**（新增「缺妙手证明不能放回」「妙手明确不存在也不能放回」）。文档：`docs/dropship-policy.md` ⑱-b。
+- ⑥ 代码：`MiaoshouEditor.row_present`、`preflight_products(..., check_miaoshou=)`、`apply_preflight_report` 的妙手闸门、CLI `--check-miaoshou`。测试 `tests/test_reopen_blocked.py` 12 → **14**（「缺妙手证明不能放回」「妙手明确不存在也不能放回」）+ 新增 `tests/test_block_task.py` **7 条**（含「有保存尝试/有基线/已核验一律不准收回」「手工收回不被自动重检推翻」「刷新理由要写明妙手缺货」）。文档：`docs/dropship-policy.md` ⑱-b。
 
 ### T-20261114-020 · 194-76 · 19 件预检阻塞件全量重检：1 件真恢复，12 件理由被更正
 

@@ -584,8 +584,13 @@ doudian-auto batch recheck --task-id <id> --proof <dir>/<run>/summary.json
   结果写进报告 `evidence.miaoshou_listed`。探测读不到时写 `None`，**绝不把「读失败」当成「不存在」**。
 - `apply_preflight_report` 的**放回分支**现在要求 `miaoshou_listed is True`，否则报
   `miaoshou_listing_unproven`。**刷新理由的分支不要求** —— 读失败仍应能更正记录。
-- 实测：task 22 同时满足 `eligible=true` 与 `miaoshou_listed=false`，被闸门挡住；
-  已手工收回 blocked（无受支持命令能把 `needs_agent` 改回 blocked，这是另一个待补的口子），
-  `last_error` 改为 `preflight_exception: miaoshou_product_absent; ...` 并写了 `product_events`。
+- 实测：task 22 同时满足 `eligible=true` 与 `miaoshou_listed=false`，被闸门挡住。
+  当时**没有受支持命令能把 `needs_agent` 改回 `blocked`**，只能手工收回并写 `product_events`
+  （这是队列的单向缺口）。随后补上 `batch block --task-id --reason`：
+  **只允许 `needs_agent → blocked`**（唯一「从未写过、未被领取」的状态，往回退不会掩盖任何结果），
+  理由必填 ≥10 字，落 `manual_block:` 前缀并写事件。
+  那个前缀是刻意的：**手工决定不能被下一次自动重检推翻**（`recheck` 只认 `preflight_exception:`）。
 - 已知不在妙手的 6 件：**12 / 22 / 33 / 36 / 46 / 52**（其中 33 叠加「商品在抖店侧也不存在」，
   36 是已删除）。这 6 件的 `page_timeout` 都是**结构性**的，别再当瞬时抖动重试。
+- 刷新理由时若 `miaoshou_listed is False`，会在理由末尾追加「妙手快速编辑列表中没有该商品，写入路径不可用」——
+  只写官方侧原因会让人以为「补齐资料就能过」，而实际上补完也写不进去。
