@@ -1,6 +1,6 @@
 # 抖店本地上传
 
-更新：2026-11-14 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-017（**4 件收尾：3 件 verified，1 件定性为「基线渲染窗口不全」保持 blocked**）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 05:56 实读 batch.sqlite3）；`needs_agent` 已清空，blocked 里只剩 3 件 `submission_state=unknown`（task 11 本轮定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-018（**商家编码读取两处真缺陷已修；task 57 旧错误证伪、task 58 从 10/121 推进到 91/121**）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 15:5x 实读 batch.sqlite3）；`needs_agent` 已清空，blocked 里只剩 3 件 `submission_state=unknown`（task 11 本轮定性、task 19/42 缺真实参数）。
 
 > **现在需要人做的是三类事，都不阻塞程序自解**：
 > ① **10 件缺真实资料**（安装方式 4 / 尺寸 3 / 硬度 2 / 材质+适用年龄 1 / 承重+适配基面 1）——1688 源头没有这些值，程序不猜。只要给值，就能像 T-20261112-011 那样逐件补齐并提审（那条链路已 43 秒跑通）。其中 4 件缺「安装方式」的商品，标题/卖点里就写着「免打孔」「吸盘」，但**未经你确认我不按标题推断属性**。
@@ -10,6 +10,18 @@
 > 其余 blocked 里，程序能自己推进的已推完一遍（累计 8 件成功），剩下的是素材缺口、写入器限制（如详情重复原图）与需人补的真实属性，见 T-20261114-017 / 014 与 T-20261113-012。
 
 ## 给人的说明
+
+### T-20261114-018 · 194-76 · 商家编码读取：一条旧错误被证伪，两个真缺陷被修掉
+
+- 状态：**done（只读诊断 + 两处读取器修复），零商品写入**。task 57/58 仍 blocked，但阻塞理由都换了更精确的写法。
+- ① **task 57 的旧错误已失效**：`editor.read_skus` 现在读完 **44/44**（`code_ui_rows=44`），且 44 个商家编码**全是空字符串**——这是 `collect_official_sku_codes` 允许的合法证据。11.9 天前那次是旧策略的受害者（当时只在 `pending_count>0` 时才滚，57 是「真行+0 占位行」，30 秒一次没滚），真因已由 T-20261114-014 修掉。**教训：旧 `last_error` 不能当结论，必须重跑。**
+- ② **task 58 有两个真缺陷**，都不是预算：
+  - **尺码表的 keyed 行被当成 SKU 行**：58 的「价格库存」里既有一张尺码表（11 个 `tr[data-row-key]`、每行 4 个 td、无 sku/code 单元格），也有 SKU 表（表头 12 列）。读取器直接 `root.querySelectorAll('tr[data-row-key]')`，尺码行先被遍历 → `skuCells.length!==1` → `row_ambiguous`。**keyed 行 ≠ SKU 行。** 修：只保留带 sku/code 单元格的行，一个都没有时回落全集（fail closed 不变）。顺带让 `scroll_rows` 挑 SKU 行所在的 holder。
+  - **占位行分支不推进虚拟 holder**：`scroll_pending` 只做 `scrollIntoView`，虚拟列表不响应；58 有 **121** 个 SKU 且常驻占位行 → 30 秒没换行 → 只读到 10 行。修：`scroll_pending` 与 `scroll_rows` 都推 holder。
+- ③ **修完 58 从 10/121 到 91/121**，错误从 `row_ambiguous` 变成可诊断的 `incomplete`。**剩下 30 行是能力上限不是预算**：holder `scrollHeight` 到 13332 就停（约 111 行），滚到底回绕也补不上；把预算提到 90 秒结果**一模一样**，所以已回退——没有实测收益就不动契约。
+- ④ **实测口径**（下次省时间）：57 每轮 `evaluate` 160–260ms、半页步进推进 2 行、`scrollHeight` 滚动中从 3411 长到 3911；58 的 row key 是**渲染槽位号**（同一 key 会换内容），所以「按 key 去重」在 58 上会假性停在 9，必须按 SKU ID 累计。
+- ⑤ **两件都还动不了**：57 需要一条受支持的「preflight 失败的 blocked 件」恢复路径（`recover-preflight`/`preflight` 都不收，`preflight` 直接 `queue_state_ineligible`）；58 要读完 121 行得让外层表单滚动触发懒加载，是另一件事。**57 在售（`statusName=上架`），写入属线上动作，未授权不做。**
+- ⑥ 代码：`official_sku_code_dom.js` 两处；测试 `official-sku-code-dom.test.cjs` 18→**21**（新增「邻表 keyed 行被跳过」「只有外来的 keyed 行仍 fail closed」「scroll_rows 推 SKU 行所在的 holder」），适配器 38/38 真跑通过。文档：`docs/dropship-policy.md` 新增 ⑰。
 
 ### T-20261114-017 · 194-76 · 4 件收尾：3 件双端 verified，task 11 定性为「基线渲染窗口不全」
 

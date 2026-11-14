@@ -82,6 +82,10 @@ class Editor:
         if reference is None:
             return parse_official_skus(response, product_id=manifest['product_id'])
         from .official_sku_codes import collect_official_sku_codes
+        # The budget stays at 30 seconds on purpose: raising it to 90 for a 121-SKU listing
+        # changed the result by exactly nothing (91/121 either way), because the virtual
+        # holder's own scrollHeight stops around row 91 and more time does not move it.
+        # A longer budget would only slow every read down without evidence it helps.
         observed = collect_official_sku_codes(self, manifest, reference, seconds=30)
         return parse_official_skus(response, product_id=manifest['product_id'], shop=manifest['shop'],
                                    code_ui_evidence=observed)

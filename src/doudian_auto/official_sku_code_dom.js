@@ -35,7 +35,19 @@
   if (headers.length !== 1 || text(headers[0]) !== '商家编码')
     return fail('official_sku_code_header_ambiguous');
   // The measured page separates its header table from standalone virtual tr nodes.
-  const nodes = [...root.querySelectorAll('tr[data-row-key]')].filter(visible);
+  //
+  // A price/stock section can also hold a second keyed table that is nothing to do with
+  // SKUs. Measured on one listing: an 11-row size table (4 tds per row, no SKU or code
+  // cell) sits in the same section as the SKU table, and because it is enumerated first
+  // every read stopped at `official_sku_code_row_ambiguous`. A row that carries neither a
+  // SKU cell nor a code cell cannot be a SKU row, so it is skipped. Placeholder rows are
+  // unaffected: they do carry a code cell (empty), which is exactly how they are
+  // recognised further down. When nothing qualifies the full set is used, so a page whose
+  // rows have not rendered yet keeps reporting the shape it always did.
+  const keyedRows = [...root.querySelectorAll('tr[data-row-key]')].filter(visible);
+  const withSkuCells = keyedRows.filter(row =>
+    row.querySelector('.attr-column-field_sku_id') || row.querySelector('.attr-column-field_code'));
+  const nodes = withSkuCells.length ? withSkuCells : keyedRows;
   const rows = [], pending = [], seen = new Set();
   for (const row of nodes) {
     const cells = selector => [...row.querySelectorAll(selector)]
@@ -69,8 +81,19 @@
   // nothing to scrollIntoView, so advance this holder instead - by half a page so
   // consecutive views overlap - and wrap to the top once it cannot move further.
   let rowScrolled = false;
-  if (op === 'scroll_rows') {
-    const holder = root.querySelector('.ecom-g-table-tbody-virtual-holder');
+  if (op === 'scroll_pending' || op === 'scroll_rows') {
+    // Both scrolling steps advance the holder. `scroll_pending` used to rely on
+    // `scrollIntoView` alone, which a virtual holder ignores: measured on a 121-SKU
+    // listing that keeps a placeholder mounted, thirty seconds of that moved nothing and
+    // the read stopped at the ten rows already rendered. Bringing the placeholder into
+    // view is still worth doing, so both happen.
+    //
+    // Prefer the holder the SKU rows actually live in. A section that also carries a size
+    // table has its own virtual holder, and taking the first one in DOM order scrolled the
+    // wrong table without ever moving the rows being read.
+    const holder = (withSkuCells.length &&
+                    withSkuCells[0].closest('.ecom-g-table-tbody-virtual-holder')) ||
+      root.querySelector('.ecom-g-table-tbody-virtual-holder');
     if (holder && holder.scrollHeight - holder.clientHeight > 1) {
       const top = holder.scrollTop;
       holder.scrollTop = top + Math.max(1, Math.floor(holder.clientHeight / 2));

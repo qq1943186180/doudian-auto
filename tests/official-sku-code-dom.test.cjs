@@ -182,3 +182,66 @@ test('wrong host and route cannot provide official SKU evidence', () => {
   f.page.reconfigure({url: `https://fxg.jinritemai.com/other?product_id=${pid}`});
   assert.equal(f.call().error, 'wrong_identity');
 });
+
+// --- a second keyed table in the same section --------------------------------
+// Measured on one listing: the 价格库存 section also holds an 11-row size table whose rows
+// are keyed but carry four cells and no SKU or code cell. Those rows were enumerated
+// first, so every read stopped at `official_sku_code_row_ambiguous` even though the SKU
+// rows were right there. Rows without a SKU or code cell cannot be SKU rows and are
+// skipped; a section with no SKU rows at all must still fail closed.
+
+function sizeTable(doc, root, count = 11) {
+  const table = doc.createElement('table');
+  const tbody = doc.createElement('tbody');
+  for (let i = 0; i < count; i++) {
+    const tr = doc.createElement('tr');
+    tr.dataset.rowKey = String(4692 + i);
+    for (let cell = 0; cell < 4; cell++) tr.append(doc.createElement('td'));
+    tbody.append(tr);
+  }
+  table.append(tbody);
+  root.prepend(table);
+  return table;
+}
+
+test('rows from a neighbouring keyed table are skipped, not reported as ambiguous',()=>{
+  const f = fixture();
+  sizeTable(f.doc, f.root);
+  f.row(sku1, 'A-1');
+  f.row(sku2, 'A-2');
+  const result = f.call('read');
+  assert.equal(result.error, undefined);
+  assert.equal(result.row_count, 2);
+  assert.deepEqual(result.rows.map(r => r.code), ['A-1', 'A-2']);
+});
+
+test('a section with only foreign keyed rows still fails closed',()=>{
+  const f = fixture();
+  sizeTable(f.doc, f.root);
+  const result = f.call('read');
+  assert.equal(result.error, 'official_sku_code_row_ambiguous');
+});
+
+test('scroll_rows moves the holder the SKU rows live in',()=>{
+  const f = fixture();
+  // The size table's holder comes first in DOM order; scrolling it would move nothing
+  // that is being read.
+  const foreign = f.holder(1000, 100);
+  sizeTable(f.doc, f.root);
+  const skuHolder = f.doc.createElement('div');
+  skuHolder.className = 'ecom-g-table-tbody-virtual-holder';
+  let top = 0;
+  Object.defineProperty(skuHolder, 'scrollHeight', {get: () => 1000});
+  Object.defineProperty(skuHolder, 'clientHeight', {get: () => 100});
+  Object.defineProperty(skuHolder, 'scrollTop', {
+    get: () => top,
+    set: (next) => { top = Math.max(0, Math.min(next, 900)); },
+  });
+  f.root.append(skuHolder);
+  const row1 = f.row(sku1, 'A-1');
+  skuHolder.append(row1);
+  const result = f.call('scroll_rows');
+  assert.equal(result.scrolled, true);
+  assert.equal(top, 50);                       // the SKU holder moved
+  assert.equal(foreign.scrollTop, 0);          // the foreign holder did not
+});
