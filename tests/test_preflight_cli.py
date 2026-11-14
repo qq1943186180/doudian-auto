@@ -18,7 +18,8 @@ def test_preflight_cli_uses_the_explicit_read_only_scope_and_current_session(mon
     assert result['ok'] and result['data']['read_only']
     assert observed == {'endpoint': 'ego', 'product_ids': ['3850072900438720563'],
                         'batch_id': None, 'limit': 1, 'session': 'existing-task',
-                        'report_dir': str(tmp_path), 'recheck_blocked': False}
+                        'report_dir': str(tmp_path), 'recheck_blocked': False,
+                        'check_miaoshou': False}
 
 
 def test_recheck_blocked_reaches_the_reader_and_stays_off_by_default(monkeypatch, capsys):

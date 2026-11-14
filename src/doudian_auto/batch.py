@@ -1864,6 +1864,13 @@ def apply_preflight_report(task_id, proof_path, *, db_path=None):
                   'observed_at': observed if isinstance(observed, (int, float)) else None,
                   'report': str(path)}
         if item.get('eligible') is True:
+            # 抖店 being writable does not mean the product is in 妙手, and every write goes
+            # through 妙手. Six queue products are missing there entirely; releasing one
+            # would send the next run into an edit-button timeout that no retry fixes.
+            if evidence.get('miaoshou_listed') is not True:
+                raise DoudianError(
+                    'miaoshou_listing_unproven',
+                    '预检报告未证明该商品在妙手侧存在，不放回可运行（预检时加 --check-miaoshou）。')
             detail['outcome'] = 'reopened'
             conn.execute("UPDATE products SET state='needs_agent',last_error=NULL,updated_at=? "
                          "WHERE id=? AND state='blocked'", (now, task_id))

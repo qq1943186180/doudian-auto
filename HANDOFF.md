@@ -1,6 +1,6 @@
 # 抖店本地上传
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-020（**19 件预检阻塞件全量重检**：task 22 真恢复→needs_agent，12 件理由被更正；「草稿/驳回」4 件里只剩 1 件真的成立）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 38 blocked / 1 needs_agent**（2026-11-14 16:55 实读 batch.sqlite3）；`needs_agent` 现有 1 件（task 22 重检通过，等 9 张新图）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-021（**抓回一次假恢复**：preflight 通过只证明抖店可写，写入走妙手；task 22 不在妙手，已收回并补上 `--check-miaoshou` 闸门）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 17:45 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **现在需要人做的是三类事，都不阻塞程序自解**：
 > ① **10 件缺真实资料**（安装方式 4 / 尺寸 3 / 硬度 2 / 材质+适用年龄 1 / 承重+适配基面 1）——1688 源头没有这些值，程序不猜。只要给值，就能像 T-20261112-011 那样逐件补齐并提审（那条链路已 43 秒跑通）。其中 4 件缺「安装方式」的商品，标题/卖点里就写着「免打孔」「吸盘」，但**未经你确认我不按标题推断属性**。
@@ -10,6 +10,16 @@
 > 其余 blocked 里，程序能自己推进的已推完一遍（累计 8 件成功），剩下的是素材缺口、写入器限制（如详情重复原图）与需人补的真实属性，见 T-20261114-017 / 014 与 T-20261113-012。
 
 ## 给人的说明
+
+### T-20261114-021 · 194-76 · 抓回一次假恢复：preflight 通过 ≠ 能写入
+
+- 状态：**done（缺门补齐 + 一次错误恢复被收回）**。零商品写入。队列 `blocked 39 / verified 22 / needs_agent 0`。
+- ① **假恢复怎么发生的**：T-20261114-020 后 task 22 被放到 `needs_agent`（重检 `eligible=true`，抖店侧主图 5、详情 19、属性齐）。打算给它出 9 张图时，`prepare_one.py` 连续两次卡在妙手 `_mark_control('edit_button')` 的 `page_timeout`。查 2026-11-14 的对照实验：**task 22 根本不在妙手**（`listed=0`，且重试过一次）。
+- ② **根因是闸门缺口**：`preflight` 只读**抖店**官方页，证明的是「抖店侧可写」；而**写入实际走妙手**。两者缺一都不能放行，恢复路径当时只看了前者。
+- ③ **补法**：`batch preflight --check-miaoshou` 用新增的 `MiaoshouEditor.row_present()` 做**纯只读**探测（导航到快速编辑页 → 搜索 → 数按商品 ID 匹配的行，**不点编辑按钮、不打开商品**），结果写进报告 `evidence.miaoshou_listed`；读不到时写 `None`，**绝不把「读失败」当成「不存在」**。`apply_preflight_report` 的**放回分支**要求 `miaoshou_listed is True`，否则报 `miaoshou_listing_unproven`；**刷新理由的分支不要求**。
+- ④ **实测**：task 22 同时 `eligible=true` 与 `miaoshou_listed=false` → 被闸门正确挡住。已手工收回 blocked（**没有受支持命令能把 `needs_agent` 改回 blocked，这是另一个待补的口子**），`last_error` 改为 `preflight_exception: miaoshou_product_absent; ...` 并写入 `product_events` 记录这次更正。
+- ⑤ **已知不在妙手的 6 件**：12 / 22 / 33 / 36 / 46 / 52。它们的 `page_timeout` 都是**结构性**的，别再当瞬时抖动重试；33 还叠加「商品在抖店侧不存在（`product-status` 返回 `not_found`）」，36 是已删除。
+- ⑥ 代码：`MiaoshouEditor.row_present`、`preflight_products(..., check_miaoshou=)`、`apply_preflight_report` 的妙手闸门、CLI `--check-miaoshou`。测试 `tests/test_reopen_blocked.py` 12 → **14**（新增「缺妙手证明不能放回」「妙手明确不存在也不能放回」）。文档：`docs/dropship-policy.md` ⑱-b。
 
 ### T-20261114-020 · 194-76 · 19 件预检阻塞件全量重检：1 件真恢复，12 件理由被更正
 

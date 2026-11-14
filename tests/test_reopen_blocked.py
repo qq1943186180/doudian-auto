@@ -46,7 +46,8 @@ def block(queue, error='preflight_exception: official_sku_code_incomplete; 仅�
 
 
 def report(queue, path, *, eligible=True, observed_at=None, product_id=None,
-           target_version=None, digest=None, reason=None, message=None):
+           target_version=None, digest=None, reason=None, message=None,
+           miaoshou_listed=True):
     entry = {'task_id': queue.row['id'], 'product_id': product_id or PID, 'shop': SHOP,
              'target_version': target_version or queue.row['target_version'],
              'read_only': True, 'eligible': eligible,
@@ -54,7 +55,7 @@ def report(queue, path, *, eligible=True, observed_at=None, product_id=None,
     if reason is not None:
         entry['reason'] = reason
         entry['message'] = message or ''
-    entry['evidence'] = {'snapshot_read': True,
+    entry['evidence'] = {'miaoshou_listed': miaoshou_listed, 'snapshot_read': True,
                          'observed_at': time.time() if observed_at is None else observed_at,
                          'snapshot_sha256': digest or ('a' * 64)}
     path.write_text(json.dumps({'products': [entry]}, ensure_ascii=False), encoding='utf-8')
@@ -233,4 +234,42 @@ def test_a_failed_read_leaves_the_reason_alone(queue, tmp_path):
     assert result['outcome'] == 'read_failed'
     assert result['attempt'] == 'editor_not_ready'
     assert _last_error(queue) == before
+    assert _state(queue) == 'blocked'
+
+
+def test_a_report_without_miaoshou_proof_cannot_reopen(queue, tmp_path):
+    # Writes go through 妙手, so an official-side pass is not enough to release a row.
+    block(queue)
+    proof = report(queue, tmp_path / 'summary.json', miaoshou_listed=None)
+    with pytest.raises(DoudianError) as exc:
+        batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
+    assert exc.value.code == 'miaoshou_listing_unproven'
+    assert _state(queue) == 'blocked'
+
+
+def test_miaoshou_absence_also_blocks_reopening(queue, tmp_path):
+    block(queue)
+    proof = report(queue, tmp_path / 'summary.json', miaoshou_listed=False)
+    with pytest.raises(DoudianError) as exc:
+        batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
+    assert exc.value.code == 'miaoshou_listing_unproven'
+    assert _state(queue) == 'blocked'
+
+
+def test_a_report_without_miaoshou_proof_cannot_reopen(queue, tmp_path):
+    # Writes go through 妙手, so an official-side pass is not enough to release a row.
+    block(queue)
+    proof = report(queue, tmp_path / 'summary.json', miaoshou_listed=None)
+    with pytest.raises(DoudianError) as exc:
+        batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
+    assert exc.value.code == 'miaoshou_listing_unproven'
+    assert _state(queue) == 'blocked'
+
+
+def test_miaoshou_absence_also_blocks_reopening(queue, tmp_path):
+    block(queue)
+    proof = report(queue, tmp_path / 'summary.json', miaoshou_listed=False)
+    with pytest.raises(DoudianError) as exc:
+        batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
+    assert exc.value.code == 'miaoshou_listing_unproven'
     assert _state(queue) == 'blocked'

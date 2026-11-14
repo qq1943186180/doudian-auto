@@ -173,6 +173,8 @@ def parser():
     batch_preflight.add_argument('--report-dir', help='保存本次只读报告和脱敏快照的目录')
     batch_preflight.add_argument('--recheck-blocked', action='store_true',
                                  help='允许重新只读预检「因预检失败而 blocked」的件（仍不写商品、不改队列）')
+    batch_preflight.add_argument('--check-miaoshou', action='store_true',
+                                 help='同时只读确认商品在妙手快速编辑列表里存在（放回可运行的必要证据）')
     batch_recheck = batch_sub.add_parser('recheck', help='凭新鲜只读预检报告，把「因预检失败而 blocked」的件对齐到最新事实')
     batch_recheck.add_argument('--task-id', required=True, type=int)
     batch_recheck.add_argument('--proof', required=True, help='preflight --report-dir 产出的 summary.json')
@@ -927,7 +929,8 @@ def run(args):
                 from .preflight import preflight_products
                 return preflight_products(args.endpoint, product_ids=args.product_ids, batch_id=args.batch_id,
                                           limit=args.limit, session=args.session, report_dir=args.report_dir,
-                                          recheck_blocked=args.recheck_blocked)
+                                          recheck_blocked=args.recheck_blocked,
+                                          check_miaoshou=args.check_miaoshou)
             if args.batch_command == 'recheck':
                 return batch_queue.apply_preflight_report(args.task_id, args.proof)
             if args.batch_command == 'quarantine':

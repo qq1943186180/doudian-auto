@@ -570,3 +570,22 @@ doudian-auto batch recheck --task-id <id> --proof <dir>/<run>/summary.json
 - 「`required_attributes_missing` 8 件」实测 task 23 缺的是**5 项**（安装方式、是否可接触食品、材质类型、型号、生产企业地址），
   不是旧记录里的 1 项 —— 按旧记录去补值是补不完的。
 - task 39 的主图 4 张、详情 15 张（旧记录只写「缺安装方式」），真正先卡的是槽位。
+
+### ⑱-b 恢复路径的第二个缺口：`eligible` 只证明抖店可写，不证明妙手存在
+
+第一次跑恢复路径就把一件**假恢复**了：task 22 重检 `eligible=true`（抖店侧主图 5、详情 19、属性齐），
+`apply_preflight_report` 把它放回 `needs_agent`。但**写入实际走妙手**，而 task 22 在妙手快速编辑列表里
+根本不存在（2026-11-14 对照实验 `listed=0`）。真去 `batch run` 只会在 `_mark_control('edit_button')` 上
+`page_timeout`，然后带着一条 `page_timeout` 回到 blocked —— **白撞一次，而且理由反而更模糊**。
+
+- 判据：`preflight eligible` + **`miaoshou_listed=false`** = 不可写。两者缺一都不能放行。
+- 修法：`batch preflight` 新增 `--check-miaoshou`，用 `MiaoshouEditor.row_present()` 做**纯只读**探测
+  （导航到快速编辑页 → 搜索 → 数按 ID 匹配的行；**不点编辑按钮、不打开商品**），
+  结果写进报告 `evidence.miaoshou_listed`。探测读不到时写 `None`，**绝不把「读失败」当成「不存在」**。
+- `apply_preflight_report` 的**放回分支**现在要求 `miaoshou_listed is True`，否则报
+  `miaoshou_listing_unproven`。**刷新理由的分支不要求** —— 读失败仍应能更正记录。
+- 实测：task 22 同时满足 `eligible=true` 与 `miaoshou_listed=false`，被闸门挡住；
+  已手工收回 blocked（无受支持命令能把 `needs_agent` 改回 blocked，这是另一个待补的口子），
+  `last_error` 改为 `preflight_exception: miaoshou_product_absent; ...` 并写了 `product_events`。
+- 已知不在妙手的 6 件：**12 / 22 / 33 / 36 / 46 / 52**（其中 33 叠加「商品在抖店侧也不存在」，
+  36 是已删除）。这 6 件的 `page_timeout` 都是**结构性**的，别再当瞬时抖动重试。

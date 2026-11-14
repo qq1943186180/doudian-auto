@@ -197,6 +197,38 @@ class MiaoshouEditor:
                 return _ref(action)
         raise DoudianError('product_row_not_found', '精确商品ID的结果行或编辑按钮未读到。')
 
+    def row_present(self, product_id, *, timeout=20):
+        """Whether the quick-edit list actually holds this exact product ID.
+
+        Read-only: it navigates, searches and counts rows matching the ID, and never
+        clicks an edit button or opens a product. Returns None when the list never
+        settled, so "could not read" is never reported as "absent" -- the queue acts on
+        this distinction, and a timeout must not be turned into a deletion.
+
+        This exists because the 抖店 preflight can only prove the official side is
+        writable. The write itself goes through 妙手, and six queue products are simply
+        not in that list; releasing one of them would send the next run into a
+        `page_timeout` on the edit button that no retry can fix.
+        """
+        if not str(product_id).isdigit():
+            raise DoudianError('invalid_product', '商品ID必须按字符串传入数字。')
+        self.bridge.require_ready()
+        self.bridge.command('navigate', {'url': QUICK_EDIT_URL, 'newTab': True,
+                                         'group_title': '妙手批量商品优化'})
+        self._wait_tree(lambda snap: f'您好【{self.shop}】' in snap['tree_text'],
+                        '妙手店铺页或登录态未就绪。', seconds=30)
+        self.bridge.command('fill', {'selector': self._mark_control('search_input'),
+                                     'value': str(product_id)})
+        self.bridge.command('click', {'selector': self._mark_control('query_button')})
+        deadline = time.monotonic() + timeout
+        while True:
+            state = self._visible_dom('edit_button', product_id)
+            if isinstance(state, dict) and isinstance(state.get('rows'), int):
+                return state['rows'] > 0
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.2)
+
     def open_product(self, product_id, *, fresh=True):
         if not str(product_id).isdigit():
             raise DoudianError('invalid_product', '商品ID必须按字符串传入数字。')

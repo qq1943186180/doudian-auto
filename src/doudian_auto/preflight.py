@@ -220,7 +220,8 @@ def _validate_snapshot(snapshot, identity):
 
 
 def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
-                       session=None, db_path=None, report_dir=None, recheck_blocked=False):
+                       session=None, db_path=None, report_dir=None, recheck_blocked=False,
+                       check_miaoshou=False):
     """Inspect 1–20 existing queue rows without claiming or changing any product.
 
     Explicit IDs are required, validated together, and processed in caller order.
@@ -328,6 +329,19 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                         continue
                     if is_native_endpoint(endpoint):
                         _existing_ego_space(bridge, space_id)
+                    if check_miaoshou:
+                        # The official page proves 抖店 is writable; the write itself goes
+                        # through 妙手, which can be missing the product entirely. Record
+                        # that separately and never let a failed probe read as "absent".
+                        try:
+                            from .miaoshou_editor import MiaoshouEditor
+                            listed = MiaoshouEditor(bridge, current['shop']).row_present(
+                                current['product_id'])
+                        except Exception as error:            # noqa: BLE001
+                            listed = None
+                            item['evidence']['miaoshou_error'] = _safe_text(
+                                str(getattr(error, 'code', type(error).__name__)))[:200]
+                        item['evidence']['miaoshou_listed'] = listed
                     item.update(eligible=True, state='eligible', message='新鲜官方读取通过，可领取同一目标版本准备素材。')
                 except Exception as exc:
                     item.update(reason=getattr(exc, 'code', 'preflight_read_failed'),
