@@ -319,16 +319,6 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                             **{key: original[key] for key in _IDENTITY[1:]}, 'session': session,
                             'observed_at': item['evidence']['observed_at'], 'snapshot': safe})
                         item['evidence']['snapshot_path'] = str(path)
-                    _validate_snapshot(snapshot, identity)
-                    current = _current_row(conn, original)
-                    skip = _skip_reason(conn, current, recheck_blocked=recheck_blocked)
-                    item['evidence']['queue_rechecked'] = True
-                    if skip:
-                        item.update(state='skipped', reason=skip[0], message=skip[1],
-                                    queue_state=current['state'], submission_state=current['submission_state'])
-                        continue
-                    if is_native_endpoint(endpoint):
-                        _existing_ego_space(bridge, space_id)
                     if check_miaoshou:
                         # The official page proves 抖店 is writable; the write itself goes
                         # through 妙手, which can be missing the product entirely. Record
@@ -342,6 +332,16 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                             item['evidence']['miaoshou_error'] = _safe_text(
                                 str(getattr(error, 'code', type(error).__name__)))[:200]
                         item['evidence']['miaoshou_listed'] = listed
+                    _validate_snapshot(snapshot, identity)
+                    current = _current_row(conn, original)
+                    skip = _skip_reason(conn, current, recheck_blocked=recheck_blocked)
+                    item['evidence']['queue_rechecked'] = True
+                    if skip:
+                        item.update(state='skipped', reason=skip[0], message=skip[1],
+                                    queue_state=current['state'], submission_state=current['submission_state'])
+                        continue
+                    if is_native_endpoint(endpoint):
+                        _existing_ego_space(bridge, space_id)
                     item.update(eligible=True, state='eligible', message='新鲜官方读取通过，可领取同一目标版本准备素材。')
                 except Exception as exc:
                     item.update(reason=getattr(exc, 'code', 'preflight_read_failed'),

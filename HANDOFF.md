@@ -20,6 +20,8 @@
 - ④ **实测**：task 22 同时 `eligible=true` 与 `miaoshou_listed=false` → 被闸门正确挡住。当时**没有受支持命令能把 `needs_agent` 改回 `blocked`**，先手工收回并写 `product_events`；随后补上 `batch block --task-id --reason`（只允许 `needs_agent → blocked`，理由必填 ≥10 字，落 `manual_block:` 前缀，**不参与自动重检**）。刷新理由时若 `miaoshou_listed=false`，还会在末尾追加「妙手侧无此商品，写入路径不可用」。
 - ⑤ **已知不在妙手的 6 件**：12 / 22 / 33 / 36 / 46 / 52。它们的 `page_timeout` 都是**结构性**的，别再当瞬时抖动重试；33 还叠加「商品在抖店侧不存在（`product-status` 返回 `not_found`）」，36 是已删除。
 - ⑥ 代码：`MiaoshouEditor.row_present`、`preflight_products(..., check_miaoshou=)`、`apply_preflight_report` 的妙手闸门、CLI `--check-miaoshou`。测试 `tests/test_reopen_blocked.py` 12 → **14**（「缺妙手证明不能放回」「妙手明确不存在也不能放回」）+ 新增 `tests/test_block_task.py` **7 条**（含「有保存尝试/有基线/已核验一律不准收回」「手工收回不被自动重检推翻」「刷新理由要写明妙手缺货」）。文档：`docs/dropship-policy.md` ⑱-b。
+- ⑦ **同轮补完两件相邻事实**：① task 58 的 121 个 SKU 读不全，**滚外层表单也不增长**（先滚 holder 到 `st=13332/sh=14069`，再滚 `styles_form__Ew_RZ` 到底，`scrollHeight` 不变，按 SKU ID 去重 16→18 只是渲染补全）→ 平台把虚拟列表总高封在约 111 行，**换数据源才能解决**，别再试滚动参数；② task 46/52 的理由现在都带上「妙手快速编辑列表中没有该商品，写入路径不可用」，它们与 task 22 一样**不在妙手**，槽位不足只是第二层原因。
+
 
 ### T-20261114-020 · 194-76 · 19 件预检阻塞件全量重检：1 件真恢复，12 件理由被更正
 
