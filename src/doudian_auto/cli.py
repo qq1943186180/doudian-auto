@@ -171,6 +171,11 @@ def parser():
     batch_preflight.add_argument('--session', default='miaoshou-auto-batch-20261028',
                                  help='沿用当前任务浏览器会话，不另建替代空间')
     batch_preflight.add_argument('--report-dir', help='保存本次只读报告和脱敏快照的目录')
+    batch_preflight.add_argument('--recheck-blocked', action='store_true',
+                                 help='允许重新只读预检「因预检失败而 blocked」的件（仍不写商品、不改队列）')
+    batch_recheck = batch_sub.add_parser('recheck', help='凭新鲜只读预检报告，把「因预检失败而 blocked」的件对齐到最新事实')
+    batch_recheck.add_argument('--task-id', required=True, type=int)
+    batch_recheck.add_argument('--proof', required=True, help='preflight --report-dir 产出的 summary.json')
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
@@ -921,7 +926,10 @@ def run(args):
             if args.batch_command == 'preflight':
                 from .preflight import preflight_products
                 return preflight_products(args.endpoint, product_ids=args.product_ids, batch_id=args.batch_id,
-                                          limit=args.limit, session=args.session, report_dir=args.report_dir)
+                                          limit=args.limit, session=args.session, report_dir=args.report_dir,
+                                          recheck_blocked=args.recheck_blocked)
+            if args.batch_command == 'recheck':
+                return batch_queue.apply_preflight_report(args.task_id, args.proof)
             if args.batch_command == 'quarantine':
                 return batch_queue.quarantine_product(args.product_id, args.reason)
             if args.batch_command == 'reconcile':

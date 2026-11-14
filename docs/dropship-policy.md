@@ -517,3 +517,35 @@ task 57 / 58 停了 11.9 天（`official_sku_code_incomplete (7/44)` 与 `offici
 2. 报 `row_ambiguous` → 数「分区里有几张表、各自 keyed 行数与 td 数、SKU 行的 `closest('table')` 是否为 null」；
 3. 报 `incomplete` 且读数恰等于初始挂载数 → 看 `pending_count` 是否常驻 > 0（占位行分支在空转）；
 4. 只有「滚动确实在推进、行数却上不去」才怀疑预算；**改预算前用两个不同预算各跑一次，结果相同就说明不是预算**。
+
+### ⑱ 「因预检失败而 blocked」的件终于有受支持的恢复路径
+
+`preflight_exception:*` 既不在 `PREWRITE_RECOVERABLE_ERRORS` 里，`batch preflight` 又对 blocked 件直接
+`queue_state_ineligible` —— 于是**根因已经修掉、但当年那次预检失败的件，没有任何受支持的命令能放回可运行**。
+这不是统计口径问题，是队列机制上的一个洞（⑰ 的 57 就卡在这里）。
+
+补法分两步，两步都不放宽任何安全条件：
+
+```bash
+# 1) 只读重读：允许「因预检失败而 blocked」的件重新被读（连接仍是 mode=ro，不改队列）
+doudian-auto batch preflight --product-id <pid> --batch-id <bid> \
+    --session <现有会话> --report-dir <dir> --recheck-blocked
+
+# 2) 凭报告对齐队列事实（这一步才写库）
+doudian-auto batch recheck --task-id <id> --proof <dir>/<run>/summary.json
+```
+
+- **准入只看 `last_error` 的前缀**：`preflight_exception:` 开头的件才可重读。别的阻塞理由（`readback_mismatch`、
+  `doudian_product_deleted` 等）**一律不放**，因为那类失败可能描述了一次真实写入。
+- **`recheck` 不凭「时间过去了」或「看起来修好了」放行**，只认报告里的四件事同时成立：
+  `read_only=true`、`evidence.snapshot_read=true`、商品/店铺/`target_version` 三者与本行一致、
+  `evidence.observed_at` 在 **30 分钟内**且 `snapshot_sha256` 是 64 位摘要。
+  此外本行必须仍是 `blocked`、`submission_state=not_attempted`、`attempts=0`、
+  **无 baseline / 素材 / 上传记录 / 租约 / 兄弟版本 / 活跃官方任务** —— 也就是「从未写过」。
+- **两种结局都结构化落库，都写 `product_events`**：
+  - 报告 `eligible=true` → `blocked → needs_agent`，清空 `last_error`；
+  - 报告又失败 → **保持 blocked，但把 `last_error` 换成这次读到的理由**（仍带 `preflight_exception:` 前缀，
+    所以下次还能再检）。**这一条是重点**：十二天前的理由把排查带偏过一次，队列必须反映最新事实。
+- 实证：task 57 走完这两步，`last_error` 从
+  `official_sku_code_incomplete; 仅确认7/44个SKU` 更正为
+  `writer_image_slots_incomplete; 主图5张、详情2张` —— 编码问题早就不存在，真正缺的是 2 张详情源图。

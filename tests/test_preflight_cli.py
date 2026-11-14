@@ -18,7 +18,22 @@ def test_preflight_cli_uses_the_explicit_read_only_scope_and_current_session(mon
     assert result['ok'] and result['data']['read_only']
     assert observed == {'endpoint': 'ego', 'product_ids': ['3850072900438720563'],
                         'batch_id': None, 'limit': 1, 'session': 'existing-task',
-                        'report_dir': str(tmp_path)}
+                        'report_dir': str(tmp_path), 'recheck_blocked': False}
+
+
+def test_recheck_blocked_reaches_the_reader_and_stays_off_by_default(monkeypatch, capsys):
+    # The flag only widens which rows may be read; it must never turn preflight into a
+    # write, so the default stays off and the connection stays read-only.
+    observed = {}
+
+    def inspect(endpoint, **kwargs):
+        observed.update(endpoint=endpoint, **kwargs)
+        return {'read_only': True, 'candidate_product_ids': []}
+
+    monkeypatch.setattr(preflight, 'preflight_products', inspect)
+    assert cli.main(['--json', 'batch', 'preflight', '--product-id', '3850072900438720563',
+                     '--recheck-blocked']) == 0
+    assert observed['recheck_blocked'] is True
 
 
 def test_preflight_cannot_be_changed_into_an_apply_command(monkeypatch, capsys):

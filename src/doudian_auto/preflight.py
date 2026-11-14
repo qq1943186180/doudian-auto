@@ -27,7 +27,7 @@ from .workflow import compare_protected
 _COLUMNS = ('id', 'batch_id', 'shop', 'product_id', 'target_version', 'state',
             'submission_state', 'submission_attempts', 'lease_owner', 'lease_until',
             'execution_owner', 'execution_until', 'artifacts_path', 'artifacts_hash',
-            'baseline_hash', 'upload_map_json', 'source')
+            'baseline_hash', 'upload_map_json', 'source', 'last_error')
 _IDENTITY = ('id', 'batch_id', 'shop', 'product_id', 'target_version')
 _SECRET = re.compile(r'cookie|authorization|password|secret|token|csrf|xsrf|session[_-]?id', re.I)
 _SNAPSHOT_FIELDS = (
@@ -122,7 +122,18 @@ def _current_row(conn, original):
     return dict(row)
 
 
-def _skip_reason(conn, row):
+def _preflight_blocked_recoverable(row):
+    """A blocked row whose only reason was a failed preflight, never a write.
+
+    Such a row can be re-checked, and that is the point: the reason it is blocked is a
+    read that failed once, so the honest question is whether that read passes now, not
+    whether some earlier code change "probably" fixed it. The predicate lives in `batch`
+    because `reopen_blocked` must judge exactly the same thing.
+    """
+    return batch._preflight_blocked_reason(row)
+
+
+def _skip_reason(conn, row, *, recheck_blocked=False):
     siblings = [dict(item) for item in conn.execute(
         'SELECT state,submission_state FROM products WHERE shop=? AND product_id=? AND id!=?',
         (row['shop'], row['product_id'], row['id']))]
@@ -136,7 +147,8 @@ def _skip_reason(conn, row):
         return 'product_queue_conflict', '该商品另有队列版本，先核对现有任务。'
     if row['submission_state'] != 'not_attempted' or row['submission_attempts'] != 0:
         return 'prior_submission', '该商品已有保存尝试，不作为新的素材生成任务。'
-    if row['state'] != 'needs_agent':
+    recheckable = bool(recheck_blocked) and row['state'] == 'blocked' and _preflight_blocked_recoverable(row)
+    if row['state'] != 'needs_agent' and not recheckable:
         return 'queue_state_ineligible', f'队列状态为 {row["state"]}，不作为新素材候选。'
     now = time.time()
     for kind in ('lease', 'execution'):
@@ -208,7 +220,7 @@ def _validate_snapshot(snapshot, identity):
 
 
 def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
-                       session=None, db_path=None, report_dir=None):
+                       session=None, db_path=None, report_dir=None, recheck_blocked=False):
     """Inspect 1–20 existing queue rows without claiming or changing any product.
 
     Explicit IDs are required, validated together, and processed in caller order.
@@ -220,6 +232,12 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
     request for human action stops the round and leaves remaining IDs unprocessed.
     An Ego session must already have a live, locally bound TaskSpace. No task is
     finished and no page is closed. Optional reports contain redacted snapshots.
+
+    ``recheck_blocked`` widens *which rows may be read*, never what a read means: a
+    blocked row whose only recorded reason is a failed preflight becomes readable again,
+    so the question "does this still fail?" can be answered by reading rather than by
+    guessing. The connection stays read-only and nothing is unblocked here; releasing the
+    row is a separate, explicit step that consumes this report (``reopen_blocked``).
     """
     started = time.monotonic()
     if type(limit) is not int or not 1 <= limit <= 20:
@@ -260,7 +278,7 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                 try:
                     current = _current_row(conn, original)
                     item['queue_state'], item['submission_state'] = current['state'], current['submission_state']
-                    skip = _skip_reason(conn, current)
+                    skip = _skip_reason(conn, current, recheck_blocked=recheck_blocked)
                     if skip:
                         item.update(state='skipped', reason=skip[0], message=skip[1])
                         continue
@@ -302,7 +320,7 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                         item['evidence']['snapshot_path'] = str(path)
                     _validate_snapshot(snapshot, identity)
                     current = _current_row(conn, original)
-                    skip = _skip_reason(conn, current)
+                    skip = _skip_reason(conn, current, recheck_blocked=recheck_blocked)
                     item['evidence']['queue_rechecked'] = True
                     if skip:
                         item.update(state='skipped', reason=skip[0], message=skip[1],

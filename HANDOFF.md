@@ -1,6 +1,6 @@
 # 抖店本地上传
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-018（**商家编码读取两处真缺陷已修；task 57 旧错误证伪、task 58 从 10/121 推进到 91/121**）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 15:5x 实读 batch.sqlite3）；`needs_agent` 已清空，blocked 里只剩 3 件 `submission_state=unknown`（task 11 本轮定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-019（**补上「因预检失败而 blocked」的恢复路径**：`batch preflight --recheck-blocked` + `batch recheck`；task 57 的阻塞理由已更正为「详情仅 2 张」）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 16:40 实读 batch.sqlite3）；`needs_agent` 已清空，blocked 里只剩 3 件 `submission_state=unknown`（task 11 本轮定性、task 19/42 缺真实参数）。
 
 > **现在需要人做的是三类事，都不阻塞程序自解**：
 > ① **10 件缺真实资料**（安装方式 4 / 尺寸 3 / 硬度 2 / 材质+适用年龄 1 / 承重+适配基面 1）——1688 源头没有这些值，程序不猜。只要给值，就能像 T-20261112-011 那样逐件补齐并提审（那条链路已 43 秒跑通）。其中 4 件缺「安装方式」的商品，标题/卖点里就写着「免打孔」「吸盘」，但**未经你确认我不按标题推断属性**。
@@ -10,6 +10,22 @@
 > 其余 blocked 里，程序能自己推进的已推完一遍（累计 8 件成功），剩下的是素材缺口、写入器限制（如详情重复原图）与需人补的真实属性，见 T-20261114-017 / 014 与 T-20261113-012。
 
 ## 给人的说明
+
+### T-20261114-019 · 194-76 · 补上「因预检失败而 blocked」的恢复路径
+
+- 状态：**done（一对受支持的命令 + 一次真跑实证）**。零商品写入，队列里 1 件的阻塞理由被更正为真实事实。
+- ① **洞在哪**：`preflight_exception:*` 不在 `PREWRITE_RECOVERABLE_ERRORS` 里，`batch preflight` 又对 blocked 件直接 `queue_state_ineligible` —— 于是「根因早修掉、当年那次预检失败」的件**没有任何受支持的命令能放回可运行**。T-20261114-018 的 task 57 就卡在这里。
+- ② **补法分两步，都不放宽安全条件**：
+  ```bash
+  doudian-auto batch preflight --product-id <pid> --batch-id <bid> --session <现有会话> \
+      --report-dir <dir> --recheck-blocked      # 只读重读，连接仍是 mode=ro，不改队列
+  doudian-auto batch recheck --task-id <id> --proof <dir>/<run>/summary.json   # 凭报告对齐队列
+  ```
+- ③ **准入只看 `last_error` 前缀**：`preflight_exception:` 开头的件才可重读；`readback_mismatch`、`doudian_product_deleted` 等**一律不放**，因为那类失败可能描述一次真实写入。
+- ④ **`recheck` 只认报告里的四件事**：`read_only=true`、`evidence.snapshot_read=true`、商品/店铺/`target_version` 三者与本行一致、`observed_at` 在 30 分钟内且 `snapshot_sha256` 是 64 位摘要。此外本行必须仍是 `blocked`、`not_attempted`、`attempts=0`、**无 baseline/素材/上传记录/租约/兄弟版本/活跃官方任务** —— 即「从未写过」。
+- ⑤ **两种结局都落库并写 `product_events`**：`eligible=true` → `blocked → needs_agent` 并清空 `last_error`；**又失败 → 保持 blocked，但把 `last_error` 换成这次读到的理由**（保留前缀，下次还能再检）。后半条是重点：十二天前的理由把排查带偏过一次。
+- ⑥ **实证（task 57）**：走完两步后 `last_error` 从 `official_sku_code_incomplete; 仅确认7/44个SKU` 更正为 `writer_image_slots_incomplete; 主图5张、详情2张`。**编码问题早就不存在，真正缺的是 2 张详情源图**。57 仍在售（`statusName=上架`），写入属线上动作，未授权不做。
+- ⑦ 代码：`batch.apply_preflight_report`（原 `reopen_blocked`）、`preflight._skip_reason(..., recheck_blocked=)`、`preflight_products(..., recheck_blocked=)`、`_COLUMNS` 增 `last_error`、CLI `batch preflight --recheck-blocked` / `batch recheck`。测试新增 `tests/test_reopen_blocked.py` **10 条**（含「陈旧报告拒绝」「只差一个版本拒绝」「写入型阻塞永不放行」「失败也要刷新理由」「刷新后仍可再检」），回归 178 项全绿。文档：`docs/dropship-policy.md` 新增 ⑱。
 
 ### T-20261114-018 · 194-76 · 商家编码读取：一条旧错误被证伪，两个真缺陷被修掉
 

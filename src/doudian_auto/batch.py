@@ -31,6 +31,12 @@ PREWRITE_RECOVERABLE_ERRORS = {
     'ego_state_locked', 'ego_transport_unknown', 'ego_target_not_unique',
 }
 
+# A blocked row whose `last_error` starts with this never got past the read-only checks, so
+# there is nothing on the listing to reconcile -- only a read that failed once. Those rows
+# can be re-read (and then released with `reopen_blocked`); a row blocked for any other
+# reason cannot, because its failure may describe a write.
+PREFLIGHT_BLOCK_PREFIX = 'preflight_exception:'
+
 
 def _db(path=None):
     db_path = Path(path or DB_PATH)
@@ -1768,6 +1774,115 @@ def _stored_execution_baseline(claim, manifest_sha256):
             not isinstance(baseline.get('doudian_baseline'), dict)):
         raise DoudianError('baseline_changed', '持久化基线与商品、店铺或目标版本不匹配。')
     return baseline
+
+
+def _preflight_blocked_reason(row):
+    """True when the queue's own record of why a row is blocked names a failed preflight.
+
+    Takes a `sqlite3.Row` or a dict, because both shapes reach this: a missing column must
+    read as "not a preflight block", never as an exception.
+    """
+    try:
+        error = row['last_error']
+    except (KeyError, IndexError):
+        return False
+    return isinstance(error, str) and error.startswith(PREFLIGHT_BLOCK_PREFIX)
+
+
+def apply_preflight_report(task_id, proof_path, *, db_path=None):
+    """Align one blocked row's queue record with what a fresh preflight just observed.
+
+    Nothing changes because time passed or because a fix "looks related": the proof must be
+    a report in which this exact product was read read-only moments ago, and the row must
+    have been blocked by a *preflight* failure, never by anything a write could explain.
+
+    Then exactly one of two things happens, and both are recorded as events:
+
+    - the read passed, so the row goes back to `needs_agent` with no error;
+    - the read failed again, so the row stays blocked and its `last_error` is replaced by
+      the reason the fresh read gave. A row that fails a second time for a different
+      reason must not keep advertising the first one -- twelve-day-old reasons sent this
+      project looking for a defect that had already been fixed.
+
+    Without a usable report the row is untouched and the caller sees `reopen_unproven`.
+    """
+    path = Path(proof_path).resolve()
+    proof = read_json(path)
+    conn = _db(db_path)
+
+    def fail():
+        raise DoudianError('reopen_unproven', '没有新鲜只读预检证据或队列仍有旧工作，保持 blocked。')
+
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        record = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
+        if record is None:
+            fail()
+        row = dict(record)
+        now = time.time()
+        if (row['state'] != 'blocked' or not _preflight_blocked_reason(record)
+                or row['submission_state'] != 'not_attempted'
+                or int(row['submission_attempts'] or 0) != 0
+                or row['baseline_hash'] or row['artifacts_path'] or row['artifacts_hash']
+                or json.loads(row['upload_map_json'] or '[]') != []
+                or any((row[key] or 0) >= now for key in ('lease_until', 'execution_until'))):
+            fail()
+        if conn.execute('SELECT 1 FROM products WHERE shop=? AND product_id=? AND id!=?',
+                        (row['shop'], row['product_id'], task_id)).fetchone():
+            fail()
+        if _active_doudian_job_conflict(row['shop'], row['product_id']):
+            fail()
+        items = proof.get('products') if isinstance(proof, dict) else None
+        item = next((entry for entry in items or []
+                     if isinstance(entry, dict) and entry.get('task_id') == task_id), None)
+        if item is None:
+            fail()
+        evidence = item.get('evidence') if isinstance(item.get('evidence'), dict) else {}
+        if (item.get('read_only') is not True or evidence.get('snapshot_read') is not True
+                or item.get('product_id') != row['product_id'] or item.get('shop') != row['shop']
+                or item.get('target_version') != row['target_version']):
+            fail()
+        observed = evidence.get('observed_at')
+        if not isinstance(observed, (int, float)) or not 0 <= now - observed <= 1800:
+            fail()
+        digest = evidence.get('snapshot_sha256')
+        if not isinstance(digest, str) or len(digest) != 64:
+            fail()
+        detail = {'aligned_by': 'preflight_recheck', 'prior_error': row['last_error'],
+                  'snapshot_sha256': digest, 'observed_at': observed}
+        if item.get('eligible') is True:
+            detail['outcome'] = 'reopened'
+            conn.execute("UPDATE products SET state='needs_agent',last_error=NULL,updated_at=? "
+                         "WHERE id=? AND state='blocked'", (now, task_id))
+            if conn.execute('SELECT changes()').fetchone()[0] != 1:
+                fail()
+            conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                         'VALUES(?,?,?,?,?)', (task_id, 'blocked', 'needs_agent', now,
+                                               json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+            conn.commit()
+            return {'task_id': task_id, 'state': 'needs_agent', 'outcome': 'reopened',
+                    'prior_error': row['last_error'], 'snapshot_sha256': digest}
+        reason, message = item.get('reason'), item.get('message')
+        if not isinstance(reason, str) or not reason.strip():
+            fail()
+        # Keep the prefix so the row stays eligible for another re-check later.
+        new_error = 'preflight_exception: {0}; {1}'.format(reason, message or '')
+        detail.update(outcome='reason_refreshed', new_error=new_error)
+        conn.execute('UPDATE products SET last_error=?,updated_at=? WHERE id=? AND state=?',
+                     (new_error, now, task_id, 'blocked'))
+        if conn.execute('SELECT changes()').fetchone()[0] != 1:
+            fail()
+        conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                     'VALUES(?,?,?,?,?)', (task_id, 'blocked', 'blocked', now,
+                                           json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+        conn.commit()
+        return {'task_id': task_id, 'state': 'blocked', 'outcome': 'reason_refreshed',
+                'prior_error': row['last_error'], 'last_error': new_error}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _close_batch_session(bridge):
