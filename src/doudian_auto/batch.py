@@ -1838,18 +1838,31 @@ def apply_preflight_report(task_id, proof_path, *, db_path=None):
         if item is None:
             fail()
         evidence = item.get('evidence') if isinstance(item.get('evidence'), dict) else {}
-        if (item.get('read_only') is not True or evidence.get('snapshot_read') is not True
+        if (item.get('read_only') is not True
                 or item.get('product_id') != row['product_id'] or item.get('shop') != row['shop']
                 or item.get('target_version') != row['target_version']):
             fail()
+        # `skipped` means the row was refused by a different guard (already verified, a
+        # sibling revision, a prior submission) and no read happened at all. Recording that
+        # as a preflight failure would replace a true reason with a misleading one.
+        if item.get('state') not in ('eligible', 'blocked'):
+            fail()
+        # A read that failed produces no snapshot, so its freshness is judged from the
+        # report file; a read that passed must also carry the digest of what it saw. Both
+        # windows are the same thirty minutes.
+        if not 0 <= now - path.stat().st_mtime <= 1800:
+            fail()
         observed = evidence.get('observed_at')
-        if not isinstance(observed, (int, float)) or not 0 <= now - observed <= 1800:
-            fail()
         digest = evidence.get('snapshot_sha256')
-        if not isinstance(digest, str) or len(digest) != 64:
-            fail()
+        if item.get('eligible') is True:
+            if (evidence.get('snapshot_read') is not True
+                    or not isinstance(observed, (int, float)) or not 0 <= now - observed <= 1800
+                    or not isinstance(digest, str) or len(digest) != 64):
+                fail()
         detail = {'aligned_by': 'preflight_recheck', 'prior_error': row['last_error'],
-                  'snapshot_sha256': digest, 'observed_at': observed}
+                  'snapshot_sha256': digest if isinstance(digest, str) else None,
+                  'observed_at': observed if isinstance(observed, (int, float)) else None,
+                  'report': str(path)}
         if item.get('eligible') is True:
             detail['outcome'] = 'reopened'
             conn.execute("UPDATE products SET state='needs_agent',last_error=NULL,updated_at=? "
@@ -1865,6 +1878,17 @@ def apply_preflight_report(task_id, proof_path, *, db_path=None):
         reason, message = item.get('reason'), item.get('message')
         if not isinstance(reason, str) or not reason.strip():
             fail()
+        if evidence.get('snapshot_read') is not True:
+            # The read itself failed, so nothing was learned about the listing. Overwriting
+            # the recorded reason with "the page was not ready" would hide the real one
+            # behind a transient, so the attempt is recorded and the reason is left alone.
+            detail.update(outcome='read_failed', attempt=reason)
+            conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                         'VALUES(?,?,?,?,?)', (task_id, 'blocked', 'blocked', now,
+                                               json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+            conn.commit()
+            return {'task_id': task_id, 'state': 'blocked', 'outcome': 'read_failed',
+                    'last_error': row['last_error'], 'attempt': reason}
         # Keep the prefix so the row stays eligible for another re-check later.
         new_error = 'preflight_exception: {0}; {1}'.format(reason, message or '')
         detail.update(outcome='reason_refreshed', new_error=new_error)

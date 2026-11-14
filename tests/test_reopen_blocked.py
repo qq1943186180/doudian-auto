@@ -7,6 +7,7 @@ allows the re-read (it widens which rows may be read, nothing more) and `reopen_
 """
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -48,7 +49,8 @@ def report(queue, path, *, eligible=True, observed_at=None, product_id=None,
            target_version=None, digest=None, reason=None, message=None):
     entry = {'task_id': queue.row['id'], 'product_id': product_id or PID, 'shop': SHOP,
              'target_version': target_version or queue.row['target_version'],
-             'read_only': True, 'eligible': eligible}
+             'read_only': True, 'eligible': eligible,
+             'state': 'eligible' if eligible else 'blocked'}
     if reason is not None:
         entry['reason'] = reason
         entry['message'] = message or ''
@@ -114,7 +116,9 @@ def test_a_failing_report_without_a_reason_is_refused(queue, tmp_path):
 
 def test_a_stale_report_is_refused(queue, tmp_path):
     block(queue)
-    proof = report(queue, tmp_path / 'summary.json', observed_at=time.time() - 3600)
+    proof = report(queue, tmp_path / 'summary.json')
+    old = time.time() - 3600
+    os.utime(proof, (old, old))          # freshness is judged from the report file itself
     with pytest.raises(DoudianError) as exc:
         batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
     assert exc.value.code == 'reopen_unproven'
@@ -181,3 +185,52 @@ def _last_error(queue):
     with sqlite3.connect(queue.db) as conn:
         return conn.execute('SELECT last_error FROM products WHERE id=?',
                             (queue.row['id'],)).fetchone()[0]
+
+
+def test_a_skipped_row_is_refused_rather_than_reasoned(queue, tmp_path):
+    # `skipped` means another guard refused the row and nothing was read. Writing that in
+    # as a preflight failure would replace a true reason with a false one.
+    block(queue)
+    proof = report(queue, tmp_path / 'summary.json', eligible=False, reason='already_verified')
+    with sqlite3.connect(queue.db) as conn:
+        pass
+    entry = json.loads(proof.read_text(encoding='utf-8'))
+    entry['products'][0]['state'] = 'skipped'
+    proof.write_text(json.dumps(entry, ensure_ascii=False), encoding='utf-8')
+    with pytest.raises(DoudianError) as exc:
+        batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
+    assert exc.value.code == 'reopen_unproven'
+    assert _last_error(queue).startswith('preflight_exception: official_sku_code_incomplete;')
+
+
+def test_a_skipped_row_is_refused_rather_than_reasoned(queue, tmp_path):
+    # `skipped` means another guard refused the row and nothing was read. Writing that in
+    # as a preflight failure would replace a true reason with a false one.
+    block(queue)
+    proof = report(queue, tmp_path / 'summary.json', eligible=False, reason='already_verified')
+    with sqlite3.connect(queue.db) as conn:
+        pass
+    entry = json.loads(proof.read_text(encoding='utf-8'))
+    entry['products'][0]['state'] = 'skipped'
+    proof.write_text(json.dumps(entry, ensure_ascii=False), encoding='utf-8')
+    with pytest.raises(DoudianError) as exc:
+        batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
+    assert exc.value.code == 'reopen_unproven'
+    assert _last_error(queue).startswith('preflight_exception: official_sku_code_incomplete;')
+
+
+def test_a_failed_read_leaves_the_reason_alone(queue, tmp_path):
+    # A read that never produced a snapshot learned nothing about the listing. Recording
+    # "the page was not ready" as the reason would bury the real one behind a transient.
+    block(queue)
+    before = _last_error(queue)
+    proof = report(queue, tmp_path / 'summary.json', eligible=False,
+                   reason='editor_not_ready', message='商品编辑页尚未加载。')
+    entry = json.loads(proof.read_text(encoding='utf-8'))
+    entry['products'][0]['evidence'] = {'read_only': True, 'snapshot_read': False}
+    proof.write_text(json.dumps(entry, ensure_ascii=False), encoding='utf-8')
+    result = batch.apply_preflight_report(queue.row['id'], proof, db_path=queue.db)
+    assert result['outcome'] == 'read_failed'
+    assert result['attempt'] == 'editor_not_ready'
+    assert _last_error(queue) == before
+    assert _state(queue) == 'blocked'

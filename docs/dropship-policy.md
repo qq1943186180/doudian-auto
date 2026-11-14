@@ -549,3 +549,24 @@ doudian-auto batch recheck --task-id <id> --proof <dir>/<run>/summary.json
 - 实证：task 57 走完这两步，`last_error` 从
   `official_sku_code_incomplete; 仅确认7/44个SKU` 更正为
   `writer_image_slots_incomplete; 主图5张、详情2张` —— 编码问题早就不存在，真正缺的是 2 张详情源图。
+
+**19 件全量重检的结果（2026-11-14 16:40–16:52）**：`blocked 39 → 38`、`needs_agent 0 → 1`。
+1 件真的恢复、12 件理由被更正、3 件读失败、1 件被别的闸门跳过。三条新判据：
+
+1. 🔴 **必须逐件独立会话**。`close_session` 结束的是**整个 TaskSpace**，不是当前标签页；用一个共享 session
+   跑第二件起全部 `ego_session_finished`（实测 0.1 秒即失败）。反过来，不关标签页又会让页面越堆越多，
+   实测第二件就 `editor_not_ready`。正确做法是**每件一个独立 session 名**，跑完各自收尾。
+2. 🔴 **读失败不覆盖理由**。读失败（`evidence.snapshot_read=false`）说明**什么也没学到**，
+   把「页面没就绪」写进 `last_error` 会把真实原因（如「主图只 3 张」）埋掉。这种情形只写事件
+   （`outcome=read_failed`）并保留原 `last_error`。
+3. 🔴 **`editor_not_ready` 可能是「商品不存在」的伪装**。task 33 连续 `editor_not_ready`，
+   查页面发现**连一个 `goodsEditScrollContainer-*` 分区都没有**；再查 `dropship product-status`
+   返回 `status=not_found`（商品管理页与草稿箱都没有）。判据是「无任何分区 + `not_found`」，
+   不是反复重试 —— 后者只会把「商品已不存在」误当成会话问题。
+
+**重检纠正了三处旧判断**（这就是为什么要重检而不是读旧字段）：
+- 「`doudian_draft_or_rejected` 4 件」**只剩 1 件真的成立**（task 51）。task 22 已经完全不阻塞（→ `needs_agent`），
+  task 46 与 52 其实是主图/详情槽位不足，task 56 是 `writer_detail_source_collision`（前 4 张详情有重复原图，与 task 49 同款）。
+- 「`required_attributes_missing` 8 件」实测 task 23 缺的是**5 项**（安装方式、是否可接触食品、材质类型、型号、生产企业地址），
+  不是旧记录里的 1 项 —— 按旧记录去补值是补不完的。
+- task 39 的主图 4 张、详情 15 张（旧记录只写「缺安装方式」），真正先卡的是槽位。
