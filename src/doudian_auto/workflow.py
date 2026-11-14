@@ -133,8 +133,41 @@ def _observations(index):
 
 # Keys that describe how a block was read rather than what it holds. Observation state is
 # compared separately, so leaving it in the content compare would report a block that
-# merely became observable as a commercial change.
-_METADATA_KEYS = ('section', 'observation')
+# merely became observable as a commercial change. `sku_grid_rows` and
+# `inputs_without_sku_grid` are coverage metadata for the virtual SKU grid (see
+# `_prefer_grid_free_inputs`); the latter is only ever substituted back in for 价格库存.
+_METADATA_KEYS = ('section', 'observation', 'sku_grid_rows', 'inputs_without_sku_grid')
+
+# The only section whose field list is replaced by its grid-free counterpart. Restricting
+# it keeps a crafted snapshot from hiding a change in any other block's `inputs`.
+_GRID_FREE_SECTION = '价格库存'
+
+
+def _prefer_grid_free_inputs(name, left, right):
+    """Swap in the SKU-grid-free field list when *both* reads produced one.
+
+    The virtual SKU grid mounts only the rows that fit on screen, so its per-row inputs
+    describe the render window rather than the listing: one 32-SKU product read at inner
+    width 901 held 7 rows, the same product read after the window was maximised held 8,
+    and comparing them reported `commercial_changed` while `sku_evidence` was identical.
+
+    Newer reads record a second list without those rows. It is only used when both sides
+    carry it and only for the SKU grid's own section, so a baseline taken before this
+    contract falls back to the full list and keeps being compared exactly as strictly as
+    before -- nothing that used to be compared stops being compared. The grid itself
+    stays proven by `sku_evidence`, which covers every SKU regardless of how many rows
+    happen to be mounted.
+    """
+    key = 'inputs_without_sku_grid'
+    if name != _GRID_FREE_SECTION:
+        return left, right
+    if not (isinstance(left, dict) and isinstance(right, dict)):
+        return left, right
+    if not (isinstance(left.get(key), list) and isinstance(right.get(key), list)):
+        return left, right
+    if not (isinstance(left.get('inputs'), list) and isinstance(right.get('inputs'), list)):
+        return left, right
+    return {**left, 'inputs': left[key]}, {**right, 'inputs': right[key]}
 
 
 def _content(section):
@@ -306,8 +339,9 @@ def compare_protected(before, after):
     for name in sorted(current):
         if exempt(name):
             continue
-        left = _normalize_images(_inactive_size_option_content(baseline[name], full_skus_compared=full_skus_compared))
-        right = _normalize_images(_inactive_size_option_content(current[name], full_skus_compared=full_skus_compared))
+        left_block, right_block = _prefer_grid_free_inputs(name, baseline[name], current[name])
+        left = _normalize_images(_inactive_size_option_content(left_block, full_skus_compared=full_skus_compared))
+        right = _normalize_images(_inactive_size_option_content(right_block, full_skus_compared=full_skus_compared))
         if left != right:
             raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
 

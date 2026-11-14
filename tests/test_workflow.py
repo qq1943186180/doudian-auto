@@ -493,6 +493,103 @@ def test_protected_section_present_on_one_side_only_blocks():
     assert_code('protected_snapshot_incomplete', before, after)
 
 
+# --- the SKU grid's render window is coverage, not content ---------------------
+# The collector no longer puts the virtual SKU grid's per-row inputs into `inputs`
+# (dom.js), because a 32-SKU listing mounts 7 or 8 of those rows depending on window
+# height, and comparing them reported `commercial_changed` while sku_evidence was
+# identical. It records how many rows it mounted in `sku_grid_rows` instead. That count
+# is coverage metadata like `observation`: it must never decide a comparison, and it must
+# never be used to excuse a change in the fields that are still compared.
+
+def test_sku_grid_render_window_is_not_a_commercial_change():
+    from doudian_auto.workflow import compare_protected
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', sku_grid_rows=7, inputs=[{'value': '20.88'}]),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存', sku_grid_rows=8, inputs=[{'value': '20.88'}]),
+                           section('服务与履约')]}
+    compare_protected(before, after)
+
+
+def test_a_section_control_change_still_blocks_alongside_the_grid_window():
+    # Same grid-window difference as above; the section's own control also changed. The
+    # metadata allowance must not swallow the real change.
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', sku_grid_rows=7, inputs=[{'value': '20.88'}]),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存', sku_grid_rows=8, inputs=[{'value': '19.99'}]),
+                           section('服务与履约')]}
+    assert_code('commercial_changed', before, after)
+
+
+def test_grid_free_field_lists_are_used_when_both_reads_have_them():
+    # The measured shape: `inputs` differs only by the SKU rows the render window mounted,
+    # while the list without those rows is identical. sku_evidence proves the grid itself.
+    from doudian_auto.workflow import compare_protected
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', sku_grid_rows=7,
+                                    inputs=[{'value': '20.88'}, {'value': 'LC-100'}, {'value': '49.88'}],
+                                    inputs_without_sku_grid=[{'value': '20.88'}]),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存', sku_grid_rows=8,
+                                   inputs=[{'value': '20.88'}, {'value': 'LC-100'}, {'value': '49.88'},
+                                           {'value': 'LC-110'}, {'value': '49.88'}],
+                                   inputs_without_sku_grid=[{'value': '20.88'}]),
+                           section('服务与履约')]}
+    compare_protected(before, after)
+
+
+def test_a_legacy_baseline_without_the_grid_free_list_stays_strict():
+    # A baseline captured before this contract has no grid-free list. Nothing may be
+    # silently dropped for it: the comparison falls back to `inputs` exactly as before.
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', sku_grid_rows=7, inputs=[{'value': 'LC-100'}]),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存', sku_grid_rows=8,
+                                   inputs=[{'value': 'LC-100'}, {'value': 'LC-110'}],
+                                   inputs_without_sku_grid=[]),
+                           section('服务与履约')]}
+    assert_code('commercial_changed', before, after)
+
+
+def test_a_changed_control_is_caught_through_the_grid_free_list():
+    from doudian_auto.workflow import compare_protected
+    before = {'protected': [section('基础信息'),
+                            section('价格库存', sku_grid_rows=7,
+                                    inputs=[{'value': '20.88'}],
+                                    inputs_without_sku_grid=[{'value': '20.88'}]),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息'),
+                           section('价格库存', sku_grid_rows=7,
+                                   inputs=[{'value': '19.99'}],
+                                   inputs_without_sku_grid=[{'value': '19.99'}]),
+                           section('服务与履约')]}
+    with pytest.raises(DoudianError) as exc:
+        compare_protected(before, after)
+    assert exc.value.code == 'commercial_changed'
+
+
+def test_the_grid_free_list_is_ignored_outside_the_sku_section():
+    # Only 价格库存 may have its `inputs` replaced. If another block could opt into the
+    # same escape, a crafted snapshot would hide a change there.
+    from doudian_auto.workflow import compare_protected
+    before = {'protected': [section('基础信息', inputs=[{'value': '旧类目'}],
+                                    inputs_without_sku_grid=[{'value': '旧类目'}]),
+                            section('价格库存'),
+                            section('服务与履约')]}
+    after = {'protected': [section('基础信息', inputs=[{'value': '新类目'}],
+                                   inputs_without_sku_grid=[{'value': '旧类目'}]),
+                           section('价格库存'),
+                           section('服务与履约')]}
+    with pytest.raises(DoudianError) as exc:
+        compare_protected(before, after)
+    assert exc.value.code == 'commercial_changed'
+
+
 def test_protected_duplicate_or_missing_section_key_is_rejected():
     dup = {'protected': [section('基础信息'), section('基础信息'),
                          section('价格库存'), section('服务与履约')]}

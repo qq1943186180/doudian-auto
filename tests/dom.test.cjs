@@ -463,3 +463,63 @@ test('a selected option reads back as its label, not the hidden option id',()=>{
   assert.equal(result.kind,'single');
   assert.equal(result.current,'免打孔式');
 });
+
+// --- the SKU grid is a render window, not protected content -------------------
+// A 32-SKU listing mounted only 7 rows at inner width 901 and 8 after the window was
+// maximised. Comparing those two reads said `commercial_changed` while sku_evidence was
+// byte-identical, so the collector also records the section's fields *without* the grid's
+// row cells, and the comparison uses that list when both sides have it. `inputs` keeps its
+// old meaning so a baseline taken before this contract is still comparable. These tests
+// pin all three: the extra list, the unchanged `inputs`, and the coverage count.
+
+const gridRows = n => '<table><tbody>' + Array.from({length:n},(_,i)=>
+  `<tr data-row-key="${i+1}"><td><input value="LC-${i}00"></td><td><input value="49.88"></td></tr>`).join('') +
+  '</tbody></table>';
+
+function priceFields(html) {
+  const {page,call} = fixture();
+  page.window.document.getElementById('goodsEditScrollContainer-价格库存')
+    .insertAdjacentHTML('beforeend', html);
+  const fields = call('snapshot').protected.find(x=>x.section.endsWith('-价格库存'));
+  page.window.close();
+  return fields;
+}
+
+test('the SKU-grid-free field list drops the grid row cells only',()=>{
+  const fields = priceFields(gridRows(2));
+  const all = fields.inputs.map(x=>x.value);
+  const gridFree = fields.inputs_without_sku_grid.map(x=>x.value);
+  // `inputs` keeps its old meaning, grid rows included.
+  assert.ok(all.includes('LC-000') && all.includes('49.88'));
+  // The new list drops exactly those row cells.
+  assert.ok(!gridFree.includes('LC-000'), '网格行的商家编码不应进入比对列表');
+  assert.ok(!gridFree.includes('49.88'), '网格行的价格不应进入比对列表');
+  // ...and keeps the section's own controls.
+  assert.ok(gridFree.includes('20.88'), '分区自身的控件必须保留');
+  assert.equal(fields.sku_grid_rows, 2);
+});
+
+test('a smaller SKU render window changes inputs but not the compared list',()=>{
+  const seven = priceFields(gridRows(7));
+  const eight = priceFields(gridRows(8));
+  // The window genuinely differed -- this is the exact shape that used to fail.
+  assert.notEqual(seven.sku_grid_rows, eight.sku_grid_rows);
+  assert.notDeepEqual(seven.inputs, eight.inputs);
+  // ...and the list the comparison actually uses is identical anyway.
+  assert.deepEqual(seven.inputs_without_sku_grid, eight.inputs_without_sku_grid);
+});
+
+test('a section control outside the grid still differs in both lists',()=>{
+  const changed = priceFields(gridRows(7) + '<input name="limit" value="每人限购2件">');
+  const plain = priceFields(gridRows(7));
+  assert.notDeepEqual(changed.inputs_without_sku_grid, plain.inputs_without_sku_grid);
+});
+
+test('sections without a SKU grid carry no grid-free list',()=>{
+  const {page,call} = fixture();
+  const snap = call('snapshot');
+  const basics = snap.protected.find(x=>x.section.endsWith('-基础信息'));
+  assert.equal(basics.inputs_without_sku_grid, undefined);
+  assert.equal(basics.sku_grid_rows, undefined);
+  page.window.close();
+});

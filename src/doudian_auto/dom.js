@@ -234,11 +234,24 @@
     const names = ['基础信息','价格库存','服务与履约'];
     if (!names.every(name=>sections.some(e=>e.id.endsWith('-'+name)))) return {...identity,error:'protected_sections_missing'};
     const protectedFields = sections.map(section => {
+      // The SKU grid is a virtual list: it mounts only the rows that fit on screen, so its
+      // per-row inputs describe the *render window*, not the data. Measured on one
+      // 32-SKU listing: a baseline captured at inner width 901 held 7 rows (167 inputs),
+      // a readback captured after the window was maximised held 8 (173), and comparing
+      // the two said `commercial_changed` while sku_evidence was byte-identical.
+      // `inputs` therefore keeps its old meaning (everything rendered, for comparability
+      // with baselines taken before this contract), and a second list without the grid
+      // rows is recorded alongside it. The grid's real proof is `sku_evidence`, which
+      // covers every SKU no matter how many rows are mounted.
+      const skuGrid = section.id.endsWith('-价格库存');
+      const gridRows = skuGrid ? all('tr[data-row-key]', section).filter(visible) : [];
+      const sectionInputs = all('input,textarea,select,[role="switch"]', section).filter(e => !target(e) && visible(e) && !['file','button','submit','password'].includes(e.type));
+      const describeInput = e => ({
+        type:e.type || e.getAttribute('role') || e.tagName, name:e.name || e.getAttribute('aria-label') || '',
+        value:e.value ?? null, checked: ['checkbox','radio'].includes(e.type) ? e.checked : e.getAttribute('aria-checked'), disabled:!!e.disabled
+      });
       const fields = {
-        inputs: all('input,textarea,select,[role="switch"]', section).filter(e => !target(e) && visible(e) && !['file','button','submit','password'].includes(e.type)).map(e => ({
-          type:e.type || e.getAttribute('role') || e.tagName, name:e.name || e.getAttribute('aria-label') || '',
-          value:e.value ?? null, checked: ['checkbox','radio'].includes(e.type) ? e.checked : e.getAttribute('aria-checked'), disabled:!!e.disabled
-        })),
+        inputs: sectionInputs.map(describeInput),
         selections: all('[role="combobox"],[class*="select-selection-item"],[class*="Select_value"]', section).filter(e=>!target(e) && visible(e)).map(text),
         static_fields: all('[attr-field-id]',section).filter(e=>!target(e) && !e.contains(document.querySelector('#pg-title-input')) && !e.contains(main) && !e.contains(detail) && visible(e) && !e.querySelector('input,textarea,select,[role="switch"],[role="combobox"]')).map(e=>({field:e.getAttribute('attr-field-id'),text:text(e).slice(0,3000)})),
         images: (() => {
@@ -255,6 +268,13 @@
           });
         })()
       };
+      if (skuGrid) {
+        // Same shape as `inputs`, minus the SKU grid's own row cells. Only the grid's row
+        // inputs are dropped; the section's other controls (batch setters, shipping
+        // promise, purchase limits) stay in both lists and stay compared exactly.
+        fields.inputs_without_sku_grid = sectionInputs
+          .filter(e => !e.closest('tr[data-row-key]')).map(describeInput);
+      }
       // A hidden section reports zero of everything, which is indistinguishable from
       // genuinely empty fields, so the observation state is recorded separately and never
       // inferred from absence. `innerText` of a hidden block is '' because layout never
@@ -274,7 +294,11 @@
       const contentless = bare === '' || (headingBare !== null && bare === headingBare);
       const observation = visible(section) ? 'ready'
         : (!hasFields && !hasControl && !hasImage && contentless ? 'empty_block' : 'unobserved');
-      return {section: section.id, observation, ...fields};
+      // `sku_grid_rows` is coverage metadata, not a fact about the listing: it records how
+      // many grid rows this read happened to mount, so a later reader can tell a genuine
+      // difference from a smaller render window. It is never compared (see _METADATA_KEYS).
+      return skuGrid ? {section: section.id, observation, sku_grid_rows: gridRows.length, ...fields}
+        : {section: section.id, observation, ...fields};
     });
     const categoryFields = all('[attr-field-id]').filter(e => visible(e) &&
       e.closest('[class*="categoryPropertiesItem"]') && !e.querySelector('[attr-field-id]'));
@@ -310,7 +334,7 @@
     return {...identity, shop_confirmed:!!shopFound, title:document.querySelector('#pg-title-input').value,
       mains:images(main), ...detailImages(), main_delete_count:deletes('mains').length, detail_delete_count:deletes('details').length,
       protected:protectedFields, required_attributes:requiredAttributes,
-      coverage:'仅DOM实际加载字段；虚拟SKU列表未逐行遍历。程序只写标题、方主图及标准详情。',
+      coverage:'仅DOM实际加载字段；价格库存的SKU表格只渲染可视行，故另存一份不含网格行的字段副本用于比对（两侧都有时才用），其全量证明由 sku_evidence 承担。程序只写标题、方主图及标准详情。',
       errors:errorsSeen};
   }
   if (op === 'scroll') {
