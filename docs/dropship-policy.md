@@ -599,3 +599,34 @@ doudian-auto batch recheck --task-id <id> --proof <dir>/<run>/summary.json
   36 是已删除）。这 6 件的 `page_timeout` 都是**结构性**的，别再当瞬时抖动重试。
 - 刷新理由时若 `miaoshou_listed is False`，会在理由末尾追加「妙手快速编辑列表中没有该商品，写入路径不可用」——
   只写官方侧原因会让人以为「补齐资料就能过」，而实际上补完也写不进去。
+
+### ⑲ 视觉失败件的受支持恢复：`batch requeue` + 按轮次计数
+
+Codex 外部审查抓出三个洞，已补齐（`codex-cli-review`，报告 `/tmp/codex-brief-20261115.md`）：
+
+1. 🔴 **`attempt > 2` 原来是终身计数**。`batch.py::complete_agent_task()` 里
+   `attempt = 1 + COUNT(*) FROM asset_reviews WHERE task_id/kind/slot`，
+   所以一件失败过两次的槽位，**即使换了参考图和提示词重出、且目视通过**，第三版仍 `attempt=3`
+   → `exhausted` → 又被判 `visual_quality_failed_after_retry`，永远出不来。
+   修法：`_visual_round_start()` 读 `product_events.to_state='visual_round_opened'` 的最新时间，
+   `attempt` 只数该时间之后的复核；旧证据改判 pass、跨轮重放一律 `visual_round_conflict` 拒绝。
+2. 🔴 **没有受支持的回队命令**。`visual_quality_failed_after_retry` / `root_visual_review_failed_after_retry`
+   不是 `preflight_exception:`，`recheck` 不适用；`block` 是反方向。新增
+   `batch requeue --task-id --proof <artifacts.json>`，准入比 `recheck` 更严：
+   - 两个错误码精确白名单，且 `asset_reviews` 里必须有 `decision='fail'` 的历史记录；
+   - 证明必须是**完整 9 张素材**的清单，过 `validate_agent_artifacts` → `validate_visual_review`：
+     每张图 5 项检查（identity/color/quantity/printing/specification），
+     每项 `status` 只能是 `pass` / `fail`，必须有实际观察文本且引用原图哈希；
+   - **证据 30 分钟内，且晚于该行最后一次状态变更**；从未写过（无 baseline/素材/上传映射/租约/兄弟版本/活跃官方任务）；
+   - `BEGIN IMMEDIATE` 内重验，写两条幂等事件 `blocked → visual_round_opened → needs_agent`。
+3. 🔴 **网页 GPT 的图根本进不了复核**：`visual_review.GENERATORS` 原来只有
+   `builtin-imagegen` / `existing-qualified`，新图一律 `image_provenance_missing`。
+   已加入 `web-gpt-ego`，提示词落盘即可满足来源绑定。
+
+**保留意见不能自动放行**：`conditional` / `pass_with_note` 在这个 schema 里根本无法表达，
+requeue 会直接拒绝（`visual_review_incomplete`），不会把「带保留意见」偷偷提升成 pass。
+实测准入：task 15/34/48 满足「从未写过」；task 16 有 `artifacts_path`、task 27 有租约且无失败复核记录，
+都会被正确拒绝。48 的 `detail-3` 仍是 `conditional`，补齐严格复核前不得放行。
+
+测试：`tests/test_requeue_visual.py` 7 条（保留意见拒绝、非视觉阻塞拒绝、无失败历史拒绝、
+已写过拒绝、陈旧证据拒绝、轮次事件、轮次计数从 1 重启）；相关回归 196 项全绿。

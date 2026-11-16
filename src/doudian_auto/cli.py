@@ -181,6 +181,9 @@ def parser():
     batch_block = batch_sub.add_parser('block', help='把「待准备、从未写过」的任务收回 blocked，必须写明原因')
     batch_block.add_argument('--task-id', required=True, type=int)
     batch_block.add_argument('--reason', required=True)
+    batch_requeue = batch_sub.add_parser('requeue', help='凭全新九图素材与逐项通过的目视复核，为视觉失败件开启新一轮重制')
+    batch_requeue.add_argument('--task-id', required=True, type=int)
+    batch_requeue.add_argument('--proof', required=True, help='完整 9 张素材的 artifacts.json（含 visual_review）')
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
@@ -938,6 +941,8 @@ def run(args):
                 return batch_queue.apply_preflight_report(args.task_id, args.proof)
             if args.batch_command == 'block':
                 return batch_queue.block_task(args.task_id, args.reason)
+            if args.batch_command == 'requeue':
+                return batch_queue.requeue_visual_task(args.task_id, args.proof)
             if args.batch_command == 'quarantine':
                 return batch_queue.quarantine_product(args.product_id, args.reason)
             if args.batch_command == 'reconcile':

@@ -13,7 +13,10 @@ from .errors import DoudianError
 
 
 CHECKS = ('identity', 'color', 'quantity', 'printing', 'specification')
-GENERATORS = {'builtin-imagegen', 'existing-qualified'}
+# `web-gpt-ego` = tb-auto 里经 ego 浏览器打开 ChatGPT 网页「生图」项目出的图。
+# 用户明令商品图只走这条通道；它必须能留下与 builtin-imagegen 同等的来源记录，
+# 否则即使素材合格也会在 image_provenance_missing 被拒。
+GENERATORS = {'builtin-imagegen', 'existing-qualified', 'web-gpt-ego'}
 
 
 def file_hash(path):

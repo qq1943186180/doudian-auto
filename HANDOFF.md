@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261114-021（**抓回一次假恢复**：preflight 通过只证明抖店可写，写入走妙手；task 22 不在妙手，已收回并补上 `--check-miaoshou` 闸门）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 17:45 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-001（**抓回一次假恢复**：preflight 通过只证明抖店可写，写入走妙手；task 22 不在妙手，已收回并补上 `--check-miaoshou` 闸门）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 17:45 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,16 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261116-001 · 194-202 · ✅ 按 Codex 审查补齐 requeue 与按轮次计数
+
+- 状态：**done（机制 + 7 条测试 + 196 项回归）**。零商品写入、零队列状态变更。Codex 审查报告 `/tmp/codex-brief-20261115.md`。
+- ① 修 `attempt > 2` 终身计数：`batch.py::_visual_round_start()` 读 `visual_round_opened` 事件划轮次，`complete_agent_task()` 只数本轮复核；旧证据跨轮重放报 `visual_round_conflict`。
+- ② 新增 `batch requeue --task-id --proof <artifacts.json>`（`batch.requeue_visual_task`）：两个错误码精确白名单 + 必须有 `asset_reviews` 失败记录 + 完整 9 图清单过 `validate_visual_review` + 证据 30 分钟内且晚于最后状态变更 + 从未写过/无租约/无兄弟/无活跃任务 + `BEGIN IMMEDIATE` 重验 + 两条幂等事件。
+- ③ `visual_review.GENERATORS` 加 `web-gpt-ego`（否则网页 GPT 出的图一律 `image_provenance_missing`）。
+- ④ 🔴 **`conditional` / `pass_with_note` 一律拒绝放行**，不会自动归一为 pass。实测准入：15/34/48 满足「从未写过」；16 有 `artifacts_path`、27 有租约且无失败复核，都会被正确拒绝；48/detail-3 仍是 `conditional`。**当前没有一件可直接 requeue。**
+- ⑤ Codex 另两条（等待器终态探针、图文一致性校验）留给 tb-auto 侧，未动那个仓库的源码——有并发会话、探针 DOM 未验证。
+- ⑥ 测试 `tests/test_requeue_visual.py` 7 条；文档 `docs/dropship-policy.md` ⑲。
 
 ### T-20261114-021 · 194-76 · 抓回一次假恢复：preflight 通过 ≠ 能写入
 

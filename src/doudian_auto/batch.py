@@ -341,6 +341,21 @@ def validate_agent_artifacts(path, expected_product_id, *, expected_shop=None,
             'asset_set_sha256': hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()}
 
 
+def _visual_round_start(conn, task_id):
+    """When the current visual-retry round began, or 0.0 if none was opened.
+
+    `requeue_visual_task` stamps a `visual_round_opened` event for a genuinely new
+    remake (new reference, new prompt, new assets). Counting reviews from before
+    that point is what made a third attempt look like a fourth: `attempt > 2` then
+    re-blocked a perfectly good asset forever. Old rows stay in place as history;
+    they simply no longer count toward the current round's two attempts.
+    """
+    row = conn.execute(
+        "SELECT MAX(occurred_at) AS started FROM product_events "
+        "WHERE task_id=? AND to_state='visual_round_opened'", (task_id,)).fetchone()
+    return float(row['started'] or 0.0)
+
+
 def complete_agent_task(task_id, owner, token, artifact_path, *, db_path=None):
     conn = _db(db_path)
     try:
@@ -358,22 +373,27 @@ def complete_agent_task(task_id, owner, token, artifact_path, *, db_path=None):
         manifest = validate_agent_artifacts(artifact_path, row['product_id'],
                                             expected_shop=row['shop'], allow_failed_review=True)
         now = time.time()
+        round_start = _visual_round_start(conn, task_id)
         review = manifest['visual_review']
         failed_slots = {(item['kind'], item['slot']) for item in review['failed_slots']}
         exhausted = []
         for asset in manifest['assets']:
             key = (asset['kind'], asset['slot'])
             decision = 'fail' if key in failed_slots else 'pass'
-            existing = conn.execute('''SELECT attempt,decision FROM asset_reviews
+            existing = conn.execute('''SELECT attempt,decision,occurred_at FROM asset_reviews
                 WHERE task_id=? AND kind=? AND slot=? AND asset_sha256=?''',
                 (task_id, *key, asset['sha256'])).fetchone()
+            if existing and existing['occurred_at'] < round_start:
+                raise DoudianError('visual_round_conflict',
+                    '上一轮重制的复核证据不能用于新一轮，须用新素材重新复核。')
             if existing and existing['decision'] != decision:
                 raise DoudianError('visual_review_conflict', '同一张未修改的图片不能把失败记录改写为通过。')
             if existing:
                 attempt = existing['attempt']
             else:
                 attempt = 1 + conn.execute('''SELECT COUNT(*) FROM asset_reviews
-                    WHERE task_id=? AND kind=? AND slot=?''', (task_id, *key)).fetchone()[0]
+                    WHERE task_id=? AND kind=? AND slot=? AND occurred_at>=?''',
+                    (task_id, *key, round_start)).fetchone()[0]
                 conn.execute('''INSERT INTO asset_reviews
                     VALUES(?,?,?,?,?,?,?,?)''', (task_id, *key, asset['sha256'], attempt,
                                                 decision, review['review_sha256'], now))
@@ -1963,6 +1983,120 @@ def block_task(task_id, reason, *, db_path=None):
                                            json.dumps(detail, ensure_ascii=False, sort_keys=True)))
         conn.commit()
         return {'task_id': task_id, 'state': 'blocked', 'last_error': error}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+VISUAL_BLOCK_REASONS = (
+    'visual_quality_failed_after_retry',
+    'root_visual_review_failed_after_retry',
+)
+
+
+def requeue_visual_task(task_id, proof_path, *, db_path=None):
+    """Open a fresh visual-retry round after new images have actually passed review.
+
+    This is the supported way back from a visual failure. It is deliberately narrow:
+
+    - only two exact `last_error` families, both of which must have left a `fail`
+      row in `asset_reviews`; anything a write could explain stays blocked;
+    - the proof is a **complete** nine-image artifact manifest, validated by
+      `validate_agent_artifacts` (which runs `validate_visual_review`). That means
+      every slot has five per-image checks whose status is exactly `pass` or `fail`,
+      bound to the real file hashes. A `conditional` or `pass_with_note` note cannot
+      be expressed there at all, so a qualified opinion is refused rather than
+      silently promoted to a pass;
+    - the round is stamped as an event. `complete_agent_task` counts attempts only
+      from that stamp, so a remake with new reference/prompt/assets is not killed by
+      the previous round's two failures. Old rows remain as history;
+    - unchanged guards from `apply_preflight_report`: never attempted, never saved,
+      no material/baseline/upload record, no lease, no sibling revision, no active
+      official job, and state re-checked inside `BEGIN IMMEDIATE`.
+
+    Without all of that the row stays blocked and nothing is written.
+    """
+    path = Path(proof_path).resolve()
+    conn = _db(db_path)
+
+    def fail(code, message):
+        raise DoudianError(code, message)
+
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        record = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
+        if record is None:
+            raise DoudianError('unknown_task', '队列里没有这个任务。')
+        row = dict(record)
+        now = time.time()
+        error = row['last_error'] or ''
+        if (row['state'] != 'blocked'
+                or not any(error.startswith(reason) for reason in VISUAL_BLOCK_REASONS)):
+            fail('requeue_not_allowed',
+                 '只允许「视觉复核失败且从未写过」的 blocked 任务开启新一轮重制。')
+        if (row['submission_state'] != 'not_attempted'
+                or int(row['submission_attempts'] or 0) != 0
+                or row['baseline_hash'] or row['artifacts_path'] or row['artifacts_hash']
+                or json.loads(row['upload_map_json'] or '[]') != []
+                or any((row[key] or 0) >= now for key in ('lease_until', 'execution_until'))):
+            fail('requeue_not_allowed', '该任务已有写入、素材或租约记录，不能开启新一轮。')
+        if conn.execute('SELECT 1 FROM products WHERE shop=? AND product_id=? AND id!=?',
+                        (row['shop'], row['product_id'], task_id)).fetchone():
+            fail('requeue_not_allowed', '该商品另有队列版本，不能开启新一轮。')
+        if _active_doudian_job_conflict(row['shop'], row['product_id']):
+            fail('requeue_not_allowed', '该商品有活跃的官方任务，不能开启新一轮。')
+        failed_reviews = conn.execute(
+            "SELECT COUNT(*) FROM asset_reviews WHERE task_id=? AND decision='fail'",
+            (task_id,)).fetchone()[0]
+        if not failed_reviews:
+            fail('requeue_evidence_missing',
+                 '没有留存的视觉失败复核记录，不能证明这是同一批失败槽位的重制。')
+        # The proof must be freshly produced, and later than the last known change to
+        # this row: an old manifest cannot authorise a new round.
+        if not 0 <= now - path.stat().st_mtime <= 1800:
+            fail('requeue_evidence_stale', '素材清单不在 30 分钟有效期内。')
+        last_event = conn.execute(
+            'SELECT MAX(occurred_at) FROM product_events WHERE task_id=?', (task_id,)).fetchone()[0]
+        if path.stat().st_mtime < max(last_event or 0.0, row['updated_at'] or 0.0):
+            fail('requeue_evidence_stale', '素材清单早于最后一次状态变更，不能作为本轮证明。')
+
+        manifest = validate_agent_artifacts(path, row['product_id'],
+                                            expected_shop=row['shop'])
+        proof = read_json(path)
+        if str(proof.get('target_version') or '') != row['target_version']:
+            fail('target_version_mismatch', '素材清单的目标版本与本行不一致。')
+        review = manifest.get('visual_review') or {}
+        if review.get('approved') is not True:
+            fail('visual_review_failed', '新图未逐项通过目视检查，不得开启新一轮。')
+
+        round_no = 1 + conn.execute(
+            "SELECT COUNT(*) FROM product_events WHERE task_id=? AND to_state='visual_round_opened'",
+            (task_id,)).fetchone()[0]
+        detail = {'event_kind': 'visual_requeue', 'round': round_no,
+                  'prior_error': row['last_error'], 'proof': str(path),
+                  'proof_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                  'asset_set_sha256': manifest['asset_set_sha256'],
+                  'review_sha256': review['review_sha256'],
+                  'reviewer': review['reviewer'],
+                  'slots': [f"{a['kind']}:{a['slot']}" for a in manifest['assets']],
+                  'failed_reviews_before_round': failed_reviews}
+        conn.execute("UPDATE products SET state='needs_agent',last_error=NULL,updated_at=? "
+                     "WHERE id=? AND state='blocked'", (now, task_id))
+        if conn.execute('SELECT changes()').fetchone()[0] != 1:
+            fail('requeue_identity_changed', '任务在开启新一轮期间发生变化。')
+        conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                     'VALUES(?,?,?,?,?)', (task_id, 'blocked', 'visual_round_opened', now,
+                                           json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+        conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                     'VALUES(?,?,?,?,?)', (task_id, 'visual_round_opened', 'needs_agent', now,
+                                           json.dumps({'event_kind': 'visual_requeue',
+                                                       'round': round_no},
+                                                      ensure_ascii=False, sort_keys=True)))
+        conn.commit()
+        return {'task_id': task_id, 'state': 'needs_agent', 'round': round_no,
+                'reviewer': review['reviewer'], 'asset_set_sha256': manifest['asset_set_sha256']}
     except Exception:
         conn.rollback()
         raise
