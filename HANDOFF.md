@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-008（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-009（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,22 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261116-009 · 194-210 · ✅ Codex 素材来源定案 + 12 件探测翻转 + 网络阻塞
+
+- 状态：**part-done**。队列 **22 verified / 33 blocked / 6 closed**（未变）。
+- 🔴 **`row_present` 竞态修正后再测，结论整体翻转**：23/28 重探稳定为 `present`（此前 `total=58` 是查询未生效的偶发）。
+  现在 12 件（39/55/57/59/60/23/28/31/43/45/50/54）**全部 present**，都在妙手，补资料有意义。
+  为此新增 `work/materials-20261114/probe.sh`（先对齐 ego 空间号再探测，空间会被回收且 ID 复用）。
+- ✅ **Codex 素材来源定案**（`/tmp/codex-sourcing-20261116.md`）：批量队列语义是**整套换新图**；
+  官方原图不能复用（`validate_visual_review` 拒绝输出与参考图同 sha，`existing-qualified` 只认历史内置生图清单）；
+  **已有合格生成图可复用，缺图件需整套重生**。5 件从未生成过图（tb-auto 无作业目录）→ 需 45 张。
+- ✅ 已备：抖店官方图抓取（`probe_official.py`，AVIF）、转码参考图（`task39/refs/`）、
+  通用生成脚本 `tb-auto/work/doudian-20261114/gen_task.py`（按槽位、断点续传、每张独立会话）、风格定语（主图去文案纯白底 / 详情场景无文字）。
+- 🔴 **硬阻塞：网络中断**。`curl https://chatgpt.com`、`curl https://github.com`、`git ls-remote` 全部
+  `schannel: failed to receive handshake`（HTTP 000）；ChatGPT 页面停在 `chrome-error://chromewebdata/`。
+  出图与推送均无法进行，非代码问题。恢复后：先跑 `gen_task.py main-1` 验证，再批量 9 张/件。
+- ✅ Codex 协作方式已写入 `docs/dropship-policy.md` ㉒（一直推进、遇问题先问 Codex、结论必须落文档与测试）。
 
 ### T-20261116-008 · 194-209 · 🔴 判据竞态导致连锁误判，已修并撤回一处结案
 
