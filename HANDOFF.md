@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-002（**抓回一次假恢复**：preflight 通过只证明抖店可写，写入走妙手；task 22 不在妙手，已收回并补上 `--check-miaoshou` 闸门）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-14 17:45 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-002（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 38 blocked / 1 needs_agent**（2026-11-16 14:45 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -31,7 +31,7 @@
 
 ### T-20261116-002 · 194-203 · ✅ 真实演练 requeue 成功 + 等待器探针方案落纸
 
-- 状态：**done（一件真回队 + 一份可贴方案）**。零商品写入；队列 61 件＝**22 verified / 39 blocked / 1 needs_agent**（task 48）。
+- 状态：**done（一件真回队 + 一份可贴方案）**。零商品写入；队列 61 件＝**22 verified / 38 blocked / 1 needs_agent**（task 48）。
 - ① **task 48 真的回到 `needs_agent`**：先把 `detail-3` 换成印字清晰可读的 `references/main-5.jpg` 重出（145s，逐项目视明确 pass），
   再基于历史 7 张 + 新 2 张构造完整 9 图清单 `work/ego/remaining-20261102/product-48/artifacts-v3.json`
   （`validate_agent_artifacts` 实跑 `approved=True`、9 张齐全），`batch requeue --task-id 48 --proof ...` 返回
