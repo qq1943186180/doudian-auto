@@ -43,8 +43,11 @@
   `[data-testid=generated-image-gallery]`、`img[alt^="已生成图像"]`、`[role=alert]`。
   三个早退码 `GENERATION_UI_ERROR` / `GENERATION_REFUSED` / `GENERATION_NO_IMAGE`，均 `retryable=False`，
   且「不确定就继续等」，不动 snapshot 并集与两次稳定判据。
-- ④ **未动 tb-auto 源码**：那边有并发会话，且还需抓一次「生成中」DOM 与一次文字拒绝复现才能定稿辅助判据
-  （会消耗对话请求，需另行授权）。
+- ④ **未动 tb-auto 源码**：那边有并发会话。探针方案已在 `PROBE-DESIGN.md` 定稿；
+  补做了一次纯文字复现（不生图、零额度），抓到一个**反例**：「回复已完成但无图」时
+  `role=status` 文本是**空的**，但 `document.body.innerText` 尾部有「回答已完成」，且 `generated=0`、
+  `stopping=false`、`alerts=[]` 连续 26 轮稳定 → 定稿判据改为**以文本尾部为主**，
+  `role=status` 只作辅助；「停止按钮消失」这条辅助判据不启用（生成中 DOM 尚未实抓）。
 - ⑤ task 15/34/48 满足「从未写过」准入门槛；16（有 artifacts_path）、27（有租约且无失败复核）会被正确拒绝。
   15/34 尚无新素材，本轮不强行补复核。
 
