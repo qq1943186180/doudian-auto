@@ -219,6 +219,8 @@ def parser():
     batch_run.add_argument('--owner', default='codex-miaoshou-writer')
     batch_run.add_argument('--session', default='miaoshou-auto-batch-20261028',
                            help='本批次专用浏览器任务组，便于隔离旧编辑页')
+    batch_run.add_argument('--check-miaoshou', action='store_true',
+                           help='恢复 legacy 件前只读取证该商品在妙手快速编辑列表中')
     batch_run.add_argument('--apply', action='store_true', help='执行页面编辑、一次保存及双端读回')
     batch_run.add_argument('--acceptance', action='store_true',
                            help='首次3件真实验收；仅可配合3个明确的商品ID')
@@ -1014,11 +1016,15 @@ def run(args):
                     run = batch_queue.run_batch(args.endpoint, batch_id=args.batch_id,
                                                 product_ids=product_ids, limit=len(product_ids),
                                                 owner=args.owner, resume_only=True, readback_only=True,
-                                                session=args.session)
+                                                session=args.session,
+                                                miaoshou_probe=_miaoshou_listing_probe
+                                                if getattr(args, 'check_miaoshou', False) else None)
                     return {**result, 'readback_only': True, 'run': run,
                             'status': batch_queue.batch_status(args.batch_id), 'writer_ready': False}
                 run = batch_queue.run_batch(args.endpoint, batch_id=args.batch_id, limit=args.limit,
-                                            owner=args.owner, resume_only=True, session=args.session)
+                                            owner=args.owner, resume_only=True, session=args.session,
+                                            miaoshou_probe=_miaoshou_listing_probe
+                                            if getattr(args, 'check_miaoshou', False) else None)
                 return {**result, 'run': run, 'status': batch_queue.batch_status(args.batch_id)}
             readiness = batch_queue.execution_readiness(args.endpoint)
             if not args.apply:
@@ -1041,7 +1047,9 @@ def run(args):
                                            product_ids=args.product_ids,
                                            limit=max(args.limit, 3) if args.acceptance else args.limit,
                                            owner=args.owner, session=args.session,
-                                           acceptance_product_ids=args.product_ids if args.acceptance else None)
+                                           acceptance_product_ids=args.product_ids if args.acceptance else None,
+                                           miaoshou_probe=_miaoshou_listing_probe
+                                           if getattr(args, 'check_miaoshou', False) else None)
             verified = batch_queue.verified_acceptance_results(args.product_ids)
             if args.acceptance and len(verified) >= 3:
                 result['writer_acceptance'] = batch_queue.mark_writer_acceptance(verified)
@@ -1086,6 +1094,18 @@ def run(args):
         if args.command == 'browser':
             return editor.inspect(args.selector if args.action == 'inspect' else None)
     raise DoudianError('unknown_command', '未知命令。')
+
+
+def _miaoshou_listing_probe(shop, product_id):
+    """Read-only proof that the product is in 妙手's quick-edit list.
+
+    True / False / None are kept distinct by the caller: an unreadable list must
+    never be reported as "product absent".
+    """
+    from doudian_auto.bridge import DEFAULT_ENDPOINT, Bridge
+    from doudian_auto.miaoshou_editor import MiaoshouEditor
+    bridge = Bridge(DEFAULT_ENDPOINT, session='miaoshou-requeue', timeout=30)
+    return MiaoshouEditor(bridge, shop).row_present(product_id)
 
 
 def main(argv=None):

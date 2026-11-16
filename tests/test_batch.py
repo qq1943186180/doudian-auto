@@ -206,7 +206,8 @@ def test_blocked_legacy_version_mismatch_recovers_only_before_any_write(tmp_path
                  (task['id'],))
     conn.close()
 
-    recovered = batch.recover_legacy_target_version_mismatch(task['id'], db_path=db)
+    recovered = batch.recover_legacy_target_version_mismatch(
+        task['id'], db_path=db, miaoshou_probe=lambda *_: True)
 
     assert recovered['recovered_before_write'] is True
     assert recovered['target_version'] == 'miaoshou-batch-20261028-v1'
@@ -216,7 +217,8 @@ def test_blocked_legacy_version_mismatch_recovers_only_before_any_write(tmp_path
     conn.execute("UPDATE products SET state='blocked',last_error='target_version_mismatch',submission_attempts=1 WHERE id=?",
                  (task['id'],))
     conn.close()
-    assert batch.recover_legacy_target_version_mismatch(task['id'], db_path=db) is None
+    assert batch.recover_legacy_target_version_mismatch(
+        task['id'], db_path=db, miaoshou_probe=lambda *_: True) is None
     assert batch.batch_status(task['batch_id'], db_path=db)['products'][0]['state'] == 'blocked'
 
 
@@ -1249,3 +1251,38 @@ def test_batch_resume_without_writer_or_readback_does_not_run_browser(tmp_path, 
     assert exit_code == 1
     assert payload['error']['code'] == 'writer_not_accepted'
     assert calls == []
+
+def test_legacy_recovery_requires_positive_miaoshou_proof(tmp_path):
+    """A version match proves shape, not that the write path exists.
+
+    `run_batch` calls this for every legacy row, even in readback-only mode, so the
+    safe outcome on an unreadable or negative probe is a silent stay in blocked.
+    """
+    db, task, artifacts = _legacy_manifest_row(tmp_path)
+    conn = batch._db(db)
+    conn.execute("UPDATE products SET state='blocked',last_error='target_version_mismatch' WHERE id=?",
+                 (task['id'],))
+    conn.close()
+    for probe in (None, lambda *_: False, lambda *_: None):
+        assert batch.recover_legacy_target_version_mismatch(
+            task['id'], db_path=db, miaoshou_probe=probe) is None
+        state = batch._db(db).execute('SELECT state FROM products WHERE id=?', (task['id'],)).fetchone()[0]
+        assert state == 'blocked'
+
+
+def test_legacy_recovery_records_miaoshou_proof(tmp_path):
+    db, task, artifacts = _legacy_manifest_row(tmp_path)
+    conn = batch._db(db)
+    conn.execute("UPDATE products SET state='blocked',last_error='target_version_mismatch' WHERE id=?",
+                 (task['id'],))
+    conn.close()
+    recovered = batch.recover_legacy_target_version_mismatch(
+        task['id'], db_path=db, miaoshou_probe=lambda *_: True)
+    assert recovered['state'] == 'ready'
+    conn = batch._db(db)
+    detail = json.loads(conn.execute(
+        "SELECT detail FROM product_events WHERE task_id=? AND to_state='ready' "
+        "AND detail LIKE '%recovered_before_write_version_binding%'",
+        (task['id'],)).fetchone()[0])
+    conn.close()
+    assert detail.get('miaoshou_listed') is True

@@ -545,8 +545,16 @@ def load_ready_artifacts(task_id, *, db_path=None, require_visual_review=True):
             'target_version': target_version}
 
 
-def recover_legacy_target_version_mismatch(task_id, *, db_path=None):
-    """Requeue only a legacy version mismatch proven to have stopped before editing."""
+def recover_legacy_target_version_mismatch(task_id, *, db_path=None, miaoshou_probe=None):
+    """Requeue only a legacy version mismatch proven to have stopped before editing.
+
+    A version binding and a valid manifest prove the *shape* of a safe recovery,
+    not that the product can still be written. Every write goes through 妙手, so a
+    fresh positive listing proof is required; without one, or with an unreadable
+    probe (None), the row simply stays blocked. Failures here are deliberately
+    silent returns rather than exceptions -- `run_batch` calls this for every
+    legacy row, including during readback-only runs.
+    """
     conn = _db(db_path)
     try:
         conn.execute('BEGIN IMMEDIATE')
@@ -570,8 +578,14 @@ def recover_legacy_target_version_mismatch(task_id, *, db_path=None):
         validate_agent_artifacts(path, row['product_id'])
         if _digest(path) != row['artifacts_hash']:
             raise DoudianError('artifact_manifest_changed', '素材清单在恢复时发生变化。')
+        listed = miaoshou_probe(row['shop'], row['product_id']) if callable(miaoshou_probe) else None
+        if listed is not True:
+            # No proof, or the product is genuinely absent from 妙手: leave it blocked.
+            conn.commit()
+            return None
         now = time.time()
         detail = {'recovered_before_write_version_binding': True,
+                  'miaoshou_listed': listed,
                   'previous_target_version': row['target_version'],
                   'adopted_target_version': artifact_version,
                   'artifacts_sha256': row['artifacts_hash']}
@@ -2147,7 +2161,8 @@ def _close_task_miaoshou_batch_tab(bridge):
 
 def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='codex-miaoshou-writer',
               db_path=None, session='miaoshou-auto-batch-20261028', resume_only=False,
-              readback_only=False, acceptance_product_ids=None, keep_browser_session=False):
+              readback_only=False, acceptance_product_ids=None, keep_browser_session=False,
+              miaoshou_probe=None):
     """Run ready or safely resumable products serially through both merchant pages."""
     from .bridge import Bridge
     from .editor import Editor
@@ -2164,7 +2179,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
     for product in status['products']:
         if (product['state'] == 'blocked' and product.get('last_error') == 'target_version_mismatch' and
                 (not allowed or product['product_id'] in allowed)):
-            recovered = recover_legacy_target_version_mismatch(product['id'], db_path=db_path)
+            recovered = recover_legacy_target_version_mismatch(
+                product['id'], db_path=db_path, miaoshou_probe=miaoshou_probe)
             if recovered:
                 recovered_legacy.append(recovered)
     if recovered_legacy:

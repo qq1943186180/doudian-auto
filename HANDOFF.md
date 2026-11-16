@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-003（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-16 15:10 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-004（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-16 15:10 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,23 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261116-004 · 194-205 · ✅ Codex 抓出第三条假恢复路径并堵上
+
+- 状态：**done（闸门完备化）**。零商品写入，队列保持 22 verified / 39 blocked。
+- 🔴 Codex 审查（`/tmp/codex-review-20261116.md`）抓出 `batch.py::recover_legacy_target_version_mismatch()`
+  只凭旧版本绑定/素材哈希/未写入就 blocked→ready，**不验妙手**；
+  `run_batch()` 在筛 candidates 之前调用它，所以连 `readback_only` 只读模式都可能顺带恢复。
+- 修法：该函数加 `miaoshou_probe`，结果必须严格 True，缺证/False/None **静默保持 blocked**
+  （返回 None 而非抛错，因 run_batch 逐行调用）；事件 detail 记 `miaoshou_listed`；
+  `run_batch(..., miaoshou_probe=...)` 透传；CLI `batch run --check-miaoshou` 才启用探测。
+- Codex 核对通过：`apply_preflight_report`、`requeue_visual_task` 均严格 `is True`；
+  `requeue_blocked_prewrite`/`rebaseline`/`prepared_recovery` 另有双端快照依据，不是同类漏口；
+  22 件 verified **不需要回验**——`record_execution_readback()` 的双端核验成功本身就是充分依据。
+- Codex 对 7 件不可达商品的建议：**暂留 blocked，不要人工删队列**；未来如需终态，可加
+  `closed_unreachable`（人工确认 + 绑定店铺/商品/时间/证据/原因，禁止自动恢复与重新导入绕过），
+  表达「本目标版本结案」而不是断言商品永久不存在。本轮未实现。
+- 测试：`tests/test_batch.py` +2 条；相关回归 **164 项全绿**。
 
 ### T-20261116-003 · 194-204 · ✅ 抓回第二次假恢复：requeue 也必须验妙手
 

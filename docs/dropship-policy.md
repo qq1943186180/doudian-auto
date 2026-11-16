@@ -630,6 +630,14 @@ Codex 外部审查抓出三个洞，已补齐（`codex-cli-review`，报告 `/tm
 对照实验（task2 True / task48 False / task2 True / task48 False）证明它不在妙手，已收回 blocked。
 **只补新图、不验写入路径，等于把不可写的商品放回可运行状态。**
 
+🔴 **第三条假恢复路径（Codex 2026-11-16 审查抓出）**：`recover_legacy_target_version_mismatch()`
+（`batch.py` 约 548 行）原来只凭旧版本绑定 + 素材哈希 + 未写入就把 blocked 改回 ready，
+**同样不验妙手**；而 `run_batch()` 在筛选 candidates 之前自动调它，连 `readback_only` 只读核查都会顺带恢复。
+已补：该函数要求新鲜妙手肯定证明（`miaoshou_probe is True`），缺证/False/None 一律**静默保持 blocked**
+（这里返回 None 而不是抛错，因为 run_batch 会为每一行调用它）。
+CLI `batch run --check-miaoshou` 才传入探测；不传就不会恢复。
+测试：`tests/test_batch.py` 新增「缺/否/读不到均不恢复」「恢复事件记 miaoshou_listed」。
+
 **保留意见不能自动放行**：`conditional` / `pass_with_note` 在这个 schema 里根本无法表达，
 requeue 会直接拒绝（`visual_review_incomplete`），不会把「带保留意见」偷偷提升成 pass。
 实测准入：task 15/34/48 满足「从未写过」；task 16 有 `artifacts_path`、task 27 有租约且无失败复核记录，
