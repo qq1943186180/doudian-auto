@@ -645,3 +645,21 @@ requeue 会直接拒绝（`visual_review_incomplete`），不会把「带保留�
 
 测试：`tests/test_requeue_visual.py` 7 条（保留意见拒绝、非视觉阻塞拒绝、无失败历史拒绝、
 已写过拒绝、陈旧证据拒绝、轮次事件、轮次计数从 1 重启）；相关回归 196 项全绿。
+
+### ⑳ 不可达商品的受支持终态：`closed_unreachable`
+
+Codex 建议并已实现：`batch close-unreachable --task-id --reason --evidence <json> --confirmed-by <name>`。
+它**只结案当前 target_version**，不断言商品永久不存在；保留完整历史，不删除队列记录。
+
+- 准入门槛：`state=blocked`；从未写过（无 baseline/素材/上传映射/租约/提交意图/兄弟版本/活跃任务）；
+  原因 ≥10 字、确认人非空；证据 JSON 必须绑定**同一店铺、商品、target_version**，
+  带 `observed_at`（24 小时内、不得指向未来）与具体 `observed` 描述；证据缺失/不一致一律拒绝。
+- 事件 `blocked → closed_unreachable` 记 `confirmed_by` / `reason` / `evidence_sha256` /
+  `observed_at` / `observed` / 店铺 / 商品 / 目标版本 / 旧错误。
+- 🔴 **防绕过**：所有恢复路径（`apply_preflight_report`、`requeue_visual_task`、
+  `recover_legacy_target_version_mismatch`、`rebaseline`、`block_task`、`claim_next`）都要求
+  `blocked` 或 `needs_agent`，结案行一律进不去；`create_batch` 重导同店同品会把**新行标成 blocked**
+  并记冲突，不会回到 needs_agent/ready。测试逐条验证。
+- 七件结构性不可达（12/22/33/36/46/48/52）**目前仍全部留在 blocked**。
+  是否结案、何时结案，必须由人逐件给出证据与署名——代码不会自动判定「不可达」。
+

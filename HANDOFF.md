@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-004（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-16 15:10 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-005（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-16 15:10 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,20 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261116-005 · 194-206 · ✅ 实现 closed_unreachable（只做机制，未结案任何商品）
+
+- 状态：**done（函数 + CLI + 7 条测试 + 171 项回归）**。零队列变更、零商品写入，仍是 22 verified / 39 blocked。
+- `batch.close_unreachable_task()` + CLI `batch close-unreachable --task-id --reason --evidence <json> --confirmed-by <name>`：
+  准入门槛是 blocked + 从未写过 + 原因≥10字 + 署名 + 24h 内绑定店铺/商品/目标版本的证据 JSON；
+  缺证/不一致/读不到一律拒绝，不推断「大概不可达」。
+- 语义：**只结案当前 target_version**，不断言商品永久不存在；保留历史，不删队列记录。
+  事件 detail 记 `confirmed_by`/`reason`/`evidence_sha256`/`observed_at`/`observed`/身份/旧错误。
+- 防绕过已逐条测：所有恢复路径只收 blocked/needs_agent，结案行进不去；
+  `create_batch` 重导同店同品把新行标成 **blocked** 并记冲突，不会回到 needs_agent/ready。
+- 🔴 **没有给任何商品结案**：12/22/33/36/46/48/52 仍全在 blocked。
+  结案必须有人逐件给证据和署名，这是人工动作，不是自动分类。
+- 测试 `tests/test_close_unreachable.py` 7 条；文档 `docs/dropship-policy.md` ⑳。
 
 ### T-20261116-004 · 194-205 · ✅ Codex 抓出第三条假恢复路径并堵上
 

@@ -2004,6 +2004,89 @@ def block_task(task_id, reason, *, db_path=None):
         conn.close()
 
 
+UNREACHABLE_CLOSED = 'closed_unreachable'
+
+
+def close_unreachable_task(task_id, *, reason, evidence_path, confirmed_by, db_path=None):
+    """Close one target version as unreachable, with a human-signed evidence trail.
+
+    This does **not** assert that the product will never be writable. It closes the
+    current target version only: the quick-edit list has no such row, the product
+    was deleted, or the write path is otherwise structurally unavailable. The row
+    stays in the queue with full history; no automatic recovery path accepts this
+    state, and `create_batch` refuses to re-import the same shop/product while a
+    non-verified row exists, so a fresh import cannot quietly bypass the closure.
+
+    Deliberately manual: the caller must supply a reason, a reviewer name, and a
+    binding evidence file. An unreadable or mismatched file is refused, never
+    interpreted as "probably unreachable".
+    """
+    if not isinstance(reason, str) or len(reason.strip()) < 10:
+        raise DoudianError('closure_reason_required', '结案必须写明至少10个字的原因。')
+    if not isinstance(confirmed_by, str) or not confirmed_by.strip():
+        raise DoudianError('closure_confirmation_required', '结案必须有人署名确认。')
+    path = Path(evidence_path).resolve()
+    if not path.is_file():
+        raise DoudianError('closure_evidence_missing', '结案证据文件不存在。')
+    evidence = read_json(path)
+    if not isinstance(evidence, dict):
+        raise DoudianError('closure_evidence_invalid', '结案证据必须是JSON对象。')
+    for key in ('shop', 'product_id', 'target_version', 'observed_at', 'observed'):
+        if not evidence.get(key):
+            raise DoudianError('closure_evidence_invalid', f'结案证据缺少 {key}。')
+    try:
+        observed_at = float(evidence['observed_at'])
+    except (TypeError, ValueError):
+        raise DoudianError('closure_evidence_invalid', '结案证据的 observed_at 必须是时间戳。')
+
+    conn = _db(db_path)
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        record = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
+        if record is None:
+            raise DoudianError('unknown_task', '队列里没有这个任务。')
+        row = dict(record)
+        now = time.time()
+        if row['state'] != 'blocked':
+            raise DoudianError('closure_not_allowed', '只有 blocked 任务可以结案；其它状态须先完成对应流程。')
+        if (row['shop'] != evidence['shop'] or str(row['product_id']) != str(evidence['product_id'])
+                or row['target_version'] != evidence['target_version']):
+            raise DoudianError('closure_binding_mismatch', '结案证据的店铺、商品或目标版本与本行不一致。')
+        if not 0 <= now - observed_at <= 86400:
+            raise DoudianError('closure_evidence_stale', '结案证据须在24小时内取得，且不能指向未来。')
+        if (row['submission_state'] != 'not_attempted'
+                or int(row['submission_attempts'] or 0) != 0
+                or row['baseline_hash'] or row['artifacts_path'] or row['artifacts_hash']
+                or json.loads(row['upload_map_json'] or '[]') != []
+                or row['submission_intent_json'] is not None
+                or any((row[key] or 0) >= now for key in ('lease_until', 'execution_until'))):
+            raise DoudianError('closure_not_allowed', '已有写入、素材或租约记录的任务不能按不可达结案。')
+        if conn.execute('SELECT 1 FROM products WHERE shop=? AND product_id=? AND id!=?',
+                        (row['shop'], row['product_id'], task_id)).fetchone():
+            raise DoudianError('closure_not_allowed', '该商品另有队列版本，不能在这里结案。')
+        detail = {'event_kind': 'close_unreachable',
+                  'confirmed_by': confirmed_by.strip(), 'reason': reason.strip(),
+                  'evidence': str(path), 'evidence_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                  'observed_at': observed_at, 'observed': str(evidence['observed'])[:400],
+                  'shop': row['shop'], 'product_id': str(row['product_id']),
+                  'target_version': row['target_version'], 'prior_error': row['last_error']}
+        conn.execute("UPDATE products SET state=?,last_error=?,updated_at=? WHERE id=? AND state='blocked'",
+                     (UNREACHABLE_CLOSED, 'closed_unreachable: ' + reason.strip(), now, task_id))
+        if conn.execute('SELECT changes()').fetchone()[0] != 1:
+            raise DoudianError('closure_race', '任务在结案期间发生变化。')
+        conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                     'VALUES(?,?,?,?,?)', (task_id, 'blocked', UNREACHABLE_CLOSED, now,
+                                           json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+        conn.commit()
+        return {'task_id': task_id, 'state': UNREACHABLE_CLOSED,
+                'target_version': row['target_version'], 'confirmed_by': confirmed_by.strip()}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 VISUAL_BLOCK_REASONS = (
     'visual_quality_failed_after_retry',
     'root_visual_review_failed_after_retry',

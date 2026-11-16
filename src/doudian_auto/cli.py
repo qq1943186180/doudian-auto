@@ -181,6 +181,12 @@ def parser():
     batch_block = batch_sub.add_parser('block', help='把「待准备、从未写过」的任务收回 blocked，必须写明原因')
     batch_block.add_argument('--task-id', required=True, type=int)
     batch_block.add_argument('--reason', required=True)
+    batch_close = batch_sub.add_parser('close-unreachable',
+        help='人工确认并附证据，将本目标版本按不可达结案（保留历史，禁止自动恢复与重新导入绕过）')
+    batch_close.add_argument('--task-id', required=True, type=int)
+    batch_close.add_argument('--reason', required=True)
+    batch_close.add_argument('--evidence', required=True, help='绑定店铺/商品/目标版本/观察时间与事实的 JSON')
+    batch_close.add_argument('--confirmed-by', required=True)
     batch_requeue = batch_sub.add_parser('requeue', help='凭全新九图素材与逐项通过的目视复核，为视觉失败件开启新一轮重制')
     batch_requeue.add_argument('--task-id', required=True, type=int)
     batch_requeue.add_argument('--proof', required=True, help='完整 9 张素材的 artifacts.json（含 visual_review）')
@@ -945,6 +951,10 @@ def run(args):
                 return batch_queue.apply_preflight_report(args.task_id, args.proof)
             if args.batch_command == 'block':
                 return batch_queue.block_task(args.task_id, args.reason)
+            if args.batch_command == 'close-unreachable':
+                return batch_queue.close_unreachable_task(
+                    args.task_id, reason=args.reason, evidence_path=args.evidence,
+                    confirmed_by=args.confirmed_by)
             if args.batch_command == 'requeue':
                 probe = None
                 if args.check_miaoshou:
