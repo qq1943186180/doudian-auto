@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-005（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-16 15:10 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-006（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 32 blocked / 7 closed_unreachable**（2026-11-16 17:15 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,22 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261116-006 · 194-207 · ✅ 7 件结构性不可达按证据结案
+
+- 状态：**done（7 件 closed_unreachable）**。零商品写入。队列 **22 verified / 32 blocked / 7 closed**（总 61）。
+- 逐件对照实验（只读）：妙手快速编辑页按精确商品 ID 搜索，本商品 **0 行**、同店对照 `3850072900438720563` **1 行**；
+  12/22/33/36/46/48/52 七件结果一致。证据文件 `work/materials-20261114/close-evidence/task-<id>.json`
+  （绑定店铺/商品/target_version/observed_at/observed/method/checks）。
+- 用 `batch close-unreachable` 结案，`confirmed_by=用户（2026-11-16 经对话授权 WorkBuddy 执行）`，
+  事件 detail 含证据 sha256、观察时间、旧错误。
+- 🔴 **纠了两处我自己的取证错误**：最初探测 22/46/52 时用错了 product_id（22 用了 task34 的、
+  46/52 也各用了别的商品），已按库中真实 ID 全部重测，结论不变；错 ID 的旧结果作废。
+- 🔴 **46/52 的 `writer_image_slots_incomplete` 是表象**：主图 5 张、详情 2 张的缺口无法通过补图解决，
+  因为商品根本不在妙手。此前把它当「缺图可修」是错判。
+- ⚠️ 结案**不断言商品永久不存在**：日后若商品回到妙手列表，须人工重开并重走素材复核；
+  `create_batch` 重导同店同品会把新行标 blocked，不会自动复活。
+- 队列剩余 32 blocked 中，仍含素材缺失、历史待核实等可修项。
 
 ### T-20261116-005 · 194-206 · ✅ 实现 closed_unreachable（只做机制，未结案任何商品）
 

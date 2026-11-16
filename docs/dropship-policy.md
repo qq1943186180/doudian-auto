@@ -660,6 +660,6 @@ Codex 建议并已实现：`batch close-unreachable --task-id --reason --evidenc
   `recover_legacy_target_version_mismatch`、`rebaseline`、`block_task`、`claim_next`）都要求
   `blocked` 或 `needs_agent`，结案行一律进不去；`create_batch` 重导同店同品会把**新行标成 blocked**
   并记冲突，不会回到 needs_agent/ready。测试逐条验证。
-- 七件结构性不可达（12/22/33/36/46/48/52）**目前仍全部留在 blocked**。
-  是否结案、何时结案，必须由人逐件给出证据与署名——代码不会自动判定「不可达」。
+- **2026-11-16 已结案 7 件**：12 / 22 / 33 / 36 / 46 / 48 / 52 → `closed_unreachable`。证据是逐件对照实验（妙手快速编辑页搜本商品 0 行、同店对照商品 1 行），证据文件在 `work/materials-20261114/close-evidence/task-<id>.json`，事件记 `confirmed_by=用户（2026-11-16 经对话授权 WorkBuddy 执行）` + 证据 sha256。队列随之变为 **22 verified / 32 blocked / 7 closed_unreachable**（总数 61）。
+  ⚠️ 46/52 原先的 `writer_image_slots_incomplete` 只是表象——真正原因是商品不在妙手，补图也写不进去；**结案不等于商品永久不存在**，若日后该商品回到妙手列表，须人工重开并走完整素材复核。
 
