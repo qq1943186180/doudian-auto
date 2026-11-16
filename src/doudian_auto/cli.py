@@ -184,6 +184,8 @@ def parser():
     batch_requeue = batch_sub.add_parser('requeue', help='凭全新九图素材与逐项通过的目视复核，为视觉失败件开启新一轮重制')
     batch_requeue.add_argument('--task-id', required=True, type=int)
     batch_requeue.add_argument('--proof', required=True, help='完整 9 张素材的 artifacts.json（含 visual_review）')
+    batch_requeue.add_argument('--check-miaoshou', action='store_true',
+                               help='只读取证该商品在妙手快速编辑列表中；写入路径必经妙手，必须传')
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
@@ -942,7 +944,16 @@ def run(args):
             if args.batch_command == 'block':
                 return batch_queue.block_task(args.task_id, args.reason)
             if args.batch_command == 'requeue':
-                return batch_queue.requeue_visual_task(args.task_id, args.proof)
+                probe = None
+                if args.check_miaoshou:
+                    from doudian_auto.bridge import DEFAULT_ENDPOINT, Bridge
+                    from doudian_auto.miaoshou_editor import MiaoshouEditor
+                    def _probe(shop, product_id):
+                        bridge = Bridge(DEFAULT_ENDPOINT, session='miaoshou-requeue', timeout=30)
+                        return MiaoshouEditor(bridge, shop).row_present(product_id)
+                    probe = _probe
+                return batch_queue.requeue_visual_task(args.task_id, args.proof,
+                                                       miaoshou_probe=probe)
             if args.batch_command == 'quarantine':
                 return batch_queue.quarantine_product(args.product_id, args.reason)
             if args.batch_command == 'reconcile':

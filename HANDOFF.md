@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-002（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 38 blocked / 1 needs_agent**（2026-11-16 14:45 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-003（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 39 blocked / 0 needs_agent**（2026-11-16 15:10 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,23 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261116-003 · 194-204 · ✅ 抓回第二次假恢复：requeue 也必须验妙手
+
+- 状态：**done（一次误放行已收回 + 闸门补上）**。零商品写入；队列回到 **22 verified / 39 blocked**（task 48 收回）。
+- 🔴 **task 48 的 requeue 是误放行**：九图复核全项 pass、抖店侧 `preflight` 全绿
+  （主图 5 / 详情 13 / 属性 100% / 无草稿驳回），但妙手侧 `row_present()` 对照实验
+  `task2=True / task48=False / task2=True / task48=False` → **48 不在妙手**，写入路径不存在。
+  已用 `batch block --reason` 收回，`last_error=manual_block: …对照实验…`。
+- 根因：`requeue_visual_task` 的准入只验素材/从未写过，**没验写入路径**，
+  和上一轮 `apply_preflight_report` 犯的是同一类错。
+- 修法：`requeue_visual_task(..., miaoshou_probe=...)` 要求探测结果**严格为 True**；
+  CLI 新增 `--check-miaoshou` 开关，不传一律 `miaoshou_listing_unproven`；
+  probe 返回 None（读不到）也不当「不存在」；事件 detail 记 `miaoshou_listed`。
+- 测试：`tests/test_requeue_visual.py` 9 条（新增「缺妙手证明拒绝」「读不到拒绝」）；相关回归 **162 项全绿**。
+- ⚠️ 妙手店铺授权页（`fuwu.jinritemai.com/authorize?service_id=234`）已不再阻塞探测，
+  但**即使授权完成，48 也不可写** —— 它是结构性不在妙手，与 task 22 同款。
+- 环境：默认 session 的 `state.json` 缓存了失效 `spaceId=148`，改为新空间 ID 6（备份 `state.json.bak-20261116`）后预检才跑通。
 
 ### T-20261116-002 · 194-203 · ✅ 真实演练 requeue 成功 + 等待器探针方案落纸
 

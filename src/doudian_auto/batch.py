@@ -1996,11 +1996,15 @@ VISUAL_BLOCK_REASONS = (
 )
 
 
-def requeue_visual_task(task_id, proof_path, *, db_path=None):
+def requeue_visual_task(task_id, proof_path, *, db_path=None, miaoshou_probe=None):
     """Open a fresh visual-retry round after new images have actually passed review.
 
     This is the supported way back from a visual failure. It is deliberately narrow:
 
+    - every write actually goes through 妙手, so a probe must prove the product is
+      in that quick-edit list. A failed or absent probe is never read as "absent":
+      `miaoshou_probe` returns True/False/None and only True opens the round.
+      Without a probe the call is refused, same as `apply_preflight_report`;
     - only two exact `last_error` families, both of which must have left a `fail`
       row in `asset_reviews`; anything a write could explain stays blocked;
     - the proof is a **complete** nine-image artifact manifest, validated by
@@ -2042,6 +2046,11 @@ def requeue_visual_task(task_id, proof_path, *, db_path=None):
                 or json.loads(row['upload_map_json'] or '[]') != []
                 or any((row[key] or 0) >= now for key in ('lease_until', 'execution_until'))):
             fail('requeue_not_allowed', '该任务已有写入、素材或租约记录，不能开启新一轮。')
+        listed = miaoshou_probe(row['shop'], row['product_id']) if callable(miaoshou_probe) else None
+        if listed is not True:
+            fail('miaoshou_listing_unproven',
+                 '写入路径是妙手快速编辑页；未确认该商品在妙手列表中（读不到也不能当不存在），'
+                 '不能开启新一轮。')
         if conn.execute('SELECT 1 FROM products WHERE shop=? AND product_id=? AND id!=?',
                         (row['shop'], row['product_id'], task_id)).fetchone():
             fail('requeue_not_allowed', '该商品另有队列版本，不能开启新一轮。')
@@ -2075,6 +2084,7 @@ def requeue_visual_task(task_id, proof_path, *, db_path=None):
             "SELECT COUNT(*) FROM product_events WHERE task_id=? AND to_state='visual_round_opened'",
             (task_id,)).fetchone()[0]
         detail = {'event_kind': 'visual_requeue', 'round': round_no,
+                  'miaoshou_listed': listed,
                   'prior_error': row['last_error'], 'proof': str(path),
                   'proof_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                   'asset_set_sha256': manifest['asset_set_sha256'],

@@ -623,6 +623,13 @@ Codex 外部审查抓出三个洞，已补齐（`codex-cli-review`，报告 `/tm
    `builtin-imagegen` / `existing-qualified`，新图一律 `image_provenance_missing`。
    已加入 `web-gpt-ego`，提示词落盘即可满足来源绑定。
 
+🔴 **`requeue` 还必须证明商品在妙手列表里**（2026-11-16 补）：写入实际走妙手，
+`batch requeue --task-id --proof --check-miaoshou` 会先只读探测 `row_present()`；
+不传这个开关一律 `miaoshou_listing_unproven`，探测返回 None（读不到）也不当成「不存在」。
+实测教训：task 48 九图复核全项 pass、抖店侧预检全绿，第一次 requeue 仍属**误放行**——
+对照实验（task2 True / task48 False / task2 True / task48 False）证明它不在妙手，已收回 blocked。
+**只补新图、不验写入路径，等于把不可写的商品放回可运行状态。**
+
 **保留意见不能自动放行**：`conditional` / `pass_with_note` 在这个 schema 里根本无法表达，
 requeue 会直接拒绝（`visual_review_incomplete`），不会把「带保留意见」偷偷提升成 pass。
 实测准入：task 15/34/48 满足「从未写过」；task 16 有 `artifacts_path`、task 27 有租约且无失败复核记录，

@@ -109,7 +109,8 @@ def test_a_qualified_opinion_is_refused(queue, tmp_path):
     block_visually(queue)
     proof = make_manifest(queue, tmp_path, status='conditional')
     with pytest.raises(DoudianError) as exc:
-        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                               miaoshou_probe=lambda *_: True)
     assert exc.value.code == 'visual_review_incomplete'
     assert _state(queue) == 'blocked'
 
@@ -118,7 +119,8 @@ def test_a_non_visual_block_reason_is_refused(queue, tmp_path):
     block_visually(queue, reason='readback_mismatch')
     proof = make_manifest(queue, tmp_path)
     with pytest.raises(DoudianError) as exc:
-        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                               miaoshou_probe=lambda *_: True)
     assert exc.value.code == 'requeue_not_allowed'
 
 
@@ -126,7 +128,8 @@ def test_a_row_without_failed_review_history_is_refused(queue, tmp_path):
     block_visually(queue, fail_rows=0)
     proof = make_manifest(queue, tmp_path)
     with pytest.raises(DoudianError) as exc:
-        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                               miaoshou_probe=lambda *_: True)
     assert exc.value.code == 'requeue_evidence_missing'
 
 
@@ -136,7 +139,8 @@ def test_a_row_that_was_already_written_cannot_requeue(queue, tmp_path):
         conn.execute("UPDATE products SET baseline_hash='deadbeef' WHERE id=?", (queue.row['id'],))
     proof = make_manifest(queue, tmp_path)
     with pytest.raises(DoudianError) as exc:
-        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                               miaoshou_probe=lambda *_: True)
     assert exc.value.code == 'requeue_not_allowed'
 
 
@@ -146,14 +150,16 @@ def test_a_stale_manifest_cannot_open_a_round(queue, tmp_path):
     old = time.time() - 3600
     os.utime(proof, (old, old))
     with pytest.raises(DoudianError) as exc:
-        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                               miaoshou_probe=lambda *_: True)
     assert exc.value.code == 'requeue_evidence_stale'
 
 
 def test_requeue_opens_a_new_round_and_stamps_events(queue, tmp_path):
     block_visually(queue)
     proof = make_manifest(queue, tmp_path)
-    result = batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+    result = batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                               miaoshou_probe=lambda *_: True)
     assert result['state'] == 'needs_agent' and result['round'] == 1
     with sqlite3.connect(queue.db) as conn:
         conn.row_factory = sqlite3.Row
@@ -171,7 +177,8 @@ def test_attempt_count_restarts_after_requeue(queue, tmp_path):
     # `attempt > 2` guard re-blocked forever. After a requeue the count is per round.
     block_visually(queue)
     proof = make_manifest(queue, tmp_path)
-    batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+    batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                               miaoshou_probe=lambda *_: True)
     claim = batch.claim_next('tester', product_id=PID, db_path=queue.db)
     batch.complete_agent_task(queue.row['id'], claim['lease_owner'], claim['lease_token'],
                               proof, db_path=queue.db)
@@ -188,3 +195,22 @@ def test_attempt_count_restarts_after_requeue(queue, tmp_path):
 def _state(queue):
     with sqlite3.connect(queue.db) as conn:
         return conn.execute('SELECT state FROM products WHERE id=?', (queue.row['id'],)).fetchone()[0]
+
+def test_requeue_requires_miaoshou_proof(queue, tmp_path):
+    # Every write goes through 妙手. A proof from the official page alone is not
+    # enough -- this was exactly how task 48 was wrongly released once.
+    block_visually(queue)
+    proof = make_manifest(queue, tmp_path)
+    with pytest.raises(DoudianError) as exc:
+        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db)
+    assert exc.value.code == 'miaoshou_listing_unproven'
+
+
+def test_an_unreadable_miaoshou_probe_is_not_treated_as_absent(queue, tmp_path):
+    block_visually(queue)
+    proof = make_manifest(queue, tmp_path)
+    with pytest.raises(DoudianError) as exc:
+        batch.requeue_visual_task(queue.row['id'], proof, db_path=queue.db,
+                                  miaoshou_probe=lambda *_: None)
+    assert exc.value.code == 'miaoshou_listing_unproven'
+    assert _state(queue) == 'blocked'
