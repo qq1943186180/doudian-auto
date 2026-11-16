@@ -2087,6 +2087,53 @@ def close_unreachable_task(task_id, *, reason, evidence_path, confirmed_by, db_p
         conn.close()
 
 
+def reopen_unreachable_task(task_id, *, reason, confirmed_by, db_path=None):
+    """Undo a `closed_unreachable`: later evidence showed the row is reachable.
+
+    A closure only ever asserted that the quick-edit list held no such row at that
+    moment. When a structured probe later shows the row, the closure was wrong and
+    must be reversed with its own event -- never by editing the row directly, and
+    never silently. The row goes back to `blocked` with a `manual_block:` prefix so
+    the usual recheck path does not auto-release it.
+    """
+    if not isinstance(reason, str) or len(reason.strip()) < 10:
+        raise DoudianError('reopen_reason_required', '重开必须写明至少10个字的原因。')
+    if not isinstance(confirmed_by, str) or not confirmed_by.strip():
+        raise DoudianError('reopen_confirmation_required', '重开必须有人署名确认。')
+    conn = _db(db_path)
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        record = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
+        if record is None:
+            raise DoudianError('unknown_task', '队列里没有这个任务。')
+        row = dict(record)
+        if row['state'] != UNREACHABLE_CLOSED:
+            raise DoudianError('reopen_not_allowed', '只有 closed_unreachable 的任务可以重开。')
+        if (row['baseline_hash'] or row['artifacts_path'] or row['submission_intent_json']
+                or json.loads(row['upload_map_json'] or '[]') != []):
+            raise DoudianError('reopen_not_allowed', '该任务附带了写入记录，不能按结案重开处理。')
+        now = time.time()
+        detail = {'event_kind': 'reopen_unreachable', 'confirmed_by': confirmed_by.strip(),
+                  'reason': reason.strip(), 'prior_error': row['last_error'],
+                  'target_version': row['target_version']}
+        conn.execute("UPDATE products SET state='blocked',last_error=?,updated_at=? "
+                     "WHERE id=? AND state=?",
+                     ('manual_block: reopened_closure: ' + reason.strip(), now, task_id,
+                      UNREACHABLE_CLOSED))
+        if conn.execute('SELECT changes()').fetchone()[0] != 1:
+            raise DoudianError('reopen_race', '任务在重开期间发生变化。')
+        conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+                     'VALUES(?,?,?,?,?)', (task_id, UNREACHABLE_CLOSED, 'blocked', now,
+                                           json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+        conn.commit()
+        return {'task_id': task_id, 'state': 'blocked', 'confirmed_by': confirmed_by.strip()}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 VISUAL_BLOCK_REASONS = (
     'visual_quality_failed_after_retry',
     'root_visual_review_failed_after_retry',

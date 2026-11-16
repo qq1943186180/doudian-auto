@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-007（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 32 blocked / 7 closed_unreachable**（2026-11-16 17:15 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-008（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,23 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261116-008 · 194-209 · 🔴 判据竞态导致连锁误判，已修并撤回一处结案
+
+- 状态：**done（判据修复 + 48 撤回 + 结论翻转）**。队列 **22 verified / 33 blocked / 6 closed_unreachable**。
+- 🔴 **根因**：`row_present()` 单次采样 `rows > 0` 就返回，采样可能早于查询渲染 → 可达商品被报 False。
+  实测 task 48：`row_present=False`，而结构化探测 `present`（rows=1、有「编辑商品」按钮）。
+- 🔴 **连锁后果（两处，均已纠正）**：
+  1. task 48 曾被误结案 → 用新增的 `batch reopen-unreachable` 撤回，回到 blocked；
+  2. 「缺图/缺属性件不在妙手、补资料无效」的判断**完全错误**：
+     39/55/57/59/60 与 31/43/45/50/54 用新判据全部 `present`（有行、total=1）。
+     23/28 为 `unknown`（total=58，说明搜索未生效，需重探）。
+- 新增：`MiaoshouEditor.probe_product()` + `batch probe-product --product-id --shop`（只读、不改队列），
+  返回 `verdict/reason/signals`；`present` 需查询完成且精确行 ≥1，`absent` 还需**分页总数为 0**，其余 `unknown`。
+- `row_present` 改为委托 `probe_product`，False 语义收紧。
+- 文档 `docs/dropship-policy.md` ㉑ 记流程纪律：**不许由零行/超时推断原因，不许动辄要求人工复审**；
+  判据变化后必须回归既有结论。
+- 测试：`tests/test_probe_product.py` 9 条；相关回归 89 项全绿。
 
 ### T-20261116-007 · 194-208 · ⚠️ 剩余 blocked 的「缺图/缺属性」前提被推翻
 

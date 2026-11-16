@@ -660,6 +660,35 @@ Codex 建议并已实现：`batch close-unreachable --task-id --reason --evidenc
   `recover_legacy_target_version_mismatch`、`rebaseline`、`block_task`、`claim_next`）都要求
   `blocked` 或 `needs_agent`，结案行一律进不去；`create_batch` 重导同店同品会把**新行标成 blocked**
   并记冲突，不会回到 needs_agent/ready。测试逐条验证。
-- **2026-11-16 已结案 7 件**：12 / 22 / 33 / 36 / 46 / 48 / 52 → `closed_unreachable`。证据是逐件对照实验（妙手快速编辑页搜本商品 0 行、同店对照商品 1 行），证据文件在 `work/materials-20261114/close-evidence/task-<id>.json`，事件记 `confirmed_by=用户（2026-11-16 经对话授权 WorkBuddy 执行）` + 证据 sha256。队列随之变为 **22 verified / 32 blocked / 7 closed_unreachable**（总数 61）。
+- **2026-11-16 结案 6 件**：12 / 22 / 33 / 36 / 46 / 52 → `closed_unreachable`（48 已撤回，见 ㉑）。证据是逐件对照实验（妙手快速编辑页搜本商品 0 行、同店对照商品 1 行），证据文件在 `work/materials-20261114/close-evidence/task-<id>.json`，事件记 `confirmed_by=用户（2026-11-16 经对话授权 WorkBuddy 执行）` + 证据 sha256。队列随之变为 **22 verified / 32 blocked / 7 closed_unreachable**（总数 61）。
   ⚠️ 46/52 原先的 `writer_image_slots_incomplete` 只是表象——真正原因是商品不在妙手，补图也写不进去；**结案不等于商品永久不存在**，若日后该商品回到妙手列表，须人工重开并走完整素材复核。
+
+### ㉑ 判据必须机器可复现，不许拿「人工复审」收尾
+
+Codex 2026-11-16 第二次审查的结论：**机器能证明「当前可达」，但不能仅凭零行推断原因**。
+
+🔴 **`row_present` 曾有竞态 bug（已修）**：旧实现单次采样 `rows > 0` 就返回，
+采样可能发生在查询结果渲染之前 → 把可达商品报成 False。实测：task 48 它说 False，
+结构化探测说 `present`（rows=1、有「编辑商品」按钮）。这个 bug 连锁导致：
+- 我据此把 48 结案 → **已用 `batch reopen-unreachable` 撤回**；
+- 我据此判断「缺图/缺属性件都不在妙手、补资料无效」→ **结论完全错误**：
+  39/55/57/59/60、31/43/45/50/54 全部 `present`。
+
+修法与判据：
+- `row_present` 改为委托 `probe_product`；False 现在要求**查询完成 + 分页总数为 0**。
+- 新增 `batch probe-product --product-id --shop`（只读、不改队列）与 `MiaoshouEditor.probe_product()`，
+  返回 `verdict ∈ {present, absent, unknown}` 与 `reason ∈ {row_in_current_query,
+  absent_from_current_query, reason_unknown}`，并附 `signals`（filter_applied / loading / errors /
+  total_hint / exact_rows / row_status / buttons / url）。
+- **判定规则**：`present` = 查询完成且精确行数 ≥1；`absent` = 查询完成、无错误、精确行数 0 **且分页总数也是 0**；
+  其余一律 `unknown`。分页总数读不到、仍在加载、筛选未生效 → `unknown`，**不许写成不存在**。
+- 探测到 `total_hint` 与筛选不匹配（如 total=58 说明搜索没生效）时，结论只能是 `unknown` 并重探，
+  不能拿「全列表里没看到」当结论。
+
+🔴 **流程纪律（用户 2026-11-16 明确要求）**：
+1. **不要动辄要求人工去页面核对**。观测不到就写 `reason_unknown`，同时把信号采集全。
+2. **禁止由单次采样/零行/超时推断存在性或原因**。要判定，必须先满足判据链。
+3. **禁止把「读不到」包装成永久结论**（不可达、已删除、从没同步），那需要权威来源明确证据。
+4. 只有真正需要业务口径（店铺授权、上架、供应商参数）时才交人工，并且要写清「为什么机器判不了」。
+5. 判据变化后要**重跑受影响的既有结论**：本轮 48 撤回、12 件结论翻转，都是因为没及时回归。
 

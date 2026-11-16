@@ -181,6 +181,16 @@ def parser():
     batch_block = batch_sub.add_parser('block', help='把「待准备、从未写过」的任务收回 blocked，必须写明原因')
     batch_block.add_argument('--task-id', required=True, type=int)
     batch_block.add_argument('--reason', required=True)
+    batch_reopen = batch_sub.add_parser('reopen-unreachable',
+        help='新的结构化探测证明商品可达时，撤销 closed_unreachable 并按 blocked 收回')
+    batch_reopen.add_argument('--task-id', required=True, type=int)
+    batch_reopen.add_argument('--reason', required=True)
+    batch_reopen.add_argument('--confirmed-by', required=True)
+    batch_probe = batch_sub.add_parser('probe-product',
+        help='只读结构化探测妙手快速编辑列表；不改队列状态，证据不足时给 reason_unknown')
+    batch_probe.add_argument('--product-id', required=True)
+    batch_probe.add_argument('--shop', required=True)
+    batch_probe.add_argument('--session', default='miaoshou-auto-batch-20261028')
     batch_close = batch_sub.add_parser('close-unreachable',
         help='人工确认并附证据，将本目标版本按不可达结案（保留历史，禁止自动恢复与重新导入绕过）')
     batch_close.add_argument('--task-id', required=True, type=int)
@@ -951,6 +961,14 @@ def run(args):
                 return batch_queue.apply_preflight_report(args.task_id, args.proof)
             if args.batch_command == 'block':
                 return batch_queue.block_task(args.task_id, args.reason)
+            if args.batch_command == 'reopen-unreachable':
+                return batch_queue.reopen_unreachable_task(
+                    args.task_id, reason=args.reason, confirmed_by=args.confirmed_by)
+            if args.batch_command == 'probe-product':
+                from doudian_auto.bridge import DEFAULT_ENDPOINT, Bridge
+                from doudian_auto.miaoshou_editor import MiaoshouEditor
+                bridge = Bridge(DEFAULT_ENDPOINT, session=args.session, timeout=30)
+                return MiaoshouEditor(bridge, args.shop).probe_product(args.product_id)
             if args.batch_command == 'close-unreachable':
                 return batch_queue.close_unreachable_task(
                     args.task_id, reason=args.reason, evidence_path=args.evidence,

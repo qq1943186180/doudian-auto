@@ -39,6 +39,35 @@
       el.closest('aside').getBoundingClientRect().width > 100 &&
       [...el.querySelectorAll('use')].some(x => x.getAttribute('xlink:href') === '#icon-menu-narrow')));
   }
+  if (op === 'probe') {
+    // Structured, read-only: report what the page says right now, never a cause.
+    // Zero matching rows alone cannot distinguish "absent" from "not synced",
+    // "archived" or "still loading" -- so the caller needs the query state and
+    // the pagination total to decide anything at all.
+    const input = document.querySelector('input[name="productId"]');
+    const applied = !!input && String(input.value || '').trim() === String(p.product_id);
+    const loading = !!document.querySelector(
+      '.pro-loading, .ant-spin-spinning, [class*="loading-mask"], [class*="Loading"], [class*="skeleton"]');
+    const errors = [...document.querySelectorAll(
+      '[class*="error"],[class*="Error"],.pro-message-error,.pro-alert-error')]
+      .map(text).filter(Boolean).slice(0, 3);
+    const body = text(document.body);
+    const totalMatch = body.match(/共\s*(\d+)\s*条/) || body.match(/总计\s*(\d+)\s*条?/);
+    const rows = [...document.querySelectorAll('.pro-table-custom-body-row')]
+      .filter(row => (text(row).match(/\d{16,22}/g) || []).includes(String(p.product_id)));
+    const first = rows.length === 1 ? rows[0] : null;
+    return {
+      filter_applied: applied,
+      loading: loading,
+      errors: errors,
+      total_hint: totalMatch ? Number(totalMatch[1]) : null,
+      exact_rows: rows.length,
+      row_status: first ? text(first).slice(0, 60) : null,
+      buttons: first ? [...first.querySelectorAll('button')]
+        .map(button => ({text: text(button), disabled: !!button.disabled})).slice(0, 8) : [],
+      url: String(location.href).slice(0, 160),
+    };
+  }
   if (op === 'edit_button' || op === 'listing_button' || op === 'supplier_link') {
     const rows = [...document.querySelectorAll('.pro-table-custom-body-row')]
       .filter(row => (text(row).match(/\d{16,22}/g) || []).includes(String(p.product_id)));

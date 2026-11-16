@@ -200,15 +200,33 @@ class MiaoshouEditor:
     def row_present(self, product_id, *, timeout=20):
         """Whether the quick-edit list actually holds this exact product ID.
 
-        Read-only: it navigates, searches and counts rows matching the ID, and never
-        clicks an edit button or opens a product. Returns None when the list never
-        settled, so "could not read" is never reported as "absent" -- the queue acts on
-        this distinction, and a timeout must not be turned into a deletion.
+        Delegates to `probe_product` on purpose. The previous implementation read
+        `rows > 0` from a single DOM sample and returned immediately; that sample can
+        be taken *before* the search result renders, which turns a reachable product
+        into a false "absent" (measured 2026-11-16: task 48 was False here while the
+        structured probe found its row with an 编辑商品 button). Deferring to the
+        probe also means False now requires a completed query with a zero total.
 
-        This exists because the 抖店 preflight can only prove the official side is
-        writable. The write itself goes through 妙手, and six queue products are simply
-        not in that list; releasing one of them would send the next run into a
-        `page_timeout` on the edit button that no retry can fix.
+        Returns None when the list never settled, so "could not read" is never
+        reported as "absent".
+        """
+        if not str(product_id).isdigit():
+            raise DoudianError('invalid_product', '商品ID必须按字符串传入数字。')
+        state = self.probe_product(product_id, timeout=timeout)
+        if state['verdict'] == 'present':
+            return True
+        if state['verdict'] == 'absent':
+            return False
+        return None
+
+    def probe_product(self, product_id, *, timeout=20):
+        """Structured read-only probe of the quick-edit list. Never names a cause.
+
+        `row_present` only answers "is there an editable row right now". This reports
+        the full signal set so a caller can record `reason_unknown` instead of
+        inventing a reason. Zero exact rows becomes `absent` only when the query
+        actually completed (filter applied, nothing loading, no error) **and** the
+        pagination total is also zero -- a stale or unreadable total stays `unknown`.
         """
         if not str(product_id).isdigit():
             raise DoudianError('invalid_product', '商品ID必须按字符串传入数字。')
@@ -221,13 +239,33 @@ class MiaoshouEditor:
                                      'value': str(product_id)})
         self.bridge.command('click', {'selector': self._mark_control('query_button')})
         deadline = time.monotonic() + timeout
+        last = None
         while True:
-            state = self._visible_dom('edit_button', product_id)
-            if isinstance(state, dict) and isinstance(state.get('rows'), int):
-                return state['rows'] > 0
+            state = self._visible_dom('probe', product_id)
+            if isinstance(state, dict) and state.get('error') is None:
+                settled = (state.get('filter_applied') and not state.get('loading')
+                           and not state.get('errors'))
+                if (settled and last is not None
+                        and state.get('exact_rows') == last.get('exact_rows')
+                        and state.get('total_hint') == last.get('total_hint')):
+                    last = state
+                    break
+                last = state
             if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.2)
+                break
+            time.sleep(0.4)
+        signals = last or {}
+        verdict, reason = 'unknown', 'reason_unknown'
+        if (signals.get('filter_applied') and not signals.get('loading')
+                and not signals.get('errors')):
+            rows, total = signals.get('exact_rows'), signals.get('total_hint')
+            if isinstance(rows, int) and rows >= 1:
+                verdict, reason = 'present', 'row_in_current_query'
+            elif rows == 0 and total == 0:
+                verdict, reason = 'absent', 'absent_from_current_query'
+        return {'product_id': str(product_id), 'shop': self.shop,
+                'observed_at': time.time(), 'market': 'miaoshou_quick_edit',
+                'verdict': verdict, 'reason': reason, 'signals': signals}
 
     def open_product(self, product_id, *, fresh=True):
         if not str(product_id).isdigit():
