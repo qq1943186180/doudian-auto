@@ -6,18 +6,26 @@ const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const runtime = import(pathToFileURL(path.join(__dirname,'../src/doudian_auto/ego_runtime.mjs')).href);
 
-function savePage() {
+function savePage(options={}) {
   const {JSDOM}=require('jsdom');
+  const mainCount=options.mainCount??5, detailCount=options.detailCount??4;
+  // The page always renders fixed controls (5 main boxes, >=4 detail rows); a
+  // short listing leaves trailing ones empty.
+  const extraMains=options.extraMains??(5-mainCount), extraPairs=options.extraPairs??(4-detailCount);
   const expected={shop:'销霁百货',product_id:'3848317832962113825',title:'目标商品标题',
     top_fields:['title','image_change','desc','price'],required_fields:['title','image_change','desc'],
     options:['new','onlyPreview','replaceImgsByImgUrls'],
-    mains:Array.from({length:5},(_,i)=>`https://p3-aio.ecombdimg.com/obj/ecom-shop-material/main${i}`),
-    pairs:Array.from({length:4},(_,i)=>[`https://p3-aio.ecombdimg.com/obj/ecom-shop-material/source${i}`,`https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-30/detail${i}.png?dy`])};
+    mains:Array.from({length:mainCount},(_,i)=>`https://p3-aio.ecombdimg.com/obj/ecom-shop-material/main${i}`),
+    pairs:Array.from({length:detailCount},(_,i)=>[`https://p3-aio.ecombdimg.com/obj/ecom-shop-material/source${i}`,`https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-30/detail${i}.png?dy`])};
+  const mainBoxes=expected.mains.map(u=>`<div class="replace-img-item"><div class="add-img-box"><img src="${u}"></div></div>`)
+    .concat(Array.from({length:Math.max(0,extraMains)},()=>`<div class="replace-img-item"><div class="add-img-box"></div></div>`));
+  const detailRows=expected.pairs.map(pair=>`<div class="base-edit-list">${pair.map(u=>`<div class="add-img-box"><img src="${u}"></div>`).join('')}</div>`)
+    .concat(Array.from({length:Math.max(0,extraPairs)},()=>`<div class="base-edit-list"><div class="add-img-box"></div><div class="add-img-box"></div></div>`));
   const dom=new JSDOM(`<header>您好【${expected.shop}】</header><textarea placeholder="请输入商品ID">${expected.product_id}</textarea><textarea name="inputNewContent">${expected.title}</textarea>
     ${expected.required_fields.concat(expected.options).map(v=>`<input type="checkbox" value="${v}" checked>`).join('')}<input id="price" type="checkbox" value="price">
     <input type="radio" name="contentType" value="replaceImgByIndex" checked><input type="radio" name="overlengthType" value="fail" checked>
-    ${expected.mains.map(u=>`<div class="replace-img-item"><div class="add-img-box"><img src="${u}"></div></div>`).join('')}
-    ${expected.pairs.map(pair=>`<div class="base-edit-list">${pair.map(u=>`<div class="add-img-box"><img src="${u}"></div>`).join('')}</div>`).join('')}
+    ${mainBoxes.join('')}
+    ${detailRows.join('')}
     <button id="save" class="J_batchEditProduct">开始批量修改</button>`,{url:'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field',runScripts:'outside-only'});
   const w=dom.window;
   Object.defineProperty(w.HTMLElement.prototype,'innerText',{get(){return this.textContent;}});
@@ -151,6 +159,18 @@ test('final native save guard requires exact shop, product, title, fields and al
   image.src='https://p3-aio.ecombdimg.com/obj/ecom-shop-material/changed';assert.equal((await read()).reason,'assets');image.src=old;
   p.w.document.body.insertAdjacentHTML('beforeend','<div class="select-product-filter-dialog">open picker</div>');
   assert.equal((await read()).reason,'modal');p.dom.window.close();
+});
+
+test('native save guard tolerates trailing empty controls for variable-slot listings',async()=>{
+  const {inspectBatchSave}=await runtime;
+  // 4 main images (5th box empty) and 2 detail pairs (rows 3-4 empty).
+  const p=savePage({mainCount:4,detailCount:2});
+  assert.equal((await p.evaluate(inspectBatchSave,p.expected)).valid,true);
+  // A populated row beyond the plan is an unreviewed replacement: refuse.
+  const extra=p.w.document.querySelectorAll('.base-edit-list')[2];
+  extra.querySelectorAll('.add-img-box')[0].innerHTML='<img src="https://p3-aio.ecombdimg.com/obj/ecom-shop-material/unreviewed">';
+  assert.equal((await p.evaluate(inspectBatchSave,p.expected)).reason,'assets');
+  p.dom.window.close();
 });
 
 for(const mode of ['success','changed_on_focus','lost_after_enter'])test(`one native final-button Enter with ${mode}`,async t=>{

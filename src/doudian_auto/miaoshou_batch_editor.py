@@ -24,6 +24,21 @@ from .workflow import is_permanent_material_url, is_temporary_upload_url, resour
 MIAOSHOU_HOST = 'v2-dd.chengji-inc.com'
 BATCH_EDIT_URL = 'https://v2-dd.chengji-inc.com/product/batch/edit?batchType=multi_field'
 WRITER_REVISION = 'multi-field-20261030-v5'
+FULL_SLOT_PLAN = {'mains': 5, 'details': 4}
+
+
+def _plan_from_baseline(baseline):
+    """Slot plan recorded on the baseline; absent key means the legacy full contract."""
+    if not isinstance(baseline, dict) or 'slot_plan' not in baseline:
+        return dict(FULL_SLOT_PLAN)
+    plan = baseline['slot_plan']
+    if not isinstance(plan, dict):
+        raise DoudianError('invalid_slot_plan', '素材槽位计划不合法，已停止。')
+    mains, details = plan.get('mains'), plan.get('details')
+    if not (type(mains) is int and type(details) is int and
+            1 <= mains <= FULL_SLOT_PLAN['mains'] and 1 <= details <= FULL_SLOT_PLAN['details']):
+        raise DoudianError('invalid_slot_plan', '素材槽位计划不合法，已停止。')
+    return {'mains': mains, 'details': details}
 _TOP_FIELDS = {
     'title', 'short_product_name', 'brand_id', 'item_num', 'product_format',
     'fabric_material', 'price', 'size_temp', 'transport_id', '7day_return',
@@ -62,12 +77,22 @@ def _batch_page_ready(snapshot, shop):
             ('修改范围' in text or '综合修改(多字段修改)' in text))
 
 
-def require_distinct_detail_sources(details):
-    """URL replacement affects every occurrence, including an unchanged tail."""
+def require_distinct_detail_sources(details, replaced=None):
+    """Every source image that will be replaced must be unique in the full list.
+
+    The writer replaces by matching the old URL, so if a to-be-replaced source also
+    appears among the preserved tail, one replace changes more than one position.
+    ``replaced`` is B, the number of detail slots this revision touches; when omitted
+    the legacy behaviour checks the first four. Preserved tail images may repeat
+    among themselves — they are never touched.
+    """
     keys = [resource_key(url) for url in details]
-    if any(keys.count(key) != 1 for key in keys[:4]):
+    count = 4 if replaced is None else replaced
+    if not (isinstance(count, int) and 1 <= count <= 4):
+        raise DoudianError('invalid_slot_plan', '详情替换槽位数不合法，已停止。')
+    if any(keys.count(key) != 1 for key in keys[:count]):
         raise DoudianError('writer_detail_source_collision',
-            '前4张详情存在重复原图，或与保留尾图重复；妙手按图片查找替换会同时改动多个位置，'
+            '待替换的详情原图存在重复，或与保留尾图重复；妙手按图片查找替换会同时改动多个位置，'
             '当前写入器不能逐位置替换，已停止生成或上传。')
 
 
@@ -98,22 +123,35 @@ def validate_batch_form_state(state, *, product_id, shop, title, baseline, asset
     if state.get('overlength') != 'fail':
         raise DoudianError('miaoshou_batch_title_truncation', '标题超长必须按失败处理，不能自动删字。')
 
+    plan = _plan_from_baseline(baseline)
+    main_slots, detail_slots = plan['mains'], plan['details']
     before_mains = [resource_key(x) for x in baseline.get('mains', [])]
     before_details = [resource_key(x) for x in baseline.get('details', [])]
-    if len(before_mains) != 5 or len(before_details) < 4:
-        raise DoudianError('baseline_incomplete', '商品图片基线不完整，不能提交批量修改。')
+    if len(before_mains) != main_slots or len(before_details) < detail_slots:
+        raise DoudianError('baseline_incomplete', '商品图片基线与本次槽位计划不一致，不能提交批量修改。')
     target_paths = [Path(x).resolve() for x in asset_paths]
-    if len(target_paths) != 9 or any(not path.is_file() for path in target_paths):
-        raise DoudianError('asset_manifest_incomplete', '批量编辑必须提供5张主图和4张详情图。')
+    if len(target_paths) != main_slots + detail_slots or any(not path.is_file() for path in target_paths):
+        raise DoudianError('asset_manifest_incomplete',
+                           '批量编辑素材数量与槽位计划不一致（需{0}主图、{1}详情）。'.format(main_slots, detail_slots))
 
     mains = list(state.get('main_images') or [])
     detail_pairs = list(state.get('detail_pairs') or [])
-    if len(mains) != 5 or len(detail_pairs) != 4:
-        raise DoudianError('miaoshou_batch_slots_incomplete', '批量编辑页没有5个主图和4组详情替换槽位。')
-    source_detail_keys = [resource_key(pair.get('source')) for pair in detail_pairs]
-    if source_detail_keys != before_details[:4]:
+    if len(mains) != main_slots or len(detail_pairs) < detail_slots:
+        raise DoudianError('miaoshou_batch_slots_incomplete',
+                           '批量编辑页主图或详情替换槽位与本次计划不一致。')
+    # The page always shows a fixed set of replace rows; prepare() pads to at least
+    # four. Only the first B are this revision's targets. Any row beyond B must be a
+    # completely empty placeholder (no source and no target): a non-empty extra row
+    # would be an unreviewed replacement and is refused rather than ignored.
+    for extra in detail_pairs[detail_slots:]:
+        if not isinstance(extra, dict) or extra.get('source') or extra.get('target'):
+            raise DoudianError('miaoshou_batch_unexpected_detail_row',
+                               '计划之外仍有非空详情替换行，拒绝提交。')
+    active_pairs = detail_pairs[:detail_slots]
+    source_detail_keys = [resource_key(pair.get('source')) for pair in active_pairs]
+    if source_detail_keys != before_details[:detail_slots]:
         raise DoudianError('miaoshou_batch_source_mismatch', '详情图替换来源与实时基线不一致。')
-    target_urls = mains + [pair.get('target') for pair in detail_pairs]
+    target_urls = mains + [pair.get('target') for pair in active_pairs]
     if any(not (is_temporary_upload_url(url) or is_permanent_material_url(url)) for url in target_urls):
         raise DoudianError('miaoshou_batch_target_unreadable', '至少一个目标图片槽位没有读回可识别的妙手素材地址。')
 
@@ -127,16 +165,19 @@ def validate_batch_form_state(state, *, product_id, shop, title, baseline, asset
     if [resource_key(x) for x in modal.get('old_details', [])] != before_details:
         raise DoudianError('miaoshou_batch_preview_detail_source_mismatch', '详情图预览来源与实时基线不一致。')
     if [resource_key(x) for x in modal.get('new_mains', [])] != [resource_key(x) for x in mains]:
-        raise DoudianError('miaoshou_batch_preview_main_target_mismatch', '5张主图的修改后预览与目标槽位不一致。')
-    expected_details = [resource_key(x) for x in target_urls[5:]] + before_details[4:]
+        raise DoudianError('miaoshou_batch_preview_main_target_mismatch', '主图修改后预览与目标槽位不一致。')
+    # The post-preview detail list is the replaced target prefix followed by the
+    # untouched baseline tail. Slice both boundaries from the plan so a short
+    # detail plan keeps every preserved image in place.
+    expected_details = [resource_key(x) for x in target_urls[main_slots:]] + before_details[detail_slots:]
     if [resource_key(x) for x in modal.get('new_details', [])] != expected_details:
-        raise DoudianError('miaoshou_batch_preview_detail_target_mismatch', '详情图预览未完整保留4张替换图和其余原图顺序。')
+        raise DoudianError('miaoshou_batch_preview_detail_target_mismatch', '详情图预览未完整保留目标替换图和其余原图顺序。')
     if modal.get('labels') != ['商品标题', '详情图', '主图']:
         raise DoudianError('miaoshou_batch_preview_layout_changed', '妙手修改前后预览结构发生变化。')
 
     mappings = []
     for index, (path, url) in enumerate(zip(target_paths, target_urls)):
-        kind, slot = ('mains', index + 1) if index < 5 else ('details', index - 4)
+        kind, slot = ('mains', index + 1) if index < main_slots else ('details', index - main_slots + 1)
         if is_permanent_material_url(url):
             key, asset_state = resource_key(url), 'permanent'
         else:
@@ -173,7 +214,14 @@ def validate_submission_ready_state(state, *, product_id, shop, title, mappings)
                       for slot in range(1, plan['mains'] + 1)]
     expected_details = [resource_key(by_slot[f'details:{slot}'].get('remote_url'))
                         for slot in range(1, plan['details'] + 1)]
-    actual_details = [resource_key(item.get('target')) for item in state.get('detail_pairs') or []]
+    detail_pairs = list(state.get('detail_pairs') or [])
+    # Ignore only fully-empty placeholder rows beyond the plan; a non-empty extra
+    # row is an unreviewed replacement and must stop the save.
+    for extra in detail_pairs[plan['details']:]:
+        if not isinstance(extra, dict) or extra.get('source') or extra.get('target'):
+            raise DoudianError('miaoshou_batch_unexpected_detail_row',
+                               '提交预览的本次计划之外仍有非空详情替换行，拒绝保存。')
+    actual_details = [resource_key(pair.get('target')) for pair in detail_pairs[:plan['details']]]
     if ([resource_key(item) for item in state.get('main_images') or []] != expected_mains or
             actual_details != expected_details):
         raise DoudianError('miaoshou_batch_submit_assets_changed', '提交预览的图片槽位与已校验素材映射不一致。')
@@ -195,8 +243,13 @@ def _plan_from_slots(slots):
     contiguous and within the writer's cap instead of being a fixed nine. Numbering is
     still checked so a missing middle slot cannot pass as a shorter plan.
     """
-    mains = sorted(int(item.split(':')[1]) for item in slots if item.startswith('mains:'))
-    details = sorted(int(item.split(':')[1]) for item in slots if item.startswith('details:'))
+    # Canonical names only: reject leading zeros and unknown groups instead of
+    # silently coercing "mains:01" into slot 1 or ignoring stray entries.
+    ordered = sorted(slots)
+    if any(not re.fullmatch(r'(?:mains:[1-5]|details:[1-4])', item) for item in ordered):
+        raise DoudianError('uploads_incomplete', '素材槽位名称不合法，已停止。')
+    mains = sorted(int(item.split(':')[1]) for item in ordered if item.startswith('mains:'))
+    details = sorted(int(item.split(':')[1]) for item in ordered if item.startswith('details:'))
     if mains != list(range(1, len(mains) + 1)) or details != list(range(1, len(details) + 1)):
         raise DoudianError('uploads_incomplete', '素材槽位编号不连续，已停止。')
     if not (1 <= len(mains) <= 5 and 1 <= len(details) <= 4):
@@ -565,8 +618,11 @@ class MiaoshouBatchEditor:
     def prepare(self, *, product_id, title, baseline, main_paths, detail_paths, fresh_form=False,
                 on_upload=None, reuse_mappings=None):
         """Populate the visible batch form from one fresh server baseline."""
-        if len(main_paths) != 5 or len(detail_paths) != 4:
-            raise DoudianError('asset_manifest_incomplete', '妙手批量编辑需要5张主图和4张详情图。')
+        plan = _plan_from_baseline(baseline)
+        if len(main_paths) != plan['mains'] or len(detail_paths) != plan['details']:
+            raise DoudianError('asset_manifest_incomplete',
+                               '妙手批量编辑素材数量与槽位计划不一致（需{0}主图、{1}详情）。'.format(
+                                   plan['mains'], plan['details']))
         self.open(reuse_existing=True)
         self.close_image_picker_if_open()
         self.close_preview_if_open()
@@ -662,9 +718,15 @@ class MiaoshouBatchEditor:
           const selectedExtra=checks.filter(x=>!top.has(x.value)).map(x=>x.value).sort();
           const id=[...document.querySelectorAll('textarea')].find(x=>visible(x)&&(x.placeholder||'').includes('请输入商品ID'));
           const title=[...document.querySelectorAll('textarea[name=inputNewContent]')].find(visible);
-          const main=[...document.querySelectorAll('.replace-img-item .add-img-box')].map(x=>{const i=x.querySelector('img');return i?(i.currentSrc||i.src):null});
+          // The page keeps a fixed number of main replace controls; only those holding
+          // an actual image are this listing's slots. Empty boxes (a 4-main listing
+          // still shows five) are placeholders, not images, and must not be counted.
+          const imgUrl=x=>{const i=x?.querySelector('img');return i?(i.currentSrc||i.src):null;};
+          const main=[...document.querySelectorAll('.replace-img-item .add-img-box')].map(imgUrl).filter(Boolean);
+          // Detail rows are kept unfiltered: prepare() pads to four rows and the
+          // Python validators must see every row to reject a non-empty extra one.
           const lists=[...document.querySelectorAll('.base-edit-list')].filter(x=>x.querySelectorAll('.add-img-box').length===2);
-          const pairs=lists.map(x=>[...x.querySelectorAll('.add-img-box')].map(y=>{const i=y.querySelector('img');return i?(i.currentSrc||i.src):null}));
+          const pairs=lists.map(x=>[...x.querySelectorAll('.add-img-box')].map(imgUrl));
           const body=document.body.innerText||'';
           const ids=[...body.matchAll(/商品ID[：:]\s*(\d+)/g)].map(x=>x[1]);
           const count=(body.match(/共找到\s*(\d+)\s*个商品/)||[])[1];
@@ -811,14 +873,24 @@ class MiaoshouBatchEditor:
     def _save_guard(self, product_id, title, mappings):
         by_slot = {item['slot']: item['remote_url'] for item in mappings}
         state = self.observe()
+        detail_slots = len([key for key in by_slot if key.startswith('details:')])
+        all_pairs = list(state['detail_pairs'])
+        # Only the planned detail rows carry a target mapping. The page may show
+        # extra placeholder rows; they are allowed only while completely empty —
+        # a non-empty extra row is an unreviewed replacement and must stop the save.
+        for extra in all_pairs[detail_slots:]:
+            if not isinstance(extra, dict) or extra.get('source') or extra.get('target'):
+                raise DoudianError('miaoshou_batch_unexpected_detail_row',
+                                   '保存守卫发现计划之外的非空详情替换行，拒绝保存。')
+        pairs = [[pair['source'], by_slot[f'details:{i}']]
+                 for i, pair in enumerate(all_pairs[:detail_slots], 1)]
         return {'product_id': str(product_id), 'shop': self.shop, 'title': title,
                 'top_fields': sorted(_TOP_FIELDS), 'required_fields': sorted(_REQUIRED_FIELDS),
                 'options': sorted(_REQUIRED_OPTIONS),
                 'mains': [by_slot[key] for key in sorted(
                     (key for key in by_slot if key.startswith('mains:')),
                     key=lambda key: int(key.split(':')[1]))],
-                'pairs': [[pair['source'], by_slot[f'details:{i}']]
-                          for i, pair in enumerate(state['detail_pairs'], 1)]}
+                'pairs': pairs}
 
     def click_start_once(self, *, product_id, title, baseline, asset_paths,
                          validated_mappings=None, prepared_submission=None, wait_seconds=60):

@@ -31,9 +31,62 @@
 
 ## 给人的说明
 
+### T-20261118-004 · Codex 复查推翻「变长槽位已完成」：逻辑层半成品已补全，UI 探针待真实验证
+
+- 状态：**高危逻辑缺陷已修 + 回归通过，仍零商品写入**。T-20261118-003 的「代码完成、337 全绿」结论被
+  Codex 独立复查（`/tmp/codex-slotplan-review-20261118.md`）推翻：那轮只改了读回比对和 preflight 门槛，
+  **写入执行路径仍写死 5/4/9**，preflight 放行的变长商品会在写入时被拒；且正常提交读回漏传 plan 必然失败。
+- **Codex 与 WorkBuddy 独立发现一致的高危项**（均已修）：
+  1. `batch._slot_plan` 键存在但值非 dict（None/True/0/[]/str）被静默回退成满槽 → 改为只有**缺键**才回退，
+     值存在即严格校验字典/类型/范围，否则 `invalid_slot_plan` 失败关闭（`miaoshou_batch_editor._plan_from_baseline` 同语义）。
+  2. `batch.py` 正常提交后的官方读回 `_matches_doudian_target(official_before, ...)` **漏传 plan**：
+     `official_before` 是嵌套 `doudian_baseline`，无 slot_plan，会回退 5/4 让变长商品读回永远失败 → 显式传 `plan=run_plan`。
+  3. `record_baseline` 建基线仍要求 `5 主/≥4 详` → 有 plan 时按 plan 校验并核对与实际读到图片数一致；无 plan 保留旧要求。
+  4. `batch.py` 素材切分仍要求 `5 主、共 9 张` → 按 `run_plan` 校验。
+  5. 三处 complete 检查 + 标题修复 `images_match==9` → 全部按 plan。
+  6. `_finalize_target_mappings` 尾图校验写死 `[4:]` → 改为 `[plan['details']:]`，短计划有保留尾图时仍逐张校验。
+  7. `validate_batch_form_state` / `MiaoshouBatchEditor.prepare` 入口与数据切片写死 5/4/9 → 按 `_plan_from_baseline` 驱动。
+- **Codex 第二轮复检（`/tmp/codex-slotplan-recheck-20261118.md`）又抓到两处我已修**：
+  ⑧ `miaoshou_editor.parse_edit_response` 写死 `5 主/≥4 详`，是变长链路**最上游**（建 plan 之前就 read_product），
+  5主2详和4主4详直接 `miaoshou_images_incomplete` → 放宽为 1–5 主、≥1 详（与 preflight 门槛一致）；
+  ⑨ `require_distinct_detail_sources` 检查 `keys[:4]`，短计划带保留尾图时尾图重复被误拦 → 加 `replaced=B`
+  参数，只检查前 B 张待替换源的唯一性（含与尾图重复），两个调用点传 `min(4,详情数)`。
+- **prepare 补行 vs 校验的冲突（Codex ⑨ 同类，已按 DOM 事实解决）**：`observe()` 的 `detail_pairs` 来自
+  `.base-edit-list`（含 2 个 add-img-box），`prepare` 会 `_ensure_detail_rows(4)` 补到 4 行，空行是
+  `{source:None,target:None}`。因此把表单/提交/保存守卫的详情校验统一为：**前 B 行必须是目标替换，
+  B 之后的余行必须完全为空**（非空余行＝未审替换，`miaoshou_batch_unexpected_detail_row` 拒绝），
+  `target_urls`/mappings/pairs 只取前 B 行。满槽商品 B=4 行为不变，变长商品无论页面显示 2 行还是补到 4 行都自洽。
+- **UI 探针仍未改**（`xs.length===5/4`、`_ensure_detail_rows(4)`、`_upload_slot_image(...,5)`）：
+  主图 5 是平台固定槽位；详情 4 因 prepare 始终补到 4 行而成立——空余行已被上面的数据校验安全忽略。
+  这些是页面控件事实，非已证实可变的契约，保持原样。
+- **Codex 第三轮复检（`/tmp/codex-slotplan-recheck2-20261118.md`）又抓到两处已修**：
+  ⑩ `ego_runtime.mjs::inspectBatchSave` 要求页面全部 main/pairs 与 guard 完全相等，B<4 的空余行让它
+  `valid:false`（assets）→ 改为 `trimSuffixEmpty`：只剔除**尾部**空控件/空行后比较，空项在前仍拒；
+  ⑪ `observe()` 把空主图控件计入（4 主图→"4 URL+1 null"，被 `len(mains)!=main_slots` 拒）→
+  主图改为 `map(imgUrl).filter(Boolean)`，详情 pairs 保持不过滤（让校验层看到空余行）。
+  同时 `_save_guard` 补齐非空余行拒绝，使表单/提交/保存守卫三处语义一致。
+- **Codex 第四轮复检（`/tmp/codex-slotplan-final-20261118.md`）抓到最后一个确定高危并已修**：
+  ⑫ `batch.py` ready 分支构造了带 slot_plan 的 baseline，但 `miao_before = baseline` 只在续办 else 分支；
+  新任务传给 prepare/verify_prepared/finalize 的仍是不带 plan 的 raw read → 回退 5/4，5主2详/4主4详/
+  4主2详全部在上传入口 `asset_manifest_incomplete`。ready 分支补 `miao_before = baseline`（baseline 是
+  miao_before 的超集，含 plan），两分支写入路径统一。测试 `test_prepare_requires_the_plan_on_the_baseline_it_receives`
+  钉住该契约。
+- **Codex 第五次聚焦复检（最终）**：确认 ready 与新任务/续办两条路径都已把带 plan 的 baseline 传给
+  prepare / verify_prepared / finalize；结论 **离线可交付**，没有确定可复现的残留高危阻断（UI 探针、
+  补 4 行、真人页面实测等不算确定缺陷）。
+- **仍未做真实商品验证**：妙手授权失效 + Ego task space ended，无法实测「变长商品页面真实显示几行」。
+  数据校验已做到页面 2 行或 4 行都自洽，但真实写入仍需用户恢复授权后按 task 59 验证。
+- **测试**：`tests/test_slot_plan.py` 14→26 条、`test_miaoshou_editor.py` +2 条、`tests/ego-runtime.test.cjs` +1 条；
+  覆盖非 dict 失败关闭、变长表单（0/2 空余行）、非空余行拒绝、尾图边界、distinct sources 前缀、变长读取、
+  save guard 变长（4主2详+空控件）、槽位名称规范化、新任务 plan 传递。
+  最终回归：**pytest 830 passed in 194.08s**（独立 basetemp 规避 WorkBuddy 删除守卫），
+  **npm test 124 pass / 0 fail**。
+- **真实验证前置**：需用户恢复妙手登录 + 允许 claim 已 ended 的 Ego task space。首选 task 59：
+  上传 7 槽 → 观察妙手详情替换行究竟显示几行（若不是 2，需据实调整上面的 UI 探针）→ 预览 → 保存 → 双端读回。
+
 ### T-20261118-003 · 写入器支持变长槽位：槽位计划写进基线
 
-- 状态：**代码完成，零商品写入，尚未做真实商品验证**（妙手登录态失效）。用户选的是 ⑱ 的选项 ②。
+- 状态：**逻辑层已被 T-20261118-004 修正并补全**；本块保留为设计意图记录。用户选的是 ⑱ 的选项 ②。
 - ① **核心**：每个版本记一个**槽位计划** `baseline['slot_plan'] = {'mains': A, 'details': B}`，
   `A = min(5, 主图数)`、`B = min(4, 详情数)`，在建基线时由**该商品自己的快照**算出（`batch._plan_for_snapshot`）。
   取代原先写死的 9 槽。

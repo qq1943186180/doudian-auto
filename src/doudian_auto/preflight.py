@@ -220,7 +220,7 @@ def _validate_snapshot(snapshot, identity):
             f'当前写入器需要1至5张主图和至少1张已就绪详情图（详情最多替换前4张）；官方实读主图{main_count}张、'
             f'详情{detail_count}张（状态={snapshot["detail_status"]}），不作为新素材候选。')
     from .miaoshou_batch_editor import require_distinct_detail_sources
-    require_distinct_detail_sources(snapshot['details'])
+    require_distinct_detail_sources(snapshot['details'], replaced=min(4, detail_count))
     batch.require_official_attributes(snapshot)
 
 

@@ -32,6 +32,28 @@ def test_parse_miaoshou_read_keeps_long_product_id_exact_and_whitelists_fields()
     assert 'mobile' not in result['protected']
 
 
+def test_parse_miaoshou_read_accepts_variable_slot_counts():
+    # A listing's own image count is a fact, not a fixed 5/4 contract. The reader
+    # must not reject short detail lists before a slot plan can even be built.
+    for mains, details in ((5, 2), (4, 4), (1, 1)):
+        r = _response()
+        info = r['body']['productInfo']
+        info['pic'] = info['pic'][:mains]
+        info['descriptionImgList'] = info['descriptionImgList'][:details]
+        result = parse_edit_response(r, expected_product_id=str(r['body']['productId']),
+                                     shop='销霁百货')
+        assert len(result['mains']) == mains
+        assert len(result['details']) == details
+
+
+def test_parse_miaoshou_read_rejects_zero_images():
+    r = _response()
+    r['body']['productInfo']['pic'] = []
+    with pytest.raises(DoudianError) as caught:
+        parse_edit_response(r, expected_product_id=str(r['body']['productId']), shop='销霁百货')
+    assert caught.value.code == 'miaoshou_images_incomplete'
+
+
 def test_parse_miaoshou_read_rejects_wrong_identity_and_missing_protected_field():
     with pytest.raises(DoudianError) as wrong_id:
         parse_edit_response(_response(3848319372858884338),

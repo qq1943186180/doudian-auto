@@ -95,8 +95,15 @@ def parse_edit_response(response, *, expected_product_id, shop):
         raise DoudianError('wrong_identity', '妙手读取响应中的商品ID与目标不一致。')
     mains = _image_urls(info.get('pic'))
     details = _image_urls(info.get('descriptionImgList'))
-    if len(mains) != 5 or len(details) < 4:
-        raise DoudianError('miaoshou_images_incomplete', '妙手读取到的主图不是5张或详情图少于4张。')
+    # The writer replaces images per slot, so a listing's own image count is a
+    # fact, not a fixed contract. The caps stay at five mains and four replaced
+    # details; extra details beyond the fourth are preserved untouched by the
+    # plan-driven writer. This must agree with the official-side preflight gate
+    # (1..5 mains, >=1 ready detail) or a variable-slot product is rejected at
+    # the very first read, before any plan can be built.
+    if not 1 <= len(mains) <= 5 or len(details) < 1:
+        raise DoudianError('miaoshou_images_incomplete',
+                           '妙手读取到的主图或详情图数量不足以确定槽位计划。')
     protected, complete = _safe_protected(data, info)
     if not complete:
         raise DoudianError('protected_incomplete', '妙手商品响应缺少SKU、类目、物流、售后或状态字段。')

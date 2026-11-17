@@ -39,8 +39,15 @@ export function inspectBatchSave(expected) {
   if(!radios.some(x=>x.name==='contentType'&&x.value==='replaceImgByIndex')||!radios.some(x=>x.name==='overlengthType'&&x.value==='fail'))return refusal('method');
   const key=value=>{try{const u=new URL(value);return u.pathname.includes('ecom-shop-material/')?'material:'+u.pathname.split('ecom-shop-material/')[1].split(/[~?]/)[0]:u.origin+u.pathname;}catch{return null;}};
   const read=box=>{const img=box?.querySelector('img');return img?key(img.currentSrc||img.src):null;};
-  const mains=[...document.querySelectorAll('.replace-img-item .add-img-box')].filter(visible).map(read);
-  const pairs=[...document.querySelectorAll('.base-edit-list')].filter(x=>visible(x)&&x.querySelectorAll('.add-img-box').length===2).map(x=>[...x.querySelectorAll('.add-img-box')].map(read));
+  // The page keeps a fixed set of controls. Only populated ones are this listing's
+  // slots; trailing empty boxes (a 4-main listing still shows five) and fully empty
+  // detail rows (prepare pads to four) are placeholders. An empty slot before a
+  // populated one is never a valid layout, so require empties to be a suffix only.
+  const trimSuffixEmpty=(values,isEmpty)=>{const last=values.reduce((acc,v,i)=>isEmpty(v)?acc:i,-1);return values.slice(0,last+1);};
+  const rawMains=[...document.querySelectorAll('.replace-img-item .add-img-box')].filter(visible).map(read);
+  const rawPairs=[...document.querySelectorAll('.base-edit-list')].filter(x=>visible(x)&&x.querySelectorAll('.add-img-box').length===2).map(x=>[...x.querySelectorAll('.add-img-box')].map(read));
+  const mains=trimSuffixEmpty(rawMains,v=>v===null||v==='');
+  const pairs=trimSuffixEmpty(rawPairs,p=>!p[0]&&!p[1]);
   if(mains.length!==expected.mains.length||pairs.length!==expected.pairs.length||JSON.stringify(mains)!==JSON.stringify(expected.mains.map(key))||JSON.stringify(pairs)!==JSON.stringify(expected.pairs.map(p=>p.map(key))))return refusal('assets');
   return {valid:true,count:1};
 }

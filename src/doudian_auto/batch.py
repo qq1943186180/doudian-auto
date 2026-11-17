@@ -780,9 +780,20 @@ def record_baseline(task_id, owner, token, baseline, *, db_path=None):
         conn.execute('BEGIN IMMEDIATE')
         row = _execution_row(conn, task_id, owner, token, states={'ready'})
         expected_id = row['product_id']
+        mains_count = len(baseline.get('mains') or [])
+        details_count = len(baseline.get('details') or [])
+        # A planned (variable-slot) revision is checked against its own plan; a
+        # legacy baseline without a plan keeps the original full-slot requirement.
+        # The plan must also agree with what was actually read, never assert more
+        # slots than the listing has.
+        if 'slot_plan' in baseline:
+            plan = _slot_plan(baseline)
+            images_ok = (mains_count == plan['mains'] and details_count >= plan['details'])
+        else:
+            images_ok = (mains_count == 5 and details_count >= 4)
         if (str(baseline.get('product_id')) != expected_id or baseline.get('shop') != row['shop'] or
                 baseline.get('protected_complete') is not True or not baseline.get('protected') or
-                len(baseline.get('mains') or []) != 5 or len(baseline.get('details') or []) < 4):
+                not images_ok):
             raise DoudianError('baseline_incomplete', '店铺、商品ID、保护字段或图片基线未完整读回。')
         payload = json.dumps(baseline, ensure_ascii=False, sort_keys=True)
         digest = hashlib.sha256(payload.encode('utf-8')).hexdigest()
@@ -1530,10 +1541,18 @@ FULL_SLOT_PLAN = {'mains': 5, 'details': 4}
 
 
 def _slot_plan(baseline):
-    """How many main/detail slots this revision replaces, from the stored baseline."""
-    plan = (baseline or {}).get('slot_plan')
-    if not isinstance(plan, dict):
+    """How many main/detail slots this revision replaces, from the stored baseline.
+
+    Only a *missing* key means "old baseline": fall back to the full nine-slot
+    contract so the 61 historical rows behave exactly as before. A key that is
+    present but malformed is never silently downgraded to full slots — that would
+    turn a corrupt plan into a wrong readback expectation — so it fails closed.
+    """
+    if not isinstance(baseline, dict) or 'slot_plan' not in baseline:
         return dict(FULL_SLOT_PLAN)
+    plan = baseline['slot_plan']
+    if not isinstance(plan, dict):
+        raise DoudianError('invalid_slot_plan', '素材槽位计划不合法，已停止。')
     mains, details = plan.get('mains'), plan.get('details')
     if not (type(mains) is int and type(details) is int and
             1 <= mains <= FULL_SLOT_PLAN['mains'] and 1 <= details <= FULL_SLOT_PLAN['details']):
@@ -1660,8 +1679,12 @@ def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings,
     if len(miaoshou_after.get('details') or []) != len(before_groups['details']) or \
             len(doudian_after.get('details') or []) != len(before_groups['details']):
         raise DoudianError('final_detail_count_changed', '保存后详情图总数变化，拒绝确认目标映射。')
-    if (_image_keys(miaoshou_after['details'][4:]) != _image_keys(before_groups['details'][4:]) or
-            _image_keys(doudian_after['details'][4:]) != _image_keys(before_groups['details'][4:])):
+    # Everything after the planned detail prefix must still match the baseline,
+    # one image at a time. Slice from B (not a fixed 4) so a short plan with
+    # preserved tail images is still fully checked.
+    tail_from = plan['details']
+    if (_image_keys(miaoshou_after['details'][tail_from:]) != _image_keys(before_groups['details'][tail_from:]) or
+            _image_keys(doudian_after['details'][tail_from:]) != _image_keys(before_groups['details'][tail_from:])):
         raise DoudianError('final_detail_tail_changed', '保存后非目标详情图发生变化。')
     return finalized
 
@@ -2459,8 +2482,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                         'manifest_sha256': ready['manifest_sha256'], 'read_only': True,
                         'miaoshou': {'product_id': item['product_id'], 'shop': item['shop'],
                                      'complete': bool(miao_after.get('protected_complete') and
-                                                      len(miao_after.get('mains') or []) == 5 and
-                                                      len(miao_after.get('details') or []) >= 4),
+                                                      len(miao_after.get('mains') or []) >= run_plan['mains'] and
+                                                      len(miao_after.get('details') or []) >= run_plan['details']),
                                      'matches_target': miao_match,
                                      'protected_match': _miaoshou_protected_matches(
                                          miao_after.get('protected'), baseline.get('protected'),
@@ -2513,7 +2536,8 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 miao.open_product(item['product_id'], fresh=True)
                 miao_before = miao.read_product(item['product_id'])
                 from .miaoshou_batch_editor import require_distinct_detail_sources
-                require_distinct_detail_sources(miao_before['details'])
+                require_distinct_detail_sources(miao_before['details'],
+                                                replaced=min(4, len(miao_before['details'])))
                 if miao_before.get('protected', {}).get('startSaleType') is None:
                     raise DoudianError('shelf_mode_unknown',
                                        '妙手基线没有读回审核后的上架模式，未开始批量编辑。')
@@ -2544,6 +2568,13 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                                 'manifest_sha256': ready['manifest_sha256']}
                     run_plan = _slot_plan(baseline)
                     record_baseline(task_id, owner, claim['execution_token'], baseline, db_path=db_path)
+                    # The freshly built baseline is a superset of miao_before and
+                    # carries the slot plan. The write path below (prepare,
+                    # verify_prepared, finalize_target_mappings) reads the plan from
+                    # its baseline argument; a new task must pass this planned
+                    # baseline, not the raw read, or it falls back to five-four and
+                    # rejects every variable-slot listing before upload.
+                    miao_before = baseline
                 else:
                     baseline = _stored_execution_baseline(claim, ready['manifest_sha256'])
                     run_plan = _slot_plan(baseline)
@@ -2559,8 +2590,12 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                     miao_before = baseline
                     official_before = baseline['doudian_baseline']
                 target_assets = _target_asset_slots(manifest['assets'])
-                if len([x for x in target_assets if x[0] == 'mains']) != 5 or len(target_assets) != 9:
-                    raise DoudianError('asset_manifest_incomplete', '目标版本必须是5张主图和4张新详情图。')
+                expected_main_count = len([x for x in target_assets if x[0] == 'mains'])
+                expected_total = run_plan['mains'] + run_plan['details']
+                if expected_main_count != run_plan['mains'] or len(target_assets) != expected_total:
+                    raise DoudianError('asset_manifest_incomplete',
+                                       '目标版本素材数量与本次槽位计划不一致（需{0}主图、{1}详情）。'.format(
+                                           run_plan['mains'], run_plan['details']))
                 main_paths = [path for kind, _, path in target_assets if kind == 'mains']
                 detail_paths = [path for kind, _, path in target_assets if kind == 'details']
                 asset_paths = main_paths + detail_paths
@@ -2638,20 +2673,25 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                     miao_after.get('protected'), miao_before.get('protected'))
                 miao_match = bool(final_mappings) and _matches_miaoshou_target(
                     miao_before, miao_after, manifest['title'], final_mappings,
-                    preserve_warehouse=shelf_policy is not None)
+                    preserve_warehouse=shelf_policy is not None, plan=run_plan)
                 try:
                     compare_protected(official_before, official_after)
                     official_protected = True
                 except DoudianError:
                     official_protected = False
+                # official_before is the nested doudian baseline and has no
+                # slot_plan of its own; pass the run plan explicitly or a
+                # variable-slot readback silently falls back to the full 5/4
+                # expectation and always fails.
                 doudian_match = bool(final_mappings) and _matches_doudian_target(
-                    official_before, official_after, manifest['title'], final_mappings)
+                    official_before, official_after, manifest['title'], final_mappings, plan=run_plan)
                 evidence = {
                     'target_version': claim['target_version'], 'manifest_sha256': ready['manifest_sha256'],
                     'read_only': True,
                     'miaoshou': {'product_id': item['product_id'], 'shop': item['shop'],
-                                 'complete': bool(miao_after.get('protected_complete') and miao_after.get('mains')
-                                                  and len(miao_after.get('details') or []) >= 4),
+                                 'complete': bool(miao_after.get('protected_complete') and
+                                                  len(miao_after.get('mains') or []) >= run_plan['mains'] and
+                                                  len(miao_after.get('details') or []) >= run_plan['details']),
                                  'matches_target': miao_match,
                                  'protected_match': _miaoshou_protected_matches(
                                      miao_after.get('protected'), miao_before.get('protected'),
@@ -2850,7 +2890,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                     'manifest_sha256': ready['manifest_sha256'],
                     'previous_readback_sha256': claim.get('readback_hash'),
                     'current_title': miao_before['title'], 'target_title': manifest['title'],
-                    'images_match': len(final_before) == 9,
+                    'images_match': len(final_before) == run_plan['mains'] + run_plan['details'],
                     'detail_tail_match': True, 'official_protected_match': True,
                     'miao_other_fields_match': True, 'shelf_status_matches': True,
                     'repair_path': save_path,
@@ -2925,8 +2965,8 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                     'miaoshou': {
                         'product_id': item['product_id'], 'shop': item['shop'],
                         'complete': bool(miao_after.get('protected_complete') and
-                                         len(miao_after.get('mains') or []) == 5 and
-                                         len(miao_after.get('details') or []) >= 4),
+                                         len(miao_after.get('mains') or []) >= run_plan['mains'] and
+                                         len(miao_after.get('details') or []) >= run_plan['details']),
                         'matches_target': miao_content,
                         'protected_match': miao_repair_fields,
                         'title': miao_after.get('title'),

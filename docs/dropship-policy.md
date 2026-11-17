@@ -816,3 +816,47 @@ preflight 的门槛同样是 `main_count != 5 or detail_count < 4` → `writer_i
 双端槽位对比做不了。所有结论来自离线测试与只读的抖店侧读数。
 **首次真实使用应选 task 59**（2 SKU、5 主 2 详、属性齐全）先跑一遍，确认
 「上传 7 槽 → 妙手预览显示 5 主 2 详 → 保存 → 双端读回前 2 详为目标、其余详情保持原样」。
+
+### ⑱-a Codex 复查推翻「变长槽位已完成」：逻辑层已补全，UI 探针待实测
+
+- 🔴 **上一轮「代码完成、337 全绿」是假完成**：只改了读回比对和 preflight 门槛，**写入执行路径仍写死
+  5/4/9**。Codex 独立复查（`/tmp/codex-slotplan-review-20261118.md`）与 WorkBuddy 自查结论一致：
+  preflight 放行的变长商品会在写入时被固定槽位拒绝，且正常提交读回漏传 plan 必然失败。
+- **根因**：plan 只贯通了「读回/预检」，没贯通「写入/建基线/素材切分/保存守卫/标题修复」。
+- **已修的高危逻辑**（离线可证、已回归）：
+  ① `_slot_plan`/`_plan_from_baseline` 仅**缺键**才回退满槽；键存在但非 dict/非法一律 `invalid_slot_plan`
+  （旧实现把 `None/True/0/[]/str` 静默降级为满槽，等于拿坏数据构造错误读回预期）；
+  ② 正常提交读回 `_matches_doudian_target(official_before, ...)` 漏传 plan —— `official_before` 是嵌套
+  `doudian_baseline` 不含 slot_plan，会回退 5/4 让变长读回永远失败，改为显式 `plan=run_plan`；
+  ③ `record_baseline` 按 plan 校验并核对图片数与 plan 一致（无 plan 仍是 5/4）；
+  ④ 素材切分、三处 complete 检查、标题修复 `images_match` 全部按 plan；
+  ⑤ `_finalize_target_mappings` 尾图校验从固定 `[4:]` 改为 `[plan['details']:]`；
+  ⑥ `validate_batch_form_state`/`prepare` 入口与切片按 plan 驱动。
+- **未改（证据不足不盲改）**：`miaoshou_batch_editor.py` 的 UI 探针 `xs.length===5/4`、
+  `_ensure_detail_rows(4)`、`_upload_slot_image(...,5)`。它们判断妙手批量编辑页的真实控件行数，
+  依赖「变长商品页面显示几行」这一**未实测事实**；妙手授权失效 + Ego task space ended，本轮无法观测。
+  列为真实验证第一观察项，不把页面行数当成已知。
+- **Codex 第二轮复检又发现两处上游阻断**（均已修）：
+  ⑦ `miaoshou_editor.parse_edit_response` 写死 5 主/≥4 详 —— 它是变长链路**最上游**（建 plan 之前先
+  `read_product`），5主2详/4主4详直接 `miaoshou_images_incomplete`；放宽为 1–5 主、≥1 详；
+  ⑧ `require_distinct_detail_sources` 检查 `keys[:4]`，短计划带保留尾图时尾图重复被误拦 —— 加
+  `replaced=B` 参数只查前 B 张待替换源的唯一性。
+- **prepare 补 4 行 vs 校验冲突的解决**：`observe()` 的 `detail_pairs` 来自 `.base-edit-list`（含 2 个
+  add-img-box），`prepare` 补到 4 行，空行是 `{source:None,target:None}`。表单/提交/保存守卫统一为
+  **前 B 行是目标替换，B 之后余行必须 source 和 target 都为空**（非空余行＝未审替换，拒绝），
+  target_urls/mappings/pairs 只取前 B 行。满槽商品 B=4 行为不变，变长商品页面显示 2 行或补到 4 行都自洽。
+- **Codex 第三轮复检又发现两处控件→数据转换缺陷**（均已修）：
+  ⑨ `ego_runtime.mjs::inspectBatchSave` 原生保存守卫要求页面全部 main/pairs 与 guard 完全相等，
+  B<4 的空余行让它 `valid:false`（assets）→ `trimSuffixEmpty` 只剔除**尾部**空控件/空行后比较，
+  空项出现在非空项之前仍拒绝；⑩ `observe()` 把空主图控件计成 None（4 主图→"4 URL+1 null"）→
+  主图 `map(imgUrl).filter(Boolean)`，详情 pairs 保持不过滤以便校验层看到空余行；`_save_guard` 补齐
+  非空余行拒绝，表单/提交/保存守卫三处语义一致。
+- **教训**：放宽入口门槛（preflight）之前，必须先把「门槛背后整条写入链」贯通；否则只是把 blocked
+  从预检阶段挪到写入阶段，甚至让读回永远失败。测试只覆盖读回前缀，没覆盖写入链路，是这次假完成的根因。
+  更深的教训有三条：**读取层（parse_edit_response）比 plan 构建更早执行**，任何"按商品自身数量"的契约
+  必须先放宽读取层；**页面固定控件 ≠ 商品槽位**，空占位控件在数据转换时必须剔除；**原生保存守卫是
+  独立于 Python 校验器的第二道闸**，两处都要按同一 plan 语义改，否则 Python 过了 JS 仍在保存时拒绝。
+- **最终复检结论（Codex 第五轮，2026-11-18）**：ready 分支已补 `miao_before = baseline`，新任务与续办
+  两条路径都把带 `slot_plan` 的 baseline 传给 `prepare` / `verify_prepared` / `finalize`；离线层面
+  **没有确定可复现的高危残留**。终态回归：`pytest 830 passed`、`npm test 124 pass / 0 fail`，
+  仍**零真实商品写入**；task 59 真机实测前不宣称端到端可用。
