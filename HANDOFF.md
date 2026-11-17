@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261116-009（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261117-001（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,21 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261117-001 · 194-211 · ⚠️ 出图通道不稳定（非网络问题），素材与脚本已就绪
+
+- 状态：**blocked-on-channel**。队列 **22 verified / 33 blocked / 6 closed**（未变）。零商品写入。
+- ✅ **纠正上一轮判断**：不是网络断了。`curl -x http://127.0.0.1:7890 https://chatgpt.com` 返回 **200**，
+  系统代理已启用（`ProxyEnable=1`、`ProxyServer=127.0.0.1:7890`）；GitHub 也通，`888873d` 已推送。
+  直连（不走代理）才会 SSL 失败，所以 `curl` 直连测试本身有误导性。
+- 🔴 **出图连续 4 次 600s 超时**，期间定位并修复两个真 bug：
+  1. `prepare_tab` 用 URL 前缀 `g-p-6adb` 绑定，**绑到了同项目下的旧会话**（11-11 猫窝对话、4 个附件），提示词没进干净会话；
+  2. 改为「对比 navigate 前后的标签集合，只绑本次新增的那个」（`PREP bound-new-tab p9`）。
+- 修完后仍超时：新标签 `p9` 在超时后已消失，读不到会话内容，**无法确认提示词是发出未响应、还是被拒绝**。
+  按纪律**停止自动重发**（每次 ~10 分钟且可能重复消耗额度）。
+- 已就绪（通道一通即可用）：`task39/refs/` 参考图（由 AVIF 官方图转码）、
+  `tb-auto/work/doudian-20261114/gen_task.py`（按槽位、断点续传、新标签绑定）。
+- 下一步（需人工一眼）：在 ChatGPT 生图项目里手动发一张看是否正常出图，把「能否出图」与「通道代码」分开定位。
 
 ### T-20261116-009 · 194-210 · ✅ Codex 素材来源定案 + 12 件探测翻转 + 网络阻塞
 
