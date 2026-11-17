@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261117-001（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261117-003（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,38 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261117-003 · 194-213 · ⚠️ 39 的 9 图已出并通过复核，但属性缺 7 项
+
+- 状态：**part-done**。队列未变（22 / 33 / 6）。零商品写入。
+- ✅ **task 39 九图完成**：5 主图 1254²、4 详情 1024×1536，sha 全唯一；
+  `validate_agent_artifacts` 实跑 **approved=True**（9 张）。
+  清单 `work/materials-20261114/task39/artifacts-v1.json`，图在 `task39-gen/`。
+- ✅ 出图质量把关：首轮 9 张里 **4 张不合格**（main-2 三杆+沐浴球、main-4 三杆、
+  detail-3 蓝色光圈+双手套、detail-4 三杆），收紧提示词（明确「只有两根杆」+ 禁止参考图外物品）后重出，全部通过。
+- 🔴 **真正的拦路石变成了属性**：`preflight --recheck-blocked` 显示
+  `required_attributes.completion_percent=22`，**缺 7 项必填**：
+  安装方式、是否可接触食品、是否进口、材质类型、**型号**、**产品标准编号**、**生产企业地址**。
+  前四项可从商品事实推断（吸盘式 / 否 / 否 / ABS 塑料），
+  **后三项必须供应商真实数据**——这正是项目纪律里「待真实参数」的类别。
+- ⚠️ 本次预检 `miaoshou_error=ego_error`（妙手探测未完成，ego 空间又被回收），
+  不影响属性结论，但说明 `probe.sh` 那套空间对齐需要固化进 preflight 调用链。
+- 结论：**39 不再卡在图上**。要往下走，得先补那 3 项供应商参数；补齐后才能回队。
+
+### T-20261117-002 · 194-212 · ✅ 出图通道修通：点击无效，Enter 有效
+
+- 状态：**done（通道已通，task 39 出图中）**。队列未变（22/33/6），零商品写入。
+- 🔴 **根因确认**：`_SEND_BUTTON_JS` 能正确定位到 `aria="发送" type="submit"` 的按钮，
+  Playwright 的 `page.click` 也不报错，**但输入框内容一点没动**（267 字原样保留）。
+  加发送确认后 1 分 14 秒即报 `SEND_FAILED`，不再空等 600s。
+- ✅ **兜底有效**：新增 `_press_enter()`（focus 编辑器 → CDP `Input.dispatchKeyEvent`
+  的 keyDown/keyUp）。实测 `点击发送未生效，改用 Enter 发送` 后**成功出图**
+  （1254×1254、64 秒）。所以这条路是「点不动就走 Enter」，不是「发不出去」。
+- 证据：`~/.tb-auto/send-evidence.jsonl`（`after_fill`/`after_send` 两行，含草稿长度、URL、
+  alerts/statuses、页面尾部与三态 verdict）。
+- 代码：`tb-auto/src/services/web_gpt_image_channel.py`（`_press_enter`、`_confirm_sent`、`_draft_len`）。
+- ⚠️ Codex 另指出 `find_tab` 用 `includes` 匹配会绑旧页并 `retarget()` 关新页，
+  `gen_task.py::prepare_tab` 的 `PREP bound-new-tab` 只是候选标签、不是绑定证明 —— **尚未修**。
 
 ### T-20261117-001 · 194-211 · ⚠️ 出图通道不稳定（非网络问题），素材与脚本已就绪
 
