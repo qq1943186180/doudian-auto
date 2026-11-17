@@ -210,9 +210,14 @@ def _validate_snapshot(snapshot, identity):
             (snapshot['detail_status'] == 'empty') != (not snapshot['details'])):
         raise DoudianError('official_content_incomplete', '官方标题、主图或详情数据未完整读取。')
     main_count, detail_count = len(snapshot['mains']), len(snapshot['details'])
-    if main_count != 5 or detail_count < 4 or snapshot['detail_status'] != 'ready':
+    # The writer replaces images by matching the old one, so the reachable slot count is a
+    # fact about the listing. A product with two details gets two detail slots, not four:
+    # demanding four there meant "you have no third source picture", which no amount of
+    # generation can fix. The caps stay at five mains and four details, and detail images
+    # beyond the fourth are still left untouched by the per-slot replacement.
+    if (not 1 <= main_count <= 5) or detail_count < 1 or snapshot['detail_status'] != 'ready':
         raise DoudianError('writer_image_slots_incomplete',
-            f'当前写入器需要正好5张主图和至少4张已就绪详情图；官方实读主图{main_count}张、'
+            f'当前写入器需要1至5张主图和至少1张已就绪详情图（详情最多替换前4张）；官方实读主图{main_count}张、'
             f'详情{detail_count}张（状态={snapshot["detail_status"]}），不作为新素材候选。')
     from .miaoshou_batch_editor import require_distinct_detail_sources
     require_distinct_detail_sources(snapshot['details'])

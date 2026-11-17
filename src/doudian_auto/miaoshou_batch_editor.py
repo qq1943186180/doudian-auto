@@ -165,12 +165,14 @@ def validate_submission_ready_state(state, *, product_id, shop, title, mappings)
             state.get('timer_checked') is not False or state.get('overlength') != 'fail'):
         raise DoudianError('miaoshou_batch_submit_form_changed', '提交预览中的字段、标题或定时选项发生变化。')
     by_slot = {item.get('slot'): item for item in mappings if isinstance(item, dict)}
-    expected_slots = {*(f'mains:{slot}' for slot in range(1, 6)),
-                      *(f'details:{slot}' for slot in range(1, 5))}
-    if set(by_slot) != expected_slots or len(mappings) != len(expected_slots):
-        raise DoudianError('uploads_incomplete', '提交预览前缺少完整的9个素材槽位映射。')
-    expected_mains = [resource_key(by_slot[f'mains:{slot}'].get('remote_url')) for slot in range(1, 6)]
-    expected_details = [resource_key(by_slot[f'details:{slot}'].get('remote_url')) for slot in range(1, 5)]
+    plan = _plan_from_slots(set(by_slot))
+    if len(mappings) != plan['mains'] + plan['details']:
+        raise DoudianError('uploads_incomplete',
+                           '提交预览前缺少完整的{0}个素材槽位映射。'.format(plan['mains'] + plan['details']))
+    expected_mains = [resource_key(by_slot[f'mains:{slot}'].get('remote_url'))
+                      for slot in range(1, plan['mains'] + 1)]
+    expected_details = [resource_key(by_slot[f'details:{slot}'].get('remote_url'))
+                        for slot in range(1, plan['details'] + 1)]
     actual_details = [resource_key(item.get('target')) for item in state.get('detail_pairs') or []]
     if ([resource_key(item) for item in state.get('main_images') or []] != expected_mains or
             actual_details != expected_details):
@@ -183,6 +185,23 @@ def validate_submission_ready_state(state, *, product_id, shop, title, mappings)
         raise DoudianError('miaoshou_batch_modal_open', '妙手仍有打开的图片/筛选窗口，不能开始保存。')
     return True
 
+
+
+def _plan_from_slots(slots):
+    """Validate a slot set and return how many main/detail slots it covers.
+
+    The writer replaces images by matching the old one, so a listing with two detail
+    images cannot supply a third and fourth source picture. Slot sets therefore have to be
+    contiguous and within the writer's cap instead of being a fixed nine. Numbering is
+    still checked so a missing middle slot cannot pass as a shorter plan.
+    """
+    mains = sorted(int(item.split(':')[1]) for item in slots if item.startswith('mains:'))
+    details = sorted(int(item.split(':')[1]) for item in slots if item.startswith('details:'))
+    if mains != list(range(1, len(mains) + 1)) or details != list(range(1, len(details) + 1)):
+        raise DoudianError('uploads_incomplete', '素材槽位编号不连续，已停止。')
+    if not (1 <= len(mains) <= 5 and 1 <= len(details) <= 4):
+        raise DoudianError('uploads_incomplete', '素材槽位数量超出写入器支持范围，已停止。')
+    return {'mains': len(mains), 'details': len(details)}
 
 class MiaoshouBatchEditor:
     """Drive the observed batch-edit form using visible page controls only."""
@@ -622,7 +641,8 @@ class MiaoshouBatchEditor:
             '修改预览没有精确收敛到目标商品。', seconds=30)
         return {'writer_revision': WRITER_REVISION, 'fresh_form': fresh_form,
                 'reused_slots': reused,
-                'uploaded_slots': [*(f'mains:{i}' for i in range(1, 6)), *(f'details:{i}' for i in range(1, 5))]}
+                'uploaded_slots': [*(f'mains:{i}' for i in range(1, len(main_paths) + 1)),
+                                   *(f'details:{i}' for i in range(1, len(detail_paths) + 1))]}
 
     @staticmethod
     def _mapping(kind, slot, check):
@@ -794,7 +814,9 @@ class MiaoshouBatchEditor:
         return {'product_id': str(product_id), 'shop': self.shop, 'title': title,
                 'top_fields': sorted(_TOP_FIELDS), 'required_fields': sorted(_REQUIRED_FIELDS),
                 'options': sorted(_REQUIRED_OPTIONS),
-                'mains': [by_slot[f'mains:{i}'] for i in range(1, 6)],
+                'mains': [by_slot[key] for key in sorted(
+                    (key for key in by_slot if key.startswith('mains:')),
+                    key=lambda key: int(key.split(':')[1]))],
                 'pairs': [[pair['source'], by_slot[f'details:{i}']]
                           for i, pair in enumerate(state['detail_pairs'], 1)]}
 

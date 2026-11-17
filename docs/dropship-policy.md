@@ -792,3 +792,27 @@ preflight 的门槛同样是 `main_count != 5 or detail_count < 4` → `writer_i
 3. **结案为契约不适用**：承认写入器覆盖不到这类商品，不再尝试。诚实，但等于放弃这 7 件。
 
 🔴 **不要**把这条当成「再生成几张图」去处理 —— 生成出来的新图没有对应的原图槽位，写入时依然无槽可放。
+
+**已实施：变长槽位（2026-11-18，选项 2）**。核心是给每个版本记一个**槽位计划**，而不是写死 9：
+
+- `baseline['slot_plan'] = {'mains': A, 'details': B}`，其中
+  `A = min(5, 主图数)`、`B = min(4, 详情数)`，在建基线时由**该商品自己的快照**算出
+  （`batch._plan_for_snapshot`）。
+- 🔴 **缺省即满槽**：`_slot_plan()` 在基线没有这个键时返回 `{'mains': 5, 'details': 4}`，
+  所以 61 件历史基线的行为**一点没变**，22 件已验证的也不会因为这次改动而无法重跑。
+- 计划不合法（0、超上限、bool、None）→ `invalid_slot_plan`，失败关闭，不猜。
+- 读回语义仍是**前缀比较**：前 B 张必须是目标图，第 B 张之后必须与基线原图**逐张一致**；
+  槽位数变短**没有**放宽尾部校验（`test_readback_compares_only_the_planned_prefix` 钉住）。
+- 改动位置：`batch.py`（`_slot_plan`/`_expected_slots`/`_plan_for_snapshot`、
+  两处 matches、`_finalize_target_mappings`、`record_writer_preparation`、
+  `begin_submission`、标题修复提交、`record_execution_readback`、`verified_acceptance_results`、
+  `validate_agent_artifacts`）、`miaoshou_batch_editor.py`（`_plan_from_slots`、提交预览校验、
+  `uploaded_slots`、`_save_guard.mains`）、`ego_runtime.mjs`（预览主图/详情数量）、
+  `preflight.py`（门槛放宽为 1–5 主、≥1 详且 `ready`）。
+- 新增测试 `tests/test_slot_plan.py` **14 条**：满槽缺省、计划逐字生效、六种非法计划、
+  计划来自商品自身、无槽位即停、槽位必须连续且不超上限、读回只比计划前缀且尾部仍严格。
+
+⚠️ **这次没有真实商品验证**：妙手登录态在改动期间失效（`miaoshou_authorization_required`），
+双端槽位对比做不了。所有结论来自离线测试与只读的抖店侧读数。
+**首次真实使用应选 task 59**（2 SKU、5 主 2 详、属性齐全）先跑一遍，确认
+「上传 7 槽 → 妙手预览显示 5 主 2 详 → 保存 → 双端读回前 2 详为目标、其余详情保持原样」。

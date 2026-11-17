@@ -301,10 +301,13 @@ def validate_agent_artifacts(path, expected_product_id, *, expected_shop=None,
     if errors:
         raise DoudianError('invalid_title', '；'.join(errors))
     mains, details = data.get('mains'), data.get('details')
-    if not isinstance(mains, list) or len(mains) != 5:
-        raise DoudianError('invalid_mains', '必须提供按顺序排列的5张方主图。')
-    if not isinstance(details, list) or len(details) != 4:
-        raise DoudianError('invalid_details', '目标版本必须恰好提供4张新详情图；其余线上详情图由妙手逐槽保留。')
+    # Slot counts follow the listing: the writer replaces images by matching the old one,
+    # so a product with two detail images has no third and fourth source picture. The cap
+    # still applies, and the plan recorded in the baseline is what the write path checks.
+    if not isinstance(mains, list) or not 1 <= len(mains) <= 5:
+        raise DoudianError('invalid_mains', '必须提供按顺序排列的1至5张方主图。')
+    if not isinstance(details, list) or not 1 <= len(details) <= 4:
+        raise DoudianError('invalid_details', '必须提供1至4张新详情图；其余线上详情图由妙手逐槽保留。')
     records = []
     paths = set()
     for is_main, group in ((True, mains), (False, details)):
@@ -903,12 +906,13 @@ def record_writer_preparation(task_id, owner, token, preparation, *, db_path=Non
         conn.execute('BEGIN IMMEDIATE')
         row = _execution_row(conn, task_id, owner, token, states={'editing', 'uploaded'})
         mappings = json.loads(row['upload_map_json'] or '[]')
-        slots = {*(f'mains:{i}' for i in range(1, 6)), *(f'details:{i}' for i in range(1, 5))}
+        slots = _expected_slots(_slot_plan(json.loads(row['baseline_json'] or '{}')))
         if (preparation.get('writer_revision') != WRITER_REVISION or
                 set(preparation.get('uploaded_slots') or []) != slots or
-                len(mappings) != 9 or {m.get('slot') for m in mappings} != slots or
+                len(mappings) != len(slots) or {m.get('slot') for m in mappings} != slots or
                 any(not m.get('content_verification') for m in mappings)):
-            raise DoudianError('writer_preparation_incomplete', '新上传路径缺少9槽内容核验，未保存。')
+            raise DoudianError('writer_preparation_incomplete',
+                               f'新上传路径缺少{len(slots)}槽内容核验，未保存。')
         proof = {**preparation, 'product_id': row['product_id'], 'target_version': row['target_version'],
                  'manifest_sha256': row['artifacts_hash'], 'baseline_sha256': row['baseline_hash'],
                  'prepared_assets': mappings}
@@ -930,11 +934,10 @@ def begin_submission(task_id, owner, token, *, db_path=None):
         conn.execute('BEGIN IMMEDIATE')
         row = _execution_row(conn, task_id, owner, token, states={'uploaded'})
         mappings = json.loads(row['upload_map_json'] or '[]')
-        expected = {*(f'mains:{slot}' for slot in range(1, 6)),
-                    *(f'details:{slot}' for slot in range(1, 5))}
+        expected = _expected_slots(_slot_plan(json.loads(row['baseline_json'] or '{}')))
         found = [item.get('slot') for item in mappings if _confirmed_upload_mapping(item)]
         if len(mappings) != len(expected) or set(found) != expected or len(found) != len(expected):
-            raise DoudianError('uploads_incomplete', '5张主图和前4张详情图的永久素材均未完整读回确认，未保存。')
+            raise DoudianError('uploads_incomplete', '全部目标槽位的永久素材均未完整读回确认，未保存。')
         if row['submission_state'] == 'unknown':
             raise DoudianError('submission_unknown', '保存结果未知，只能只读核查。')
         if row['submission_attempts'] and row['submission_state'] != 'failed':
@@ -1120,8 +1123,7 @@ def begin_title_repair_submission(task_id, owner, token, proof, *, db_path=None)
             validate_title_preview(proof.get('title_only_preview') or {}, row['product_id'], row['shop'],
                                    proof['current_title'], proof['target_title'])
         mappings = json.loads(row['upload_map_json'] or '[]')
-        expected_slots = {*(f'mains:{slot}' for slot in range(1, 6)),
-                          *(f'details:{slot}' for slot in range(1, 5))}
+        expected_slots = _expected_slots(_slot_plan(json.loads(row['baseline_json'] or '{}')))
         if (len(mappings) != len(expected_slots) or
                 any(not isinstance(item, dict) for item in mappings) or
                 {item.get('slot') for item in mappings if _confirmed_upload_mapping(item)} != expected_slots or
@@ -1239,8 +1241,7 @@ def record_execution_readback(task_id, owner, token, evidence, *, db_path=None):
         final_mappings = evidence.get('final_asset_mappings')
         map_payload = None
         if matched and (has_staged or final_mappings is not None):
-            expected_slots = {*(f'mains:{slot}' for slot in range(1, 6)),
-                              *(f'details:{slot}' for slot in range(1, 5))}
+            expected_slots = _expected_slots(_slot_plan(json.loads(row['baseline_json'] or '{}')))
             current_by_slot = {item.get('slot'): item for item in current_mappings
                                if isinstance(item, dict)}
             final_by_slot = {item.get('slot'): item for item in final_mappings or []
@@ -1346,8 +1347,8 @@ def verified_acceptance_results(product_ids, *, db_path=None):
                 ORDER BY product_id''', ids).fetchall()
         from .miaoshou_batch_editor import WRITER_REVISION
         results = []
-        slots = {*(f'mains:{i}' for i in range(1, 6)), *(f'details:{i}' for i in range(1, 5))}
         for row in rows:
+            slots = _expected_slots(_slot_plan(json.loads(row['baseline_json'] or '{}')))
             intent = json.loads(row['submission_intent_json'] or '{}')
             prepared = intent.get('writer_preparation') or {}
             assets = prepared.get('prepared_assets') or []
@@ -1357,7 +1358,7 @@ def verified_acceptance_results(product_ids, *, db_path=None):
                     prepared.get('target_version') != row['target_version'] or
                     prepared.get('manifest_sha256') != row['artifacts_hash'] or
                     prepared.get('baseline_sha256') != row['baseline_hash'] or
-                    len(assets) != 9 or {m.get('slot') for m in assets} != slots or
+                    len(assets) != len(slots) or {m.get('slot') for m in assets} != slots or
                     any((m.get('content_verification') or {}).get('source_sha256') != m.get('source_sha256') or
                         (m.get('content_verification') or {}).get('remote_url') != m.get('remote_url') or
                         (m.get('content_verification') or {}).get('match') not in ('bytes', 'pixels') for m in assets)):
@@ -1513,13 +1514,50 @@ def _target_asset_slots(assets):
             [('details', slot, asset['path']) for slot, asset in enumerate(details, 1)])
 
 
-def _matches_miaoshou_target(before, after, title, mappings, *, preserve_warehouse=False):
-    return (_matches_miaoshou_content(before, after, title, mappings) and
+def _matches_miaoshou_target(before, after, title, mappings, *, preserve_warehouse=False, plan=None):
+    return (_matches_miaoshou_content(before, after, title, mappings, plan) and
             _miaoshou_protected_matches(after.get('protected'), before.get('protected'),
                                         preserve_warehouse=preserve_warehouse))
 
 
-def _matches_miaoshou_content(before, after, title, mappings):
+# The writer replaces images by matching the old one, so how many slots a revision touches
+# is a fact about the listing rather than a constant: a product with two detail images has
+# no third and fourth source image for "match the old picture" to find. The plan lives in
+# the baseline because every helper below only ever sees a queue row. A baseline written
+# before this key existed has no plan and keeps the full-slot behaviour, so nothing that
+# used to be checked stops being checked.
+FULL_SLOT_PLAN = {'mains': 5, 'details': 4}
+
+
+def _slot_plan(baseline):
+    """How many main/detail slots this revision replaces, from the stored baseline."""
+    plan = (baseline or {}).get('slot_plan')
+    if not isinstance(plan, dict):
+        return dict(FULL_SLOT_PLAN)
+    mains, details = plan.get('mains'), plan.get('details')
+    if not (type(mains) is int and type(details) is int and
+            1 <= mains <= FULL_SLOT_PLAN['mains'] and 1 <= details <= FULL_SLOT_PLAN['details']):
+        raise DoudianError('invalid_slot_plan', '素材槽位计划不合法，已停止。')
+    return {'mains': mains, 'details': details}
+
+
+def _plan_for_snapshot(snapshot):
+    """Slot plan for a listing about to be written, from its own image counts."""
+    mains = len((snapshot or {}).get('mains') or [])
+    details = len((snapshot or {}).get('details') or [])
+    if not (1 <= mains <= FULL_SLOT_PLAN['mains']) or details < 1:
+        raise DoudianError('writer_image_slots_incomplete',
+                           '商品主图或详情数量不足以确定素材槽位，已停止。')
+    return {'mains': mains, 'details': min(FULL_SLOT_PLAN['details'], details)}
+
+
+def _expected_slots(plan):
+    return {*(f'mains:{i}' for i in range(1, plan['mains'] + 1)),
+            *(f'details:{i}' for i in range(1, plan['details'] + 1))}
+
+
+def _matches_miaoshou_content(before, after, title, mappings, plan=None):
+    plan = plan or _slot_plan(before)
     if after.get('title') != title or after.get('protected_complete') is not True:
         return False
     target_main = [item['remote_key'] for item in sorted(
@@ -1530,12 +1568,14 @@ def _matches_miaoshou_content(before, after, title, mappings):
         key=lambda item: int(item['slot'].split(':')[1]))]
     before_details = _image_keys(before.get('details'))
     after_details = _image_keys(after.get('details'))
-    return (_image_keys(after.get('mains')) == target_main and len(target_main) == 5 and
-            len(target_details) == 4 and len(after_details) == len(before_details) and
-            after_details[:4] == target_details and after_details[4:] == before_details[4:])
+    mains, details = plan['mains'], plan['details']
+    return (_image_keys(after.get('mains')) == target_main and len(target_main) == mains and
+            len(target_details) == details and len(after_details) == len(before_details) and
+            after_details[:details] == target_details and after_details[details:] == before_details[details:])
 
 
-def _matches_doudian_target(before, after, title, mappings):
+def _matches_doudian_target(before, after, title, mappings, plan=None):
+    plan = plan or _slot_plan(before)
     from .workflow import compare_protected
 
     try:
@@ -1552,20 +1592,22 @@ def _matches_doudian_target(before, after, title, mappings):
         key=lambda item: int(item['slot'].split(':')[1]))]
     before_details = _image_keys(before.get('details'))
     after_details = _image_keys(after.get('details'))
-    return (_image_keys(after.get('mains')) == target_main and len(target_main) == 5 and
-            len(target_details) == 4 and len(after_details) == len(before_details) and
-            after_details[:4] == target_details and after_details[4:] == before_details[4:])
+    mains, details = plan['mains'], plan['details']
+    return (_image_keys(after.get('mains')) == target_main and len(target_main) == mains and
+            len(target_details) == details and len(after_details) == len(before_details) and
+            after_details[:details] == target_details and after_details[details:] == before_details[details:])
 
 
 def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings, *, asset_paths=None,
                               qualified_reuse=None):
     """Resolve pre-save temp URLs to permanent IDs only after dual server readback."""
-    expected = {*(f'mains:{slot}' for slot in range(1, 6)),
-                *(f'details:{slot}' for slot in range(1, 5))}
+    plan = _slot_plan(baseline)
+    expected = _expected_slots(plan)
     if (not isinstance(mappings, list) or len(mappings) != len(expected) or
             any(not _confirmed_upload_mapping(item) for item in mappings) or
             {item['slot'] for item in mappings} != expected):
-        raise DoudianError('final_asset_mapping_incomplete', '保存前没有完整的9个槽位素材证据。')
+        raise DoudianError('final_asset_mapping_incomplete',
+                           '保存前没有完整的{0}个槽位素材证据。'.format(len(expected)))
     miao_groups = {'mains': miaoshou_after.get('mains') or [],
                    'details': miaoshou_after.get('details') or []}
     official_groups = {'mains': doudian_after.get('mains') or [],
@@ -1573,9 +1615,11 @@ def _finalize_target_mappings(baseline, miaoshou_after, doudian_after, mappings,
     before_groups = {'mains': baseline.get('mains') or [],
                      'details': baseline.get('details') or []}
     by_slot = {item['slot']: item for item in mappings}
-    paths_by_slot = dict(zip([*(f'mains:{i}' for i in range(1, 6)), *(f'details:{i}' for i in range(1, 5))], asset_paths or []))
+    ordered_slots = [*(f'mains:{i}' for i in range(1, plan['mains'] + 1)),
+                     *(f'details:{i}' for i in range(1, plan['details'] + 1))]
+    paths_by_slot = dict(zip(ordered_slots, asset_paths or []))
     finalized = []
-    for group, count in (('mains', 5), ('details', 4)):
+    for group, count in (('mains', plan['mains']), ('details', plan['details'])):
         if len(miao_groups[group]) < count or len(official_groups[group]) < count:
             raise DoudianError('final_asset_readback_incomplete', f'{group} 目标图片没有双端完整读回。')
         for slot in range(1, count + 1):
@@ -2384,6 +2428,7 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                 if (claim['state'] in ('submitted', 'blocked') and
                         not claim.get('prewrite_recovery')):
                     baseline = _stored_execution_baseline(claim, ready['manifest_sha256'])
+                    run_plan = _slot_plan(baseline)
                     mappings = json.loads(claim.get('upload_map_json') or '[]')
                     official_before = baseline['doudian_baseline']
                     miao_read = MiaoshouEditor(bridge, item['shop'], session=session)
@@ -2400,14 +2445,15 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                         miao_after.get('protected'), baseline.get('protected'))
                     miao_match = bool(final_mappings) and _matches_miaoshou_target(
                         baseline, miao_after, manifest['title'], final_mappings,
-                        preserve_warehouse=shelf_policy is not None)
+                        preserve_warehouse=shelf_policy is not None, plan=run_plan)
                     try:
                         compare_protected(official_before, official_after)
                         official_protected = True
                     except DoudianError:
                         official_protected = False
                     doudian_match = bool(final_mappings) and _matches_doudian_target(
-                        official_before, official_after, manifest['title'], final_mappings)
+                        official_before, official_after, manifest['title'], final_mappings,
+                        plan=run_plan)
                     evidence = {
                         'target_version': claim['target_version'],
                         'manifest_sha256': ready['manifest_sha256'], 'read_only': True,
@@ -2493,11 +2539,14 @@ def run_batch(endpoint, *, batch_id=None, product_ids=None, limit=1, owner='code
                     raise DoudianError('warehouse_scope_only', '当前批量写入只接受明确在仓库的商品。')
                 if claim['state'] == 'ready':
                     baseline = {**miao_before, 'doudian_baseline': official_before,
+                                'slot_plan': _plan_for_snapshot(official_before),
                                 'target_version': claim['target_version'],
                                 'manifest_sha256': ready['manifest_sha256']}
+                    run_plan = _slot_plan(baseline)
                     record_baseline(task_id, owner, claim['execution_token'], baseline, db_path=db_path)
                 else:
                     baseline = _stored_execution_baseline(claim, ready['manifest_sha256'])
+                    run_plan = _slot_plan(baseline)
                     if not _matches_saved_baseline(miao_before, official_before, baseline):
                         raise DoudianError('baseline_changed', '线上商品已不同于中断前基线；已停止续办。')
                     if claim.get('prewrite_recovery'):
@@ -2766,6 +2815,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                 ready = load_ready_artifacts(task_id, db_path=db_path, require_visual_review=False)
                 manifest = ready['manifest']
                 baseline = _stored_execution_baseline(claim, ready['manifest_sha256'])
+                run_plan = _slot_plan(baseline)
                 if manifest.get('product_id') != item['product_id']:
                     raise DoudianError('artifact_product_mismatch', '标题修复目标与批次商品ID不匹配。')
                 mappings = json.loads(claim.get('upload_map_json') or '[]')
@@ -2852,7 +2902,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                 except DoudianError:
                     final_after = None
                 miao_content = bool(final_after) and _matches_miaoshou_content(
-                    baseline, miao_after, manifest['title'], final_after)
+                    baseline, miao_after, manifest['title'], final_after, run_plan)
                 after_shelf_policy = _warehouse_shelf_preservation(
                     miao_after.get('protected'), baseline.get('protected'))
                 miao_repair_fields = _miaoshou_protected_matches(
@@ -2864,7 +2914,7 @@ def repair_accepted_title_mismatches(endpoint, *, product_ids, owner='codex-miao
                 except DoudianError:
                     official_repair_fields = False
                 doudian_match = bool(final_after) and _matches_doudian_target(
-                    official_before, official_after, manifest['title'], final_after)
+                    official_before, official_after, manifest['title'], final_after, run_plan)
                 shelf_mode_matches = (miao_after.get('protected', {}).get('startSaleType') ==
                                       baseline.get('protected', {}).get('startSaleType'))
                 evidence = {

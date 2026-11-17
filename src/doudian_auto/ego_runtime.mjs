@@ -41,7 +41,7 @@ export function inspectBatchSave(expected) {
   const read=box=>{const img=box?.querySelector('img');return img?key(img.currentSrc||img.src):null;};
   const mains=[...document.querySelectorAll('.replace-img-item .add-img-box')].filter(visible).map(read);
   const pairs=[...document.querySelectorAll('.base-edit-list')].filter(x=>visible(x)&&x.querySelectorAll('.add-img-box').length===2).map(x=>[...x.querySelectorAll('.add-img-box')].map(read));
-  if(mains.length!==5||pairs.length!==4||JSON.stringify(mains)!==JSON.stringify(expected.mains.map(key))||JSON.stringify(pairs)!==JSON.stringify(expected.pairs.map(p=>p.map(key))))return refusal('assets');
+  if(mains.length!==expected.mains.length||pairs.length!==expected.pairs.length||JSON.stringify(mains)!==JSON.stringify(expected.mains.map(key))||JSON.stringify(pairs)!==JSON.stringify(expected.pairs.map(p=>p.map(key))))return refusal('assets');
   return {valid:true,count:1};
 }
 

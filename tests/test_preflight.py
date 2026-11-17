@@ -200,7 +200,7 @@ def test_partial_required_attribute_progress_and_unobserved_protected_blocks_fai
     assert result['candidate_product_ids'] == []
 
 
-@pytest.mark.parametrize('main_count,detail_count', [(4, 4), (5, 3)])
+@pytest.mark.parametrize('main_count,detail_count', [(6, 4), (0, 4)])
 def test_official_image_slots_must_satisfy_current_writer_before_generating_assets(
         queue, browser, main_count, detail_count):
     browser.snapshots[IDS[0]] = _snapshot(queue.rows[0], main_count=main_count, detail_count=detail_count)
@@ -217,6 +217,19 @@ def test_official_image_slots_must_satisfy_current_writer_before_generating_asse
     assert second['evidence']['detail_count'] == 4
     assert result['candidate_product_ids'] == [IDS[1]]
     assert queue.db.read_bytes() == before
+
+
+@pytest.mark.parametrize('main_count,detail_count', [(5, 2), (4, 4), (5, 3)])
+def test_fewer_slots_than_the_writer_cap_are_accepted(queue, browser, main_count, detail_count):
+    # The writer replaces images by matching the old one, so a listing with two detail
+    # images has no third and fourth source picture. Those counts are a plan, not a defect:
+    # refusing them meant no amount of asset work could ever make the listing eligible.
+    browser.snapshots[IDS[0]] = _snapshot(queue.rows[0], main_count=main_count, detail_count=detail_count)
+    result = _run(queue)
+    first = result['products'][0]
+    assert first['reason'] != 'writer_image_slots_incomplete'
+    assert first['evidence']['main_count'] == main_count
+    assert first['evidence']['detail_count'] == detail_count
 
 
 @pytest.mark.parametrize('tail_collision', [False, True])
