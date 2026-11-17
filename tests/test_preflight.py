@@ -99,9 +99,19 @@ def _run(queue, **kwargs):
 
 
 def _update(queue, product_id=IDS[0], **values):
-    with sqlite3.connect(queue.db) as conn:
+    # `with sqlite3.connect(...)` commits the transaction but never closes the connection,
+    # and an unclosed connection checkpoints its WAL when it is finally collected. That
+    # rewrites bytes of the main database file *after* a test has snapshotted it, so the
+    # byte-level "the read-only preflight did not touch the database" assertion would fail
+    # on a write it was never meant to describe. Close and checkpoint here instead.
+    conn = sqlite3.connect(queue.db)
+    try:
         conn.execute('UPDATE products SET ' + ','.join(key + '=?' for key in values) + ' WHERE product_id=?',
                      [*values.values(), product_id])
+        conn.commit()
+        conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    finally:
+        conn.close()
 
 
 def test_missing_required_attributes_block_only_this_product_and_never_change_queue(queue, browser, monkeypatch):

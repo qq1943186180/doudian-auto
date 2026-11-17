@@ -20,6 +20,20 @@ from .errors import DoudianError, WaitingHuman
 SOURCE = 'official_editor_ui:merchant_code'
 _BINDING = ('product_id', 'shop', 'api_request_id', 'api_body_sha256', 'page_url')
 
+# Coverage costs one bridge round-trip per half-page advance. Measured on a 121-SKU
+# listing: ~3.8s per round, ~6 rows per round, so about 0.65s per SKU. The per-SKU figure
+# is deliberately generous because a slow round must not truncate the scan, and the cap
+# keeps a pathological listing from holding the browser for minutes.
+MAX_SECONDS = 180
+SECONDS_PER_SKU = 1.2
+# Below this many SKUs a single 30s budget already covers the whole holder (~6 rows per
+# round), so the caller's budget is used untouched.
+LARGE_LISTING_SKUS = 30
+# A wrap back to the top re-reads rows that are already known, so a scan that has covered
+# the holder shows several rounds with no new SKU. Stopping then is honest: the evidence
+# still says which codes were observed, and the caller rejects an incomplete set.
+STALLED_ROUNDS = 6
+
 
 def _require(condition, code='official_sku_code_evidence_invalid',
              message='官方商家编码UI证据缺失、存在歧义或结构变化。'):
@@ -101,19 +115,33 @@ def _probe(editor, op, identity, navigation_id):
 
 
 def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
-    """Read the measured SKU code column within a 30-second scrolling budget.
+    """Read the measured SKU code column by scrolling the virtual holder to its end.
 
     The reference comes from the same fresh official response being parsed. This
     function never starts a session, opens/reloads a page, or writes a field. Empty
     strings count only when a unique real input was observed for that exact SKU.
+
+    ``seconds`` stays the budget for anything that fits a few screens. Only a listing past
+    ``LARGE_LISTING_SKUS`` raises it, because each round is one bridge round-trip plus a
+    half-page holder advance: measured ~3.8s for six rows, so a 121-SKU listing needs
+    roughly eighty seconds and a flat 30s cap reported "11 of 121" as if the listing were
+    unreadable. An explicit small budget is never overridden -- a caller asking for half a
+    second is testing the budget itself. Coverage is still judged by what was actually
+    observed; this only stops the budget from deciding the answer.
     """
     expected = _reference(reference, identity)
-    _require(type(seconds) in (int, float) and math.isfinite(seconds) and 0 < seconds <= 30,
-             'invalid_sku_code_budget', '官方UI编码读取预算必须大于0且不超过30秒。')
+    _require(type(seconds) in (int, float) and math.isfinite(seconds) and 0 < seconds <= MAX_SECONDS,
+             'invalid_sku_code_budget',
+             '官方UI编码读取预算必须大于0且不超过{0}秒。'.format(MAX_SECONDS))
+    budget = float(seconds)
+    if len(expected) > LARGE_LISTING_SKUS:
+        budget = max(budget, min(float(MAX_SECONDS), 10.0 + SECONDS_PER_SKU * len(expected)))
     started = monotonic()
-    deadline = started + seconds
+    deadline = started + budget
     observed, navigation_id, rounds, operation = {}, None, 0, 'read'
     initial_shop_error = None
+    stalled = 0
+    last_count = 0
     while monotonic() < deadline:
         try:
             result = _probe(editor, operation, identity, navigation_id)
@@ -160,6 +188,15 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
                         'rows': rows, 'rows_sha256': code_rows_sha256(rows)}
             validate_sku_code_evidence(evidence, reference)
             return evidence
+        if len(observed) > last_count:
+            last_count, stalled = len(observed), 0
+        else:
+            stalled += 1
+            if stalled >= STALLED_ROUNDS:
+                raise DoudianError(
+                    'official_sku_code_incomplete',
+                    '连续{0}轮滚动未读到新的SKU（已确认{1}/{2}），已停止；缺失值不当作空值。'.format(
+                        stalled, len(observed), len(expected)))
         pending = result.get('pending_count')
         _require(type(pending) is int and pending >= 0)
         if not result['ready']:

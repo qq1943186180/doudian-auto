@@ -2,9 +2,11 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261117-004（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-18 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261118-001（**task 58 商家编码读不全的真因是 `scrollIntoView` 撤销了 holder 推进**；修复后 121/121 全读到，卡点前移到「详情只有 2 张」）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
+>
+> ⚠️ **下面是 11-14 的快照，已过期**：2026-11-18 现状为 **22 verified / 33 blocked / 6 closed_unreachable**（12/22/33/36/46/52 经「精确 ID 0 行 + 同店对照 1 行」结案为不可达）。最新分类与变化见 T-20261118-001、T-20261117-007、T-20261117-006。
 >
 > | # | 类别 | 件数 | task | 需要谁 |
 > |---|---|---|---|---|
@@ -28,6 +30,41 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261118-001 · 商家编码「读不全」的真因是滚动被撤销，不是商品太大
+
+- 状态：**done，零商品写入**。task 58（121 SKU）从 `official_sku_code_row_ambiguous`／`incomplete` 变成 **121/121 全读到**；队列数量不变，只是把 58 的阻塞原因对齐到真实卡点。
+- ① **现象**：`batch preflight --product-id 3793430313384935495 --recheck-blocked` 报
+  `official_sku_code_incomplete: 官方UI商家编码在读取预算内仅确认11/121个SKU`，42 秒。
+- ② **两层怀疑都是错的**：先按 policy ⑮ 怀疑窗口——第一次确实跑在 `minimized` 窗口下，恢复到 `maximized 2064×1120` 后重跑，**结果一字不差 11/121**；
+  再怀疑 holder 找错——页面上有两个 `virtual-holder`（外层 + 嵌套的 `-inner`），但代码已优先取「SKU 行所在的那个」，且实测 `scrollHeight=4934 / clientHeight=500` 能滚 4434px，容器没错。
+- ③ 🔴 **真因：`scroll_pending` 在推进 holder 之前先对末尾空行 `scrollIntoView`，每轮把 scrollTop 拉回去。**
+  逐轮打印（`work/recheck-20261118/probe_jitter.py`）：
+  ```
+  第1轮 into=389 → plus=639
+  第2轮 into=389 → plus=639   ← 又被拉回
+  ...（6 轮全同，55 轮都在 389↔639 之间）
+  maxTop=4434，实际只用过 639
+  ```
+  **「滚动了」不等于「前进了」**：`scrolled=true` 只说明 scrollTop 变过，`rows` 和 `pending_count` 全程恒定。
+  手动把 `scrollTop` 设到 1000/2500/4000，SKU 行每次都换（`probe_scroll_effect.py`）——证明容器和滚动都有效，只是被撤销。
+- ④ **修法（顺序）**：先推进 holder，**只有推不动（到底/无可滚空间）时**才 `scrollIntoView` 占位行。
+  占位行懒加载的用途保留，但它再也不能撤销已经取得的前进。
+- ⑤ **配套（预算）**：硬上限 `30 → 180` 秒；**SKU 数 > 30** 时按 `10 + 1.2 × SKU数` 自适应（121 → 155s、44 → 62.8s、≤30 件不变）。
+  **显式传入的小预算不被覆盖**——`tests/test_official_sku_codes.py` 有一条 `seconds=0.45` 验证预算耗尽的用例钉死这点。
+- ⑥ **配套（早停）**：连续 6 轮无新增即停，避免回绕重读旧行白等到预算耗尽。
+- ⑦ **实测**：同一件 58，修复前 `11/121`（42s）→ 修复后 **`121/121`、`sku_complete=true`（47s）**。
+  随后 `batch recheck --task-id 58 --proof <summary.json>` → `reason_refreshed`，阻塞原因更新为
+  `writer_image_slots_incomplete`（**主图 5 张够、详情只有 2 张**，属性 `completion_percent=100`）。
+  也就是说 58 现在缺的是 2 张详情图，不再是编码。
+- ⑧ 🔴 **推翻一条旧结论**：`editor.py` 原注释写「30s 提到 90s 对 121-SKU 结果不变（都是 91/121），因为 holder scrollHeight 停在第 91 行」——
+  那次实验正好撞上这个震荡，扫描从未接近上限，所以「加时间无用」是错的。注释已按实测改正。
+- ⑨ **顺带修了一个测试脆弱点**：`tests/test_preflight.py::_update` 用 `with sqlite3.connect(...)`，而 `with` 对 sqlite3 **只提交事务、不关闭连接**；
+  未关闭的连接在回收时才把 WAL checkpoint 回主文件，于是「只读预检不得改库」的**字节级**断言会被**之前那次写入的滞后落盘**打中。
+  改为显式 `commit` + `PRAGMA wal_checkpoint(TRUNCATE)` + `close`，16 处共用该辅助的断言随之稳定。断言本身没有放宽。
+- ⑩ **测试**：`official-sku-code-dom.test.cjs` 23 条（+2：占位行不能撤销推进、到底时仍会 scrollIntoView）；
+  `test_official_sku_codes.py` 24 条（+3：>30s 预算合法、连续无进展早停、有进展不早停）。
+  回归：`editor+preflight+batch+official_sku_codes` **166 全过**（连跑两次）、`readback+rebaseline+preflight_cli+preflight_recovery_cli` 全过、jsdom `dom+sku_code` 61 全过。
 
 ### T-20261117-007 · 🔴 55/57 九图「通过」结论撤回：判据源头错配（实物忠实性）
 

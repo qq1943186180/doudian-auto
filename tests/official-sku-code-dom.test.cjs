@@ -245,3 +245,37 @@ test('scroll_rows moves the holder the SKU rows live in',()=>{
   assert.equal(top, 50);                       // the SKU holder moved
   assert.equal(foreign.scrollTop, 0);          // the foreign holder did not
 });
+
+test('a mounted placeholder cannot undo the holder advance',()=>{
+  // The measured 121-SKU failure: with a trailing empty row mounted, `scroll_pending`
+  // called `scrollIntoView` on it before advancing the holder. The snap put scrollTop
+  // back to the row's offset on every round, so the advance was undone and fifty-five
+  // rounds all reported the same first screenful. The advance now happens first and the
+  // placeholder is only brought into view when the holder cannot move any further.
+  const f = fixture();
+  const skuHolder = f.holder(1000, 100);
+  skuHolder.append(f.row(sku1, 'A-1'));
+  const placeholder = f.row('');
+  skuHolder.append(placeholder);
+  skuHolder.scrollTop = 0;
+  placeholder.scrollIntoView = () => { skuHolder.scrollTop = 0; };   // model the snap-back
+  const first = f.call('scroll_pending');
+  assert.equal(first.scrolled, true);
+  assert.equal(first.pending_count, 1);
+  assert.equal(skuHolder.scrollTop, 50);   // the advance survived the placeholder
+  const second = f.call('scroll_pending');
+  assert.equal(second.scrolled, true);
+  assert.equal(skuHolder.scrollTop, 100);  // ...and kept going instead of resetting to 50
+});
+
+test('the placeholder is still scrolled into view when the holder is at its end',()=>{
+  const f = fixture();
+  const skuHolder = f.holder(100, 100);   // no room to scroll at all
+  skuHolder.append(f.row(sku1, 'A-1'));
+  const placeholder = f.row('');
+  skuHolder.append(placeholder);
+  placeholder.scrollIntoView = function () { this.dataset.reached = '1'; };
+  const result = f.call('scroll_pending');
+  assert.equal(result.scrolled, true);          // reported via the placeholder path
+  assert.equal(placeholder.dataset.reached, '1');
+});

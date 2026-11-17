@@ -82,10 +82,15 @@ class Editor:
         if reference is None:
             return parse_official_skus(response, product_id=manifest['product_id'])
         from .official_sku_codes import collect_official_sku_codes
-        # The budget stays at 30 seconds on purpose: raising it to 90 for a 121-SKU listing
-        # changed the result by exactly nothing (91/121 either way), because the virtual
-        # holder's own scrollHeight stops around row 91 and more time does not move it.
-        # A longer budget would only slow every read down without evidence it helps.
+        # The collector raises this number itself for a listing that cannot fit a few
+        # screens (see official_sku_codes.MAX_SECONDS and LARGE_LISTING_SKUS), so 30 stays
+        # the budget for ordinary listings. An earlier note here kept it at 30 on purpose
+        # because 90 "changed nothing (91/121 either way)", and blamed the holder's
+        # scrollHeight. That measurement was taken while `scrollIntoView` on the trailing
+        # empty row was snapping the holder back to the top every round, so the scan never
+        # reached its limit and more time genuinely could not help. With the advance
+        # ordered first, the same listing scrolls to 4434px and the budget is what limits
+        # coverage.
         observed = collect_official_sku_codes(self, manifest, reference, seconds=30)
         return parse_official_skus(response, product_id=manifest['product_id'], shop=manifest['shop'],
                                    code_ui_evidence=observed)

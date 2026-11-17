@@ -187,3 +187,31 @@ def test_code_value_changes_change_hash_and_forged_or_partial_proofs_are_rejecte
     with pytest.raises(DoudianError) as caught:
         codes.validate_sku_code_evidence(proof, wrong_body)
     assert caught.value.code == 'official_sku_code_stale'
+
+
+def test_a_budget_longer_than_thirty_seconds_is_allowed(probe):
+    # 121-SKU listings need ~80s of half-page advances; the old hard cap of 30s made the
+    # reader report "11 of 121" as though the listing could not be read at all.
+    probe.frames = [_frame([_row(sku) for sku in SKUS])]
+    proof = _collect(probe, seconds=120)
+    assert proof['complete'] is True
+    assert codes.MAX_SECONDS >= 120
+
+
+def test_a_scan_that_stops_producing_new_skus_stops_early(probe):
+    # A wrapping holder re-reads known rows. Once six rounds in a row add nothing, waiting
+    # out a long budget cannot help, so the read stops and still reports what it saw.
+    probe.frames = [_frame([_row(SKUS[0])], pending=1)]
+    with pytest.raises(DoudianError, match='连续') as caught:
+        _collect(probe, seconds=60)
+    assert caught.value.code == 'official_sku_code_incomplete'
+    assert len(probe.calls) <= codes.STALLED_ROUNDS + 2
+
+
+def test_a_scan_that_keeps_producing_new_skus_is_not_cut_short(probe):
+    probe.frames = [_frame([_row(SKUS[0])], pending=1),
+                    _frame([_row(SKUS[1])], pending=1),
+                    _frame([_row(SKUS[2])])]
+    proof = _collect(probe, seconds=60)
+    assert proof['complete'] is True
+    assert len(proof['rows']) == 3

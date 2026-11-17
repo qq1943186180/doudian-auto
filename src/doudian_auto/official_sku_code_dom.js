@@ -72,22 +72,20 @@
       return fail('official_sku_code_input_unobserved');
     rows.push({sku_id: sku, code: inputs[0].value, observed: true, input_count: 1});
   }
-  if (op === 'scroll_pending' && pending.length) {
-    pending[pending.length - 1].scrollIntoView({block: 'center'});
-  }
   // The measured table keeps every row in a virtual holder whose own scrollTop
   // decides which rows are mounted; the surrounding form scroller moves the whole
-  // block without changing them. When no placeholder row is mounted there is
-  // nothing to scrollIntoView, so advance this holder instead - by half a page so
+  // block without changing them. Advance this holder - by half a page so
   // consecutive views overlap - and wrap to the top once it cannot move further.
+  //
+  // Order matters, and getting it wrong is silent. `scroll_pending` used to call
+  // `scrollIntoView` on the trailing empty row *before* advancing the holder. Measured on
+  // a 121-SKU listing: that snap put scrollTop back to 389 on every round, so the advance
+  // to 639 was undone before the next read and fifty-five rounds all reported the same
+  // first screenful (11 of 121 codes). The holder can scroll to 4434 there, so the scan
+  // never even approached its limit. Advancing first and scrolling the placeholder into
+  // view only when the holder has nowhere left to go keeps the scan monotonic.
   let rowScrolled = false;
   if (op === 'scroll_pending' || op === 'scroll_rows') {
-    // Both scrolling steps advance the holder. `scroll_pending` used to rely on
-    // `scrollIntoView` alone, which a virtual holder ignores: measured on a 121-SKU
-    // listing that keeps a placeholder mounted, thirty seconds of that moved nothing and
-    // the read stopped at the ten rows already rendered. Bringing the placeholder into
-    // view is still worth doing, so both happen.
-    //
     // Prefer the holder the SKU rows actually live in. A section that also carries a size
     // table has its own virtual holder, and taking the first one in DOM order scrolled the
     // wrong table without ever moving the rows being read.
@@ -103,6 +101,11 @@
         rowScrolled = holder.scrollTop !== top;
       }
     }
+  }
+  if (op === 'scroll_pending' && pending.length && !rowScrolled) {
+    // Nothing left to advance, so the placeholder may just be outside the viewport.
+    // This is the only move that remains and it cannot undo forward progress here.
+    pending[pending.length - 1].scrollIntoView({block: 'center'});
   }
   return {...identity, shop_confirmed: true, ready: nodes.length > 0,
     code_column: '商家编码', rows, row_count: nodes.length, pending_count: pending.length,

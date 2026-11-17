@@ -714,3 +714,47 @@ Codex 2026-11-16 第二次审查的结论：**机器能证明「当前可达」�
 - 本轮素材来源结论：**批量队列语义是「整套换新」，官方原图不能复用**；
   已有合格生成图可复用，缺图件需整套重生（`validate_visual_review` 拒绝与参考图同 sha 的输出）。
 
+
+### ⑰ 商家编码报「读不全」：`scrollIntoView` 把虚拟 holder 的推进撤销了
+
+task 58（121 个 SKU）报 `official_sku_code_incomplete: 仅确认11/121个SKU`，耗时 42 秒。两层怀疑都是错的，第三层才是真因：
+
+1. **不是窗口最小化**。第一次跑确实是在 `minimized` 窗口下（`Browser.getWindowForTarget` 报 `windowState=minimized`），
+   按 ⑮ 恢复到 `maximized 2064×1120` 后重跑，**结果一字不差还是 11/121、42.5 秒**。窗口这次不是原因。
+2. **不是 holder 找错容器**。页面上确实有两个 `virtual-holder`（外层 `ecom-g-table-tbody-virtual-holder`
+   ＋内层 `-inner`，嵌套关系），但代码已经优先取「SKU 行所在的那个」；实测外层
+   `scrollHeight=4934 / clientHeight=500`，能滚 4434px，容器是对的。
+3. 🔴 **真因：`scroll_pending` 在推进 holder 之前先对末尾空行 `scrollIntoView`，每轮把 scrollTop 拉回去。**
+   实测序列（`work/recheck-20261118/probe_jitter.py`）：
+   ```
+   第1轮 into=389 → plus=639
+   第2轮 into=389 → plus=639     ← 又被拉回 389
+   ...（6 轮全同）
+   maxTop=4434，实际只用过 639
+   ```
+   55 轮全部落在 389↔639 之间，所以每次读到的都是同一屏的第一行起的 6-7 个 SKU，
+   `observed` 自然停在 11 个。**「滚动了」不等于「前进了」——`scrolled=true` 只说明 scrollTop 变了。**
+
+**修法（顺序问题）**：先推进 holder，**只有推不动（到底/无可滚空间）时**才 `scrollIntoView` 那个占位行。
+占位行滚进视野的原始用途保留，但它再也不能撤销已经取得的前进。
+
+**配套（预算）**：硬上限 `30 → 180` 秒，且 **SKU 数 > 30** 时按 `10 + 1.2 × SKU数` 自适应
+（121 → 155 秒，44 → 62.8 秒，≤30 件完全不变）。**显式传入的小预算不被覆盖** ——
+`tests/test_official_sku_codes.py` 就有一条用 `seconds=0.45` 验证预算耗尽的用例。
+
+**配套（早停）**：连续 6 轮没有新增 SKU 就停。holder 回绕到顶部会重读已知行，
+没有这条会白等到预算耗尽才报错。
+
+**实测对比**：同一件 58，修复前 `11/121`（42s）→ 修复后 **`121/121`、`sku_complete=true`（47s）**。
+卡点随即前移到真实原因：`writer_image_slots_incomplete`（主图 5 张够、详情只有 2 张）。
+用 `batch recheck --task-id 58 --proof <summary.json>` 把队列对齐，返回 `reason_refreshed`。
+
+🔴 **旧注释已被推翻，别再引用**：`editor.py` 原来写着「30s 提到 90s 对 121-SKU 商品结果不变（都是 91/121），
+因为 holder 的 scrollHeight 停在第 91 行」——那次实验正好撞上这个震荡，扫描从未接近上限，
+所以「加时间无用」的结论是错的。注释已按本次实测改正。
+
+**判据（下次 5 分钟定位）**：报 `official_sku_code_incomplete` 时，先打印**每轮的
+`operation / rows / pending_count / scrollTop`**，不要直接归因「商品太大」：
+- `pending` 恒为同一个数且 `rows` 恒定 → **滚动被撤销**（本条）
+- `scrollTop` 已到 `scrollHeight-clientHeight` 仍无新行 → 真的是容器上限
+- 每轮都有新行但预算耗尽 → 纯预算问题
