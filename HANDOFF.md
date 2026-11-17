@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261117-003（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-14 傍晚（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261117-004（**真实演练 requeue 成功**：task 48 九图复核全项 pass，回到 needs_agent；等待器终态探针方案已落纸）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -28,6 +28,65 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261117-004 · 194-214 · ✅ 55 九图产出 + 33 件阻塞原因定盘
+
+- 状态：**in-progress**。队列未变（22 / 33 / 6）。零商品写入。
+- ✅ **task 55 九图已生成**（`tb-auto/work/doudian-20261114/task55-gen/`），
+  提示词改为**按件配置**（`prompts-<pid>.json`，含 `refs_dir`），不再为每件改代码。
+  该件是瓶装营养液，标签文字属实物需保留，只去掉四周批发文案（厂家名/一件代发/快递费）。
+- 🔴 **33 件 blocked 的真实构成**（只读盘点，`work/audit-20261117/`）：
+  - **有属性缺口 12 件**；
+  - **属性已满、卡在别处 11 件**（11/15/16/48/49/51/57/58/59/60/61）；
+  - **从未探测 10 件**（1/3/4/6/7/8/9/13/27/34）。
+  - 其中**只差「可推断属性」的 2 件：28、50**——只缺「安装方式」，标题里就有「免打孔/吸盘」。
+  - `needs_supplier` 高度集中：尺寸×3、型号×2、生产企业地址×2、硬度×2。
+  → 结论：**型号 / 产品标准编号 / 生产企业地址是通吃的供应商资料**，应一次性要模板，而不是逐件催。
+- ⚠️ 那 11 件「属性已满」依据的是 8-16 天前的快照，需重探；10 件从未探测的应先跑只读 preflight。
+- 出图通道稳定（Enter 兜底），单张约 33-50 秒。
+
+### 2026-11-17 · EXT-20261117-07 · ✅ Ego 空间号被回收后自动对齐并重试一次（不再手工跑 probe.sh）
+
+- 状态：**done**。纯代码修复，零商品写入、零队列改动、未碰 `work/` 与 `batch.sqlite3`。
+- 🔴 **问题**：Ego 的 task space 被系统回收后 **id 会被复用**（实测出现 148/6/1/5），
+  而 `state.json` 里缓存着旧 `spaceId`。此时任何浏览器命令都在**解析空间阶段**失败：
+  `task space not found: <旧id>`，被 `_run()` 统一包成
+  `ego_error / Ego未确认完成操作；没有自动重试。`，**原始 message 被丢掉**，
+  上层只能去 `~/.doudian-auto/ego-sessions/<hash>/<token>.result.json` 里翻。
+  结果是 `batch preflight`、`batch probe-product` 随机报 `ego_error`（2026-11-17 多次实测）。
+- ✅ **修法**（`src/doudian_auto/ego_bridge.py`）：
+  - 新增 `EgoBridge.align_space()` 与模块级 `align_space(session) -> int`：
+    先 `listTaskSpaces()` 里按**会话名精确匹配**（找不到再看 `doudian-auto <session> ` 前缀），
+    都没有才 `useOrCreateTaskSpace(name)`（回落 `taskSpace(name)`）——即 `sync-space.mjs` 的判定，
+    但走的是仓库已有通道（`ego-browser nodejs -e` + 结果写文件，不用管道，避免 Windows 子进程继承句柄卡死），
+    并复用 `TransportLock`，**没有新造第二套子进程机制**。
+  - **只在缓存 id ≠ 真实 id 时改写**；改写前备份 `state.json.bak-auto`（沿用 `probe.sh` 的命名），
+    同时清空 `pages`/`active`（这些标签随旧空间一起死了，留着会把写操作重定向到已丢失的页）。
+  - 失败不静默：统一抛 `ego_space_align_failed`，message 带浏览器自己的原话
+    （探测失败/超时/未返回结果/`spaceId` 不可用/state 不可读写，逐种都有独立文案），且**不改写 state**。
+  - `_run()` → 拆成 `_run()` 包一层 `_execute()`：只在 `space_stale()`（即 `task space not found`
+    类）时 **对齐一次 + 重试一次**，仍失败就带原始 message 抛出，**不循环**；
+    其他错误（如 `ego_state_locked`）一次都不重试。
+  - 所有 `DoudianError` 现在带 `details = {action, raw_code, raw_message, result_file}`，
+    `details` 由 `ego_bridge._error()` 动态挂载（**未改 `errors.py`**，避免与其他会话冲突）。
+    「空间失效」是解析阶段失败、任何 Page 都还没建立，所以这一次重试不可能重放保存。
+- 🧪 测试：新增 `tests/test_ego_space_align.py`（10 条）覆盖
+  「缓存 id 失效→对齐→重试成功（含 `.bak-auto` 与 pages/active 清空）」、
+  「对齐后仍失败→错误带 `task space not found: 2` 原文且只重试一次」、
+  「id 一致时不改写 state、不产生 `.bak-auto`」、「探测走文件通道并把字符串 id 归一」、
+  「探测失败保留 state 并报出真实原因」、「非法 spaceId 报 `ego_space_align_failed`」、
+  「非空间类错误不触发探测/重试」、「对齐本身失败时保留原始 message」、
+  「交给用户的空间不回抢」、`模块级 `align_space(session)` 返回真实 id」。
+  `tests/test_preflight.py tests/test_preflight_cli.py tests/test_ego_bridge.py tests/test_ego_space_align.py`
+  = **85 passed**；全量 `pytest` = **792 passed / 3 failed**。
+- ✅ 真机只读验证：对真实会话 `miaoshou-auto-batch-20261028` 跑 `EgoBridge.align_space()`，
+  返回 **live id = 2**、`changed=False`，**state.json 内容与 mtime 完全未变**（探测通道真能用）。
+- ⚠️ 那 3 个 failed 全在 `tests/test_title.py`，报 `cli.py:1094 UnboundLocalError: Bridge`——
+  `cli.py` 函数体内 `from doudian_auto.bridge import DEFAULT_ENDPOINT, Bridge`（HEAD 的 968/979 行）
+  把 `Bridge` 变成了局部名，与本次改动无关（`git diff HEAD -- cli.py` 为空），属**既有缺陷**，需单独修。
+  （同一处缺陷也会让 `batch probe-product` 自己报错，建议优先修。）
+- 备注：`docs/HANDOFF.md`「## 7. 变更日志」在本仓库不存在（HANDOFF 主体在根目录），
+  故按现有「## 给人的说明」倒序惯例置顶本条。
 
 ### T-20261117-003 · 194-213 · ⚠️ 39 的 9 图已出并通过复核，但属性缺 7 项
 
