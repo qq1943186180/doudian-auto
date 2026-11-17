@@ -965,7 +965,6 @@ def run(args):
                 return batch_queue.reopen_unreachable_task(
                     args.task_id, reason=args.reason, confirmed_by=args.confirmed_by)
             if args.batch_command == 'probe-product':
-                from doudian_auto.bridge import DEFAULT_ENDPOINT, Bridge
                 from doudian_auto.miaoshou_editor import MiaoshouEditor
                 bridge = Bridge(DEFAULT_ENDPOINT, session=args.session, timeout=30)
                 return MiaoshouEditor(bridge, args.shop).probe_product(args.product_id)
@@ -976,7 +975,6 @@ def run(args):
             if args.batch_command == 'requeue':
                 probe = None
                 if args.check_miaoshou:
-                    from doudian_auto.bridge import DEFAULT_ENDPOINT, Bridge
                     from doudian_auto.miaoshou_editor import MiaoshouEditor
                     def _probe(shop, product_id):
                         bridge = Bridge(DEFAULT_ENDPOINT, session='miaoshou-requeue', timeout=30)
@@ -1130,7 +1128,6 @@ def _miaoshou_listing_probe(shop, product_id):
     True / False / None are kept distinct by the caller: an unreadable list must
     never be reported as "product absent".
     """
-    from doudian_auto.bridge import DEFAULT_ENDPOINT, Bridge
     from doudian_auto.miaoshou_editor import MiaoshouEditor
     bridge = Bridge(DEFAULT_ENDPOINT, session='miaoshou-requeue', timeout=30)
     return MiaoshouEditor(bridge, shop).row_present(product_id)

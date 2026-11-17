@@ -70,15 +70,16 @@
   - 所有 `DoudianError` 现在带 `details = {action, raw_code, raw_message, result_file}`，
     `details` 由 `ego_bridge._error()` 动态挂载（**未改 `errors.py`**，避免与其他会话冲突）。
     「空间失效」是解析阶段失败、任何 Page 都还没建立，所以这一次重试不可能重放保存。
-- 🧪 测试：新增 `tests/test_ego_space_align.py`（10 条）覆盖
+- 🧪 测试：新增 `tests/test_ego_space_align.py`（11 条）覆盖
   「缓存 id 失效→对齐→重试成功（含 `.bak-auto` 与 pages/active 清空）」、
+  「**走真实 `_execute` 传输**：第一轮 runtime 报错→探测改 state→第二轮穿过 pending 标记成功」、
   「对齐后仍失败→错误带 `task space not found: 2` 原文且只重试一次」、
   「id 一致时不改写 state、不产生 `.bak-auto`」、「探测走文件通道并把字符串 id 归一」、
   「探测失败保留 state 并报出真实原因」、「非法 spaceId 报 `ego_space_align_failed`」、
   「非空间类错误不触发探测/重试」、「对齐本身失败时保留原始 message」、
-  「交给用户的空间不回抢」、`模块级 `align_space(session)` 返回真实 id」。
+  「交给用户的空间不回抢」、模块级 `align_space(session)` 返回真实 id」。
   `tests/test_preflight.py tests/test_preflight_cli.py tests/test_ego_bridge.py tests/test_ego_space_align.py`
-  = **85 passed**；全量 `pytest` = **792 passed / 3 failed**。
+  = **86 passed**；全量 `pytest` = **793 passed / 3 failed**。
 - ✅ 真机只读验证：对真实会话 `miaoshou-auto-batch-20261028` 跑 `EgoBridge.align_space()`，
   返回 **live id = 2**、`changed=False`，**state.json 内容与 mtime 完全未变**（探测通道真能用）。
 - ⚠️ 那 3 个 failed 全在 `tests/test_title.py`，报 `cli.py:1094 UnboundLocalError: Bridge`——
