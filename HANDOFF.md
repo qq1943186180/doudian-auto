@@ -31,6 +31,25 @@
 
 ## 给人的说明
 
+### T-20261118-006 · 用户提「用 codex 生图」：通道存在但当前不可用，mask 不能保像素，不作交付路径
+- 用户问「如果使用 codex 生图呢」。实测 + Codex 裁决（`/tmp/codex-codexgen-20261118.md`）：**E 路径不作为 task 60 交付方案**。
+- **通道事实**：tb-auto `src/services/codex_api_image_generation.py` 走 `/v1/images/edits`（gpt-image-2，强制带原图），
+  默认 base_url `http://127.0.0.1:10531/v1`（preset「Codex OAuth 本机代理，消耗 Codex 额度池」，
+  注释要求先跑 `npx -y openai-oauth@latest`）。配置 `enabled=False`、`10531` 端口无响应、
+  `openai-oauth` 未全局安装、`~/.codex/config.toml` 无 10531 代理配置（指向 `chatgpt.com/backend-api/codex`）。
+  **当前不可执行**：Codex CLI/订阅/auth.json 的存在不能证明有 `/v1/images/edits` 代理；官方 `app-server` 是 JSON-RPC，
+  不能充当兼容接口。证据不足以断言永远起不来，但当下这条路不通。
+- **mask 不解决 D 死结**：gpt-image 的 mask 是**编辑引导，不保证严格遵循边界**（OpenAI 官方语义）；
+  「mask 外模型不碰、原像素原样保留」前提不成立。detail-1/2 文字压色卡/泡棉纹理，即使整块保护文字+纹理，
+  新旧区边界仍可能有纹理/颜色/光照接缝，**仍不能推出无接缝**。要真保像素只能靠确定性区域合成，
+  那又回到 D 的手法和判据问题。
+- **契约坑**：`visual_review.py` 实为 **5 项 checks**（identity/color/quantity/printing/specification），
+  `GENERATORS={'builtin-imagegen','existing-qualified','web-gpt-ego'}`。codex 通道 provider 是 codex-oauth/
+  openai-official，填 `web-gpt-ego` 属**虚标**（图非网页 GPT 出），填真实 provider 被白名单拒。
+  必须先正式改契约，且「商品图只走网页 GPT」铁律仍在——放在 tb-auto 内不自动满足该约束。
+- **结论**：维持 B/T-005 收口口径不变（门槛真实系统验证通过、端到端保存待合适素材、整批素材 blocked）。
+  不虚标 generator、不绕过契约、不为凑 pass 换入口。全程零商品写入、未碰队列/店铺。
+
 ### T-20261118-004 · Codex 复查推翻「变长槽位已完成」：逻辑层半成品已补全，UI 探针待真实验证
 
 - 状态：**高危逻辑缺陷已修 + 回归通过，仍零商品写入**。T-20261118-003 的「代码完成、337 全绿」结论被
