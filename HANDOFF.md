@@ -74,15 +74,37 @@
 - **Codex 第五次聚焦复检（最终）**：确认 ready 与新任务/续办两条路径都已把带 plan 的 baseline 传给
   prepare / verify_prepared / finalize；结论 **离线可交付**，没有确定可复现的残留高危阻断（UI 探针、
   补 4 行、真人页面实测等不算确定缺陷）。
-- **仍未做真实商品验证**：妙手授权失效 + Ego task space ended，无法实测「变长商品页面真实显示几行」。
-  数据校验已做到页面 2 行或 4 行都自洽，但真实写入仍需用户恢复授权后按 task 59 验证。
 - **测试**：`tests/test_slot_plan.py` 14→26 条、`test_miaoshou_editor.py` +2 条、`tests/ego-runtime.test.cjs` +1 条；
   覆盖非 dict 失败关闭、变长表单（0/2 空余行）、非空余行拒绝、尾图边界、distinct sources 前缀、变长读取、
   save guard 变长（4主2详+空控件）、槽位名称规范化、新任务 plan 传递。
   最终回归：**pytest 830 passed in 194.08s**（独立 basetemp 规避 WorkBuddy 删除守卫），
-  **npm test 124 pass / 0 fail**。
-- **真实验证前置**：需用户恢复妙手登录 + 允许 claim 已 ended 的 Ego task space。首选 task 59：
-  上传 7 槽 → 观察妙手详情替换行究竟显示几行（若不是 2，需据实调整上面的 UI 探针）→ 预览 → 保存 → 双端读回。
+  **npm test 124 pass / 0 fail**。提交 `3a2142f` 已推送 `codex/miaoshou-reliability-20261029`。
+- **2026-11-18 真实系统验证（门槛生效已证实，端到端保存仍未做）**：用户指出妙手/Ego 都开着，实测确认此前
+  「授权失效」是假象——真正故障是 session state.json 的 space id 2 被回收复用，报 `ego_session_finished`。
+  用项目 `EgoBridge.align_space()` 把 session 从 space 2 对齐到 **space 15**（旧 state 备份、路由清空），
+  新建 agent page 导航妙手即登录态（销霁百货）。实测：
+  - `batch probe-product` task 59：`verdict=present`、编辑按钮可用；
+  - `batch preflight --recheck-blocked --check-miaoshou`：**task 59、task 60 双双 `eligible=true`**，
+    官方实读 5主2详、属性 100%、SKU 齐全、`miaoshou_listed=true`；
+  - `MiaoshouEditor.open_product+read_product`：task 59 妙手编辑窗实读同为 **5主2详**（历史首次实测），
+    task 60 实读 5主2详、21 SKU。旧代码在这两件上必然报 `writer_image_slots_incomplete` → 新门槛在真实系统生效。
+- **真实保存的两个客观阻断（均不绕过）**：
+  ① `batch.py:2560` `warehouse_scope_only` 只接受 `status==1`（仓库中）。task 59 实时 `status=0`（上架中），
+  上传前必被拦；改上架品会触发重新审核、有误改上下架风险，**不下架商品、不改数据库状态绕过**。
+  ② 合规候选 task 60（波浪吸音棉，仓库中、5主2详、属性100%、21 SKU、preflight 全绿）缺 7 张目标素材；
+  其现有 7 张图是**信息密集型电商图**（大字「波浪吸音棉」「厚度按需选择」、2/3/5/7/10cm 规格数字、
+  配色对照表、编号步骤 4/5/6、应用场景实拍）。网页 GPT 整张重绘中文/数字必乱码且丢卖点（见
+  `/tmp/codex-t60-art-20261118.md`），原图重传被 `original_asset_not_revision` 拒，本地合成保文字属破出图铁律。
+- **Codex 三方案裁决（`/tmp/codex-t60-decision-20261118.md`）**：原则排序 C＞B＞A，**当前推荐 B**。
+  C（换商品）无已证实新候选：61 条 facts_json.status 全为字符串（`"1"` 48 条 / `"0"` 13 条），
+  task 39 缺 7 项必填属性、task 55 缺「适用作物生长阶段」，57/59/61 是上架中，均不能过 preflight。
+  A（本地直接完整改图）违反出图约定，用户批准也只是授权例外。
+- **Codex 新路径 D（规则解释上可行，未实测）**：每个槽位仍由**网页 GPT 做真实可见修改**，本地**只把原图
+  文字/规格数字等必要区域按原像素位置恢复**（不承担背景重做/主体设计）——约定原文没有明文禁止生成后的
+  文字像素保真处理。风险：遮罩覆盖大面积背景、接缝、残留乱码或规格错配；若最终主要画面仍是原图或仅
+  编码变化则不成立，不能据此判通过。七张最终图能否全部合格、写入链能否保存仍须实测，不能预先签 pass。
+- **当前状态**：B 为默认结案口径——变长槽位记为「门槛已在真实系统验证生效、端到端保存待合适素材」。
+  若要真跑端到端，需用户明确授权 D（网页 GPT 主体改图 + 本地文字像素保真后处理），按 task 60 走完整链路。
 
 ### T-20261118-003 · 写入器支持变长槽位：槽位计划写进基线
 
