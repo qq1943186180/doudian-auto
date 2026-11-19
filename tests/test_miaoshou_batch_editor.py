@@ -340,6 +340,7 @@ def test_detail_picker_label_toggle_is_restored_before_target_and_preview(tmp_pa
     pid, title, baseline, paths, _ = _form(tmp_path)
     class Bridge:
         def command(self, *args, **kwargs): return None
+        def evaluate(self, code): return None
     editor = MiaoshouBatchEditor(Bridge(), '销霁百货')
     mode = {'enabled': False}
     monkeypatch.setattr(editor, 'open', lambda **kwargs: None)
@@ -376,6 +377,71 @@ def test_detail_picker_label_toggle_is_restored_before_target_and_preview(tmp_pa
     assert len(result['uploaded_slots']) == 9 and mode['enabled']
 
 
+def test_clear_add_desc_image_only_acts_on_enabled_checked_method5():
+    class Bridge:
+        def __init__(self, state): self.state = state
+        def evaluate(self, code): return self.state
+
+    cases = [
+        ({'disabled': False, 'checked': True}, True, [('addDescImage', False)]),
+        ({'disabled': True, 'checked': True}, False, []),
+        ({'disabled': False, 'checked': False}, False, []),
+        (None, False, []),
+    ]
+    for state, expected_return, expected_calls in cases:
+        calls = []
+        editor = MiaoshouBatchEditor(Bridge(state), '销霁百货')
+        editor._ensure_checkbox = lambda value, checked: calls.append((value, checked))
+        assert editor._clear_add_desc_image() is expected_return
+        assert calls == expected_calls
+
+
+def test_prepare_clears_method5_add_detail_images_before_preview(tmp_path, monkeypatch):
+    """Miaoshou ticks 方式5 by itself; the preview must be generated without it."""
+    pid, title, baseline, paths, _ = _form(tmp_path)
+
+    class Bridge:
+        def __init__(self): self.checked = True
+        def command(self, *args, **kwargs): return None
+        def evaluate(self, code): return {'disabled': False, 'checked': self.checked}
+
+    bridge = Bridge()
+    editor = MiaoshouBatchEditor(bridge, '销霁百货')
+    monkeypatch.setattr(editor, 'open', lambda **kwargs: None)
+    monkeypatch.setattr(editor, 'close_image_picker_if_open', lambda: None)
+    monkeypatch.setattr(editor, 'close_preview_if_open', lambda: None)
+    monkeypatch.setattr(editor, '_visible', lambda: None)
+    monkeypatch.setattr(editor, 'observe', lambda: {'product_ids': [], 'shop': '销霁百货'})
+    monkeypatch.setattr(editor, '_fill_visible', lambda *args: None)
+    monkeypatch.setattr(editor, '_ensure_radio', lambda *args: None)
+    monkeypatch.setattr(editor, '_ensure_detail_rows', lambda *args: None)
+
+    def ensure(value, checked):
+        if value == 'addDescImage':
+            assert checked is False, '方式5 只能被取消，不能被勾上'
+            bridge.checked = False
+
+    monkeypatch.setattr(editor, '_ensure_checkbox', ensure)
+    preview_when = []
+
+    def click(selector, text):
+        if text == '预览修改效果':
+            preview_when.append(bridge.checked)
+
+    monkeypatch.setattr(editor, '_click_exact_text', click)
+    check = {'remote_url': 'https://dy-honor-dd-pub.chengji-inc.com/tmp_upload/2026-10-30/x.png?dy',
+             'source_sha256': 'a' * 64, 'match': 'bytes'}
+    monkeypatch.setattr(editor, '_upload_slot_image', lambda *args: check)
+    monkeypatch.setattr(editor, '_select_detail_source', lambda *args: None)
+    monkeypatch.setattr(editor, '_upload_detail_target', lambda *args: check)
+    monkeypatch.setattr(editor, '_wait_eval', lambda code, predicate, *args, **kwargs: {'ids': [pid], 'count': '1'})
+
+    editor.prepare(product_id=pid, title=title, baseline=baseline,
+                   main_paths=paths[:5], detail_paths=paths[5:])
+
+    assert preview_when and preview_when[0] is False, '方式5 必须在点预览之前被清掉'
+
+
 @pytest.mark.parametrize('same_product,arrived,timeout', [(False, False, False), (True, True, False), (True, True, True)])
 def test_fresh_form_keeps_bound_uploads_and_recovers_arrived_content_before_reset(tmp_path, monkeypatch, same_product, arrived, timeout):
     import hashlib
@@ -384,6 +450,7 @@ def test_fresh_form_keeps_bound_uploads_and_recovers_arrived_content_before_rese
     actions=[]
     class Bridge:
         def command(self, action, args): actions.append((action,args))
+        def evaluate(self, code): return None
     editor=MiaoshouBatchEditor(Bridge(),'销霁百货')
     for name in ('open','close_image_picker_if_open','close_preview_if_open','_visible',
                  '_click_exact_text','_fill_visible','_ensure_radio','_ensure_checkbox',

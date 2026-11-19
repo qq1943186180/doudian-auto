@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-18 凌晨（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261118-001（**task 58 商家编码读不全的真因是 `scrollIntoView` 撤销了 holder 推进**；修复后 121/121 全读到，卡点前移到「详情只有 2 张」）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**22 verified / 33 blocked / 6 closed_unreachable**（2026-11-16 18:05 实读 batch.sqlite3）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
+更新：2026-11-19 13:20（Asia/Shanghai）；当前执行：workbuddy；最近任务 T-20261119-001（**变长槽位 5主2详 首次真实写入成功，双端 verified**）。旧主体由Codex起草、WorkBuddy核实，本轮修复及验证以最上任务块为准。前一轮 T-20261118-001：task 58 商家编码读不全的真因是 `scrollIntoView` 撤销了 holder 推进，修复后 121/121 全读到。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**23 verified / 32 blocked / 6 closed_unreachable**（2026-11-19 13:15 实读 batch.sqlite3；task 60 本轮转 verified）；blocked 里只剩 3 件 `submission_state=unknown`（task 11 定性、task 19/42 缺真实参数）。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -30,6 +30,44 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261119-001 · ✅ 变长槽位 5主2详 首次真实写入成功：双端 verified（task 60）
+- **结论**：task 60（`3784643089604411407` 波浪吸音棉，仓库中/下架）完成端到端写入并双端读回：
+  `state=verified`、`submission_state=verified_by_readback`、`miao_matches=true`、`doudian_matches=true`，
+  `submission_attempts=1`。队列 **22→23 verified / 33→32 blocked / 6 closed_unreachable**。
+- **素材通道纠正（重要）**：用户问「如果使用 codex 生图呢」后核实——tb-auto 里存在**两条**完全不同的路：
+  ① 需要 `npx -y openai-oauth@latest` 起 `127.0.0.1:10531` 的 `/v1/images/edits` API 通道（当前没装、端口无响应，不可用）；
+  ② **Codex CLI 自己的内置 `image_gen` 工具**（实测可用，原图 1254×1254，走订阅额度）。
+  T-20261118-006 把"codex 生图"整体判成不可用，是把②误当①了，**该结论对②不成立，已纠正**。
+  ②正是 tb-auto `src/services/codex_image_generation.py` 里的既有正规流程（`CODEX_MODEL='builtin-imagegen'`，
+  注释写明"人工交接：人在 Codex 里出图"），且 `builtin-imagegen` 本就在 `visual_review.GENERATORS` 白名单内。
+  **边界必须记清**：这是 Codex 订阅额度的内置生图，**不是**被禁的 WorkBuddy 内置 ImageGen（5-10 积分/张）。
+- **7 张素材**：用 Codex 内置 `image_gen` 的 edit 模式逐张产出（5 主 1254² + 2 详 1024×1536），
+  改动方向统一为"只把纯色背景换成暖米色→浅杏渐变"，商品/中文/规格数字/色卡/步骤全部保持。
+  逐张目视复核：文字**逐字正确、无乱码、无新增元素**；detail-1 量化 1993 匹配/84.7% 内点/残差 0.31px、
+  63.5% 像素显著变化（证明是真实重绘而非原图重编码）。main-5 首版被提示词误改成蓝底白字，已重出还原浅蓝底深色字。
+  归档 `work/materials-20261118/task60/{target,prompts,source.json,artifacts.json}`（work/ 被 gitignore）。
+- **新增代码修复（本轮唯一生产代码改动）**：妙手页面在详情选图/上传后**自行把「方式5 添加首部/尾部图片」勾上**
+  （实测 7 张全部上传成功后 `addDescImage` 变 checked），`verify_prepared` 的 `option_scope` 因此拒绝
+  （判据 `selected_enabled_options != {'new','onlyPreview','replaceImgsByImgUrls'}`）。
+  Codex 裁决三选一：**A 清理真实表单状态（正确）** ＞ B 放宽白名单（会让"方式5 空勾"蒙混）＞ C 过滤观测（隐藏真状态）。
+  落地：`_add_desc_image_state()` 只读探测 + `_clear_add_desc_image()` 仅在 enabled&checked 时才取消并返回 True；
+  `prepare()` 在每张详情上传后、点预览前清理，并在预览后若又被勾回则清理+重生成一次预览（保证预览与表单一致）。
+  公开 `_REQUIRED_OPTIONS` 与严格等值校验**未放宽**。测试 `tests/test_miaoshou_batch_editor.py` +2 条
+  （四种状态分支、点预览前方式5 必须为 False），该文件 73 passed。
+- **完整真跑命令序列**（可复现，全部 `--endpoint ego --session miaoshou-auto-batch-20261028`）：
+  `batch preflight --product-id … --recheck-blocked --check-miaoshou --report-dir …` →
+  `batch recheck --task-id 60 --proof <summary.json>`（blocked→needs_agent）→
+  `agent next --owner workbuddy --product-id …`（→agent_claimed，拿 token/target_version）→
+  装配 source.json+artifacts.json（5 主 2 详、5 项逐图检查、`generator=builtin-imagegen`）→
+  `agent complete --task-id 60 --owner workbuddy --token … --artifacts …`（→ready）→
+  `batch run --apply --product-id … --limit 1`（→verified）。
+- **过程中的两次卡点（均已解决，非绕过）**：
+  ① `ego_error`（`page.click` 被 `<div> intercepts pointer events`）：space 67 的 task 已 ended，
+  `claimTaskSpace(67)` 接管同一空间后重跑即过——不是新建、不是绕过。
+  ② `ego_session_changed`：预检中途 `align_space()` 把 state 从失效的 space 15 改写到 67，第二次校验不一致；
+  重跑一次即自洽（state 已稳定在 67）。
+- **待办**：全量 pytest 与 npm 回归（本轮在跑）；Codex 复审本次 addDescImage 修复；改动提交。
 
 ### T-20261118-006 · 用户提「用 codex 生图」：通道存在但当前不可用，mask 不能保像素，不作交付路径
 - 用户问「如果使用 codex 生图呢」。实测 + Codex 裁决（`/tmp/codex-codexgen-20261118.md`）：**E 路径不作为 task 60 交付方案**。

@@ -561,6 +561,30 @@ class MiaoshouBatchEditor:
         if current != count:
             raise DoudianError('miaoshou_batch_detail_rows', '详情替换行数不是4，拒绝继续。')
 
+    def _add_desc_image_state(self):
+        """Read method-5 (add head/tail detail images) without touching it."""
+        return self.bridge.evaluate(
+            "(()=>{const x=[...document.querySelectorAll('input[type=checkbox]')]"
+            ".find(n=>n.value==='addDescImage'&&(n.offsetParent!==null||n.getClientRects().length>0));"
+            "return x?{disabled:Boolean(x.disabled),checked:Boolean(x.checked)}:null})()")
+
+    def _clear_add_desc_image(self):
+        """Turn method-5 off; return True only when it actually had to be cleared.
+
+        Miaoshou itself ticks 方式5「添加首部图片/添加尾部图片」after detail images
+        are picked. Observed on 5-main/2-detail: all seven uploads succeeded and
+        `addDescImage` came back checked, so `verify_prepared` refused with
+        `miaoshou_batch_option_scope`. The writer only performs method-4 lookup
+        replacement, so the extra mode must be cleared rather than whitelisted —
+        an empty method-5 is still a different submission semantic. Disabled or
+        missing controls need no action: they never appear in the observed set.
+        """
+        state = self._add_desc_image_state()
+        if not isinstance(state, dict) or state.get('disabled') is True or state.get('checked') is not True:
+            return False
+        self._ensure_checkbox('addDescImage', False)
+        return True
+
     def close_image_picker_if_open(self):
         state = self.bridge.evaluate(
             "(()=>({main:[...document.querySelectorAll('.replace-image-dialog')].filter(x=>x.offsetParent!==null).length,"
@@ -686,15 +710,26 @@ class MiaoshouBatchEditor:
             self._ensure_checkbox('replaceImgsByImgUrls', True)
             check = self._upload_detail_target(index, path, previous('details', index + 1, path))
             self._ensure_checkbox('replaceImgsByImgUrls', True)
+            self._clear_add_desc_image()
             if on_upload:
                 on_upload('details', index + 1, self._mapping('details', index + 1, check))
+
+        def confirm_preview():
+            self._wait_eval(
+                "(()=>({ids:[...document.body.innerText.matchAll(/商品ID[：:]\\s*(\\d+)/g)].map(x=>x[1]),"
+                "count:(document.body.innerText.match(/共找到\\s*(\\d+)\\s*个商品/)||[])[1]||null}))()",
+                lambda value: isinstance(value, dict) and value.get('ids') == [str(product_id)] and
+                              value.get('count') == '1',
+                '修改预览没有精确收敛到目标商品。', seconds=30)
+
+        # 方式5 必须清在点预览之前：预览按当时的表单生成，先预览再改会让两者不一致。
+        self._clear_add_desc_image()
         self._click_exact_text('button', '预览修改效果')
-        self._wait_eval(
-            "(()=>({ids:[...document.body.innerText.matchAll(/商品ID[：:]\\s*(\\d+)/g)].map(x=>x[1]),"
-            "count:(document.body.innerText.match(/共找到\\s*(\\d+)\\s*个商品/)||[])[1]||null}))()",
-            lambda value: isinstance(value, dict) and value.get('ids') == [str(product_id)] and
-                          value.get('count') == '1',
-            '修改预览没有精确收敛到目标商品。', seconds=30)
+        confirm_preview()
+        if self._clear_add_desc_image():
+            # 预览动作本身也可能把方式5 勾回来；清掉后重生成一次预览保持一致。
+            self._click_exact_text('button', '预览修改效果')
+            confirm_preview()
         return {'writer_revision': WRITER_REVISION, 'fresh_form': fresh_form,
                 'reused_slots': reused,
                 'uploaded_slots': [*(f'mains:{i}' for i in range(1, len(main_paths) + 1)),

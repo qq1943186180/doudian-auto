@@ -860,3 +860,29 @@ preflight 的门槛同样是 `main_count != 5 or detail_count < 4` → `writer_i
   两条路径都把带 `slot_plan` 的 baseline 传给 `prepare` / `verify_prepared` / `finalize`；离线层面
   **没有确定可复现的高危残留**。终态回归：`pytest 830 passed`、`npm test 124 pass / 0 fail`，
   仍**零真实商品写入**；task 59 真机实测前不宣称端到端可用。
+
+### ⑱-c 变长槽位首次真实写入成功（2026-11-19，task 60，5主2详）
+
+- **终态**：task 60 `3784643089604411407` → `state=verified`、`submission_state=verified_by_readback`、
+  `miao_matches=true`、`doudian_matches=true`、`submission_attempts=1`；队列 23 verified / 32 blocked / 6 closed。
+  **⑱-a/⑱-b 的离线结论到此有了真机证据**：5主2详 能上传 7 槽、预览、保存、双端读回逐张匹配。
+- 🔴 **新卡点（本轮唯一生产代码改动）**：妙手页面在详情选图/上传后**自行把「方式5 添加首部/尾部图片」勾上**
+  （7 张全部上传成功后 `addDescImage` 变 checked），`verify_prepared` 的 `option_scope` 因此拒绝
+  （`selected_enabled_options != {'new','onlyPreview','replaceImgsByImgUrls'}`）。
+  Codex 三选一裁决：**A 清理真实表单（对）**＞B 放宽白名单（会让"方式5 空勾"蒙混，且等值比较会反向要求它必勾）
+  ＞C 在 observe 过滤（隐藏真状态、提交仍带方式5）。落地为 `_add_desc_image_state()` + `_clear_add_desc_image()`，
+  在**点预览之前**清理（预览按当时表单生成，先预览再改会不一致）；预览后若又被勾回则清理并重生成一次预览。
+  `_REQUIRED_OPTIONS` 与严格等值校验**未放宽**。
+- **教训一：页面会自行改动"与我们无关"的选项**。写入器只填方式4，页面却把方式5 勾上；这类副作用必须在
+  **提交前读取真状态并清理**，不能靠"我没点它"来推断它没变。
+- **教训二：严格等值校验是对的，别为了过闸放宽它**。option_scope 把"多勾的方式5"拦下来是正确的；
+  放宽白名单等于承认一个未验证的提交语义。
+- **教训三：同一个名字可能是两条完全不同的通道**。"用 codex 生图"在 tb-auto 里有两套实现：
+  需要 `npx -y openai-oauth@latest` 起 `127.0.0.1:10531` 的 `/v1/images/edits` API 通道，与
+  **Codex CLI 自己的内置 `image_gen` 工具**。前者当前不可用，后者实测可用（走订阅额度、原图 1254²）。
+  曾把两者混为一谈、据此判定"codex 生不了图"，是错误结论。内置 `image_gen` 正是 tb-auto
+  `codex_image_generation.py` 的既有正规流程（`CODEX_MODEL='builtin-imagegen'`），
+  且 `builtin-imagegen` 本就在 `visual_review.GENERATORS` 白名单；它与被禁的 WorkBuddy 内置 ImageGen（积分制）不是一回事。
+- **教训四：改素材通道要重做实物核对**。7 张图逐张目视 + 量化（detail-1：1993 匹配 / 84.7% 内点 /
+  残差 0.31px / 63.5% 像素显著变化），确认文字逐字正确、非原图重编码；main-5 因提示词写错（误写"蓝底白字"）
+  被改成与原图不符，已重出还原。**提示词描述错误会被当成"改版"落地，必须逐张对原图核字**。
