@@ -31,22 +31,28 @@
 
 ## 给人的说明
 
-### T-20261120-001 · 🟡 尺码表已修正，写入已提交并进入「抖店审核中」
+### T-20261120-001 · ✅ 尺码表已修正，7 张图全部替换，双端 verified
 
+- **最终结果**：task 58（`3793430313384935495`）→ `state=verified`、`submission_state=verified_by_readback`、
+  `miao_matches=True`、`doudian_matches=True`、`attempts=1`、`last_error=None`。队列 **24 verified / 31 blocked / 6 closed**。
+- **7 张图逐一确认**（读到的是 `png_m_` 新图，字节数与本地素材完全一致）：
+  主图 `2074938 / 1775746 / 2150213 / 1996981 / 2092645`；详情 `2007184 / 2016284`。原图是 `jpeg_m_` 开头。
 - **改了什么**：把 11 行尺码表的脚长/脚宽按**标准鞋码→脚长换算**重填（尺码列与 121 个 SKU 对应未动）：
   24-25→15/16/6/7 … 44-45→27.5/29/11/12。原值把鞋码当厘米填（44-45 码填 45cm），
   脚长 max 45>40、脚宽 max 19>15 超妙手上限。新值脚长 max 29、脚宽 max 12，均在限内且区间递增不重叠。
   已保存并**重开页面读回确认落库**。
+- **链路**：修尺码表 → 刷新基线 `preflight`（121/121 + 妙手在列）→ `recheck` 复开 → `agent next` →
+  复用已有 artifacts（5主2详）`agent complete` → `batch run --apply` → 妙手任务显示
+  「综合修改 | 03:31:51 | **抖店审核中** | 成功 0 / 失败 0」→ 单件只读 `readback` 双端 verified。
 - **过程中的失误与恢复（必须记录）**：我先点了「保存草稿」，导致商品从仓库**移入草稿箱（待提交）**；
   随后点「发布商品」恢复，商品回到 **`statusName=下架`**（即原"仓库中/未上架"），
   `draft_loaded=False / rejected=False / mains 5 / details 2` 已复核。
-- **写入结果**：`batch run --apply` 完成后妙手批量修改历史显示
-  **「综合修改 | 2026-11-20 03:31:51 | 抖店审核中 | 成功 0 / 失败 0」** ——
-  提交已被抖店接收、正在审核。此前同类任务是「完成 / 成功 0 / 失败 1（尺码表非法）」。
-- **队列状态**：`blocked / submission_state=unknown`（run 未拿到业务响应），
-  **必须在抖店审核有结论后做一次只读 readback 才能结案**，不得提前标 verified。
-- **另一个环境教训**：妙手会话里残留的 `undefined` 标签会让 `Browser.getWindowForTarget` 抛错、
-  连带 SKU 读取只能到 110–120/121 且 `miaoshou_listed=False`；清掉异常标签后立刻恢复 **121/121 + 妙手在列**。
+- **🔴 两个环境教训**：
+  1. 妙手会话里残留的 `undefined` 标签会让 `Browser.getWindowForTarget` 抛错，连带 SKU 读取只能到
+     110–120/121 且 `miaoshou_listed=False`；**清掉异常标签后立刻恢复 121/121 + 妙手在列**。
+     → 遇到 SKU 读不全或妙手"不存在"，先查有没有脏标签，别先怀疑商品数据。
+  2. 首次 `readback` 报 `readback_mismatch` 且 `mains=0` 是**图片懒加载没读到**（不是不匹配）；
+     换一个新 session 重跑一次即双端全绿。→ `mains=0` 要按"没读到"处理，别据此判失败。
 
 ### T-20261119-003 · ⏸ 官方后台通道尝试：素材已就位，upload 卡在详情区渲染
 
