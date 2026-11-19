@@ -140,7 +140,19 @@ class Editor:
             # placeholder until it intersects the viewport, so a listing with more slides
             # than fit on screen never turns ready by waiting alone. Nudge one unloaded
             # slide into view between reads; each round loads the next one.
-            if not ready(snapshot) and shiftable(snapshot):
+            #
+            # Two unready shapes need a nudge, and they are told apart by the declaration
+            # count, not by the source label:
+            #   standard, declared > slots  -> tail slides have not been asked to load yet;
+            #   pending,  declared == 0     -> the editor scrolled past the detail block and
+            #     its virtual container unmounted entirely. Measured: after an operation the
+            #     panel reads 'pending / unavailable / declared 0 / cards 0' for at least ten
+            #     seconds on its own, and only a scroll back brings the declarations back.
+            # An ambiguous panel that still declares slides (declared > 0 but no slots) is a
+            # structure problem; it must fail closed without being scrolled at.
+            unmounted = (snapshot.get('detail_status') == 'pending'
+                         and not snapshot.get('detail_declared'))
+            if not ready(snapshot) and (shiftable(snapshot) or unmounted):
                 try:
                     self.dom('scroll', manifest, kind='details')
                 except DoudianError:
