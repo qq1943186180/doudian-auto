@@ -211,6 +211,10 @@ def parser():
     batch_rebaseline = batch_sub.add_parser('rebaseline', help='以双端完整证据核清旧任务，恢复同一目标版本的素材准备')
     batch_rebaseline.add_argument('--task-id', required=True, type=int)
     batch_rebaseline.add_argument('--proof', required=True)
+    batch_requeue_failed = batch_sub.add_parser(
+        'requeue-failed', help='以平台任务终态与双端零变更证据结清未知保存，并重新排队')
+    batch_requeue_failed.add_argument('--task-id', required=True, type=int)
+    batch_requeue_failed.add_argument('--proof', required=True)
     batch_recover_preflight = batch_sub.add_parser('recover-preflight', help='以新鲜双端证据恢复未开始上传/保存的旧缺属性任务')
     batch_recover_preflight.add_argument('--task-id', required=True, type=int)
     batch_recover_preflight.add_argument('--proof', required=True)
@@ -989,6 +993,9 @@ def run(args):
             if args.batch_command == 'rebaseline':
                 from .rebaseline import rebaseline_external
                 return rebaseline_external(args.task_id, args.proof)
+            if args.batch_command == 'requeue-failed':
+                from .requeue_failed import requeue_failed_submission
+                return requeue_failed_submission(args.task_id, args.proof)
             if args.batch_command == 'recover-preflight':
                 from .rebaseline import recover_preflight
                 return recover_preflight(args.task_id, args.proof)
