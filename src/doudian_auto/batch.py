@@ -36,6 +36,11 @@ PREWRITE_RECOVERABLE_ERRORS = {
 # can be re-read (and then released with `reopen_blocked`); a row blocked for any other
 # reason cannot, because its failure may describe a write.
 PREFLIGHT_BLOCK_PREFIX = 'preflight_exception:'
+# A save that the platform later reported as failed with zero changes is not a preflight
+# failure: the row really did reach a click. It still belongs to "no write survived", so
+# it may be re-read -- but under its own reason so the two cases stay distinguishable.
+PRIOR_SAVE_FAILED_PREFIX = 'prior_save_failed:'
+RECOVERABLE_BLOCK_PREFIXES = (PREFLIGHT_BLOCK_PREFIX, PRIOR_SAVE_FAILED_PREFIX)
 
 
 def _db(path=None):
@@ -1887,7 +1892,7 @@ def _preflight_blocked_reason(row):
         error = row['last_error']
     except (KeyError, IndexError):
         return False
-    return isinstance(error, str) and error.startswith(PREFLIGHT_BLOCK_PREFIX)
+    return isinstance(error, str) and error.startswith(RECOVERABLE_BLOCK_PREFIXES)
 
 
 def apply_preflight_report(task_id, proof_path, *, db_path=None):

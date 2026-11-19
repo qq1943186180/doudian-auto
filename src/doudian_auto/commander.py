@@ -85,6 +85,10 @@ def decide(row):
         # Generating that itself would be the machine vouching for its own evidence, so
         # this stays a one-click human confirmation rather than silent automation.
         return WAIT_REBASELINE, '外部改动：可自动取证，待确认历史提交结论'
+    if error.startswith('prior_save_failed:'):
+        # A save the platform itself declared failed with zero changed products: nothing
+        # survived, so the honest next step is a fresh read, not another write.
+        return WAIT_REBASELINE, '先前保存被平台判定失败且零变更，可重新预检'
     return HOLD_ERROR, (row.get('last_error') or '未分类阻塞')[:100]
 
 

@@ -21,7 +21,7 @@ SCHEMA_VERSION = 1
 # 证据只在这段时间内有效：终态与读回必须是刚刚观察到的，不能拿几天前的截图结案。
 STALE_SECONDS = 30 * 60
 REQUIRED_UNCHANGED = ('title', 'mains', 'details', 'protected')
-FAILED_REQUEUE_PREFIX = 'preflight_exception: prior_save_failed;'
+FAILED_REQUEUE_PREFIX = batch.PRIOR_SAVE_FAILED_PREFIX + ' '
 
 
 def _require(condition, message):
@@ -78,6 +78,11 @@ def requeue_failed_submission(task_id, proof_path, *, db_path=None):
 
         task = proof.get('miaoshou_task') if isinstance(proof.get('miaoshou_task'), dict) else {}
         reasons = task.get('reasons')
+        # 平台任务必须能被指认，而且要指认到这个商品：只断言"某任务失败了"是不够的。
+        _require(isinstance(task.get('task_id'), str) and task['task_id'].strip(),
+                 '平台任务没有可指认的任务号。')
+        _require(task.get('product_id_confirmed') == row['product_id'],
+                 '平台任务详情没有确认属于该商品。')
         _require(task.get('finished') is True, '平台任务尚未终结。')
         _require(task.get('success_count') == 0, '平台任务有成功项，不能按零变更结清。')
         _require(type(task.get('fail_count')) is int and task['fail_count'] >= 1,
@@ -91,6 +96,22 @@ def requeue_failed_submission(task_id, proof_path, *, db_path=None):
 
         reason = '; '.join(str(x).strip()[:120] for x in reasons if isinstance(x, str) and x.strip())[:300]
         prior_intent = row['submission_intent_json']
+        # 清空基线前，把足以独立复核"零变更"的那部分留档：只留哈希无法再验证结论。
+        prior_baseline = None
+        if row['baseline_json']:
+            try:
+                saved = json.loads(row['baseline_json'])
+            except ValueError:
+                saved = {}
+            if isinstance(saved, dict):
+                prior_baseline = {
+                    'title': saved.get('title'),
+                    'mains': saved.get('mains'),
+                    'details': saved.get('details'),
+                    'protected': saved.get('protected'),
+                    'slot_plan': saved.get('slot_plan'),
+                    'baseline_sha256': row['baseline_hash'],
+                }
         conn.execute(
             '''UPDATE products SET state='blocked', submission_state='not_attempted',
                     submission_attempts=0, baseline_json=NULL, baseline_hash=NULL,
@@ -106,6 +127,8 @@ def requeue_failed_submission(task_id, proof_path, *, db_path=None):
                 'miaoshou_task': task,
                 'prior_submission_intent_sha256':
                     hashlib.sha256(prior_intent.encode('utf-8')).hexdigest() if prior_intent else None,
+                'prior_baseline': prior_baseline,
+                'unchanged': {key: True for key in REQUIRED_UNCHANGED},
                 'reason': reason,
             }, ensure_ascii=False, sort_keys=True)))
         conn.commit()

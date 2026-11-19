@@ -36,10 +36,14 @@ def queue(tmp_path):
     with sqlite3.connect(db) as conn:
         conn.execute(
             """UPDATE products SET state='blocked', submission_state='unknown',
-                   submission_attempts=1, baseline_hash=?, artifacts_hash=?, artifacts_path='/tmp/x.json',
-                   upload_map_json='[{"slot":"mains:1"}]', readback_json='{}',
-                   readback_hash=?, submission_intent_json='{"attempt":1}' WHERE product_id=?""",
-            (BASELINE, MANIFEST, 'c' * 64, PID))
+                   submission_attempts=1, baseline_json=?, baseline_hash=?, artifacts_hash=?,
+                   artifacts_path='/tmp/x.json', upload_map_json='[{"slot":"mains:1"}]',
+                   readback_json='{}', readback_hash=?, submission_intent_json='{"attempt":1}'
+               WHERE product_id=?""",
+            (json.dumps({'title': '原商品标题', 'mains': [], 'details': [],
+                         'protected': {}, 'slot_plan': {'mains': 5, 'details': 2}},
+                        ensure_ascii=False),
+             BASELINE, MANIFEST, 'c' * 64, PID))
         conn.row_factory = sqlite3.Row
         row = dict(conn.execute('SELECT * FROM products WHERE product_id=?', (PID,)).fetchone())
     return SimpleNamespace(db=db, row=row, tmp=tmp_path)
@@ -57,7 +61,8 @@ def proof(queue, **overrides):
         'read_only': True,
         'observed_at': time.time(),
         'miaoshou_task': {'task_id': '36278985', 'finished': True, 'success_count': 0,
-                          'fail_count': 1, 'reasons': ['尺码表数据非法，存在尺码表值重复']},
+                          'fail_count': 1, 'reasons': ['尺码表数据非法，存在尺码表值重复'],
+                          'product_id_confirmed': PID},
         'unchanged': {'title': True, 'mains': True, 'details': True, 'protected': True},
     }
     document.update(overrides)
@@ -99,11 +104,17 @@ def test_complete_evidence_clears_the_record_and_requeues(queue):
     assert '尺码表数据非法' in row['last_error']
     recorded = events(queue)
     assert recorded and json.loads(recorded[-1]['detail'])['action'] == 'requeue_failed_submission'
+    detail = json.loads(recorded[-1]['detail'])
+    # 清空基线前必须留下可独立复核零变更的那部分内容，只留哈希无法再验证。
+    assert detail['prior_baseline']['baseline_sha256'] == BASELINE
+    assert detail['prior_baseline']['title'] == '原商品标题'
+    assert detail['prior_baseline']['slot_plan'] == {'mains': 5, 'details': 2}
 
 
 def test_a_task_that_succeeded_anywhere_is_refused(queue):
     document = proof(queue, miaoshou_task={'task_id': '1', 'finished': True, 'success_count': 1,
-                                           'fail_count': 1, 'reasons': ['x']})
+                                           'fail_count': 1, 'reasons': ['x'],
+                                           'product_id_confirmed': PID})
     with pytest.raises(DoudianError) as caught:
         requeue_failed_submission(queue.row['id'], write(queue, document), db_path=queue.db)
     assert caught.value.code == 'requeue_failed_unproven'
@@ -111,10 +122,31 @@ def test_a_task_that_succeeded_anywhere_is_refused(queue):
 
 
 @pytest.mark.parametrize('task', [
-    {'task_id': '1', 'finished': False, 'success_count': 0, 'fail_count': 1, 'reasons': ['x']},
-    {'task_id': '1', 'finished': True, 'success_count': 0, 'fail_count': 0, 'reasons': ['x']},
-    {'task_id': '1', 'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': []},
-    {'task_id': '1', 'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': ['   ']},
+    {'task_id': '', 'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': ['x'],
+     'product_id_confirmed': PID},
+    {'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': ['x'],
+     'product_id_confirmed': PID},
+    {'task_id': '36278985', 'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': ['x'],
+     'product_id_confirmed': '123'},
+    {'task_id': '36278985', 'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': ['x']},
+])
+def test_the_platform_task_must_be_identified_and_belong_to_this_product(queue, task):
+    with pytest.raises(DoudianError) as caught:
+        requeue_failed_submission(queue.row['id'], write(queue, proof(queue, miaoshou_task=task)),
+                                  db_path=queue.db)
+    assert caught.value.code == 'requeue_failed_unproven'
+    assert current(queue)['submission_state'] == 'unknown'
+
+
+@pytest.mark.parametrize('task', [
+    {'task_id': '1', 'finished': False, 'success_count': 0, 'fail_count': 1, 'reasons': ['x'],
+     'product_id_confirmed': PID},
+    {'task_id': '1', 'finished': True, 'success_count': 0, 'fail_count': 0, 'reasons': ['x'],
+     'product_id_confirmed': PID},
+    {'task_id': '1', 'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': [],
+     'product_id_confirmed': PID},
+    {'task_id': '1', 'finished': True, 'success_count': 0, 'fail_count': 1, 'reasons': ['   '],
+     'product_id_confirmed': PID},
 ])
 def test_unproven_task_state_is_refused(queue, task):
     with pytest.raises(DoudianError) as caught:
