@@ -33,6 +33,17 @@
 
 ### T-20261119-002 · ⛔ task 58 真实写入：标题已保存、7 张图一张未替换；维持 blocked 待专用修复入口
 
+- **🔴 后续追查结论（2026-11-19 19:30，只读，未重复提交）**：**客户端全链路已证明正确，问题在妙手服务端未应用临时图。**
+  - 复现 prepare 并打开「查看详情」预览：`new_mains`/`new_details` **就是目标图**（末尾字节标记 2074938/1775746/2150213/1996981/2092645 与本地 target/*.png 完全对应）。
+  - 从 Ego 操作记录取到真正的提交动作 **`activate_batch_save`**，其 guard 为：
+    `options=[new,onlyPreview,replaceImgsByImgUrls]`、`mains` = 5 张目标 tmp_upload、
+    **`pairs` 只有 2 对（尾部空行已被 `_save_guard` 正确剔除）**，返回 `{"ok":true,"success":true}`。
+    → **"空行导致图片分支被丢弃"的假设不成立**（guard 是干净的 5 主 + 2 详）。
+  - 实际保存 API 为 **`POST /api/v2/product/batch/saveBatchTask`，status=200**；但该请求的 payload/response
+    未被 `network detail` 留存，**无法看到服务端实际处理结果**（Codex：这是定案唯一缺的证据）。
+  - 编辑页 `getProductEditImageTaskFailTips` 返回 `{"result":"fail","reason":"无需提示"}` —— 当前无遗留的图片失败任务。
+  - 差异仍只剩：**task 58 = 5主2详 + staged 临时图（失败）**；task 60 = 5主2详 + permanent 永久图（成功）；
+    task 37/38/40/41/44/47/53 = 5主4详 + staged（成功）。→ 高概率指向**新上传临时图在短详情场景下未被服务端转正/采纳**。
 - **发生了什么**：task 58（`3793430313384935495` 室内健身鞋，121 SKU，5主2详，仓库中）走完 preflight→recheck→agent next→
   Codex 内置生图出 7 张素材→agent complete→`batch run --apply`。写入返回
   `state=blocked / submission_state=unknown / miao_matches=false / doudian_matches=false`。
