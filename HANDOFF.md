@@ -31,19 +31,37 @@
 
 ## 给人的说明
 
-### T-20261119-002 · ⛔ task 58 真实写入：标题已保存、7 张图一张未替换；维持 blocked 待专用修复入口
+### T-20261119-002 · ⛔ task 58 写入失败：**妙手判定「尺码表数据非法」，整个任务零变更**（非代码缺陷）
 
-- **🔴 后续追查结论（2026-11-19 19:30，只读，未重复提交）**：**客户端全链路已证明正确，问题在妙手服务端未应用临时图。**
-  - 复现 prepare 并打开「查看详情」预览：`new_mains`/`new_details` **就是目标图**（末尾字节标记 2074938/1775746/2150213/1996981/2092645 与本地 target/*.png 完全对应）。
-  - 从 Ego 操作记录取到真正的提交动作 **`activate_batch_save`**，其 guard 为：
-    `options=[new,onlyPreview,replaceImgsByImgUrls]`、`mains` = 5 张目标 tmp_upload、
-    **`pairs` 只有 2 对（尾部空行已被 `_save_guard` 正确剔除）**，返回 `{"ok":true,"success":true}`。
-    → **"空行导致图片分支被丢弃"的假设不成立**（guard 是干净的 5 主 + 2 详）。
-  - 实际保存 API 为 **`POST /api/v2/product/batch/saveBatchTask`，status=200**；但该请求的 payload/response
-    未被 `network detail` 留存，**无法看到服务端实际处理结果**（Codex：这是定案唯一缺的证据）。
-  - 编辑页 `getProductEditImageTaskFailTips` 返回 `{"result":"fail","reason":"无需提示"}` —— 当前无遗留的图片失败任务。
-  - 差异仍只剩：**task 58 = 5主2详 + staged 临时图（失败）**；task 60 = 5主2详 + permanent 永久图（成功）；
-    task 37/38/40/41/44/47/53 = 5主4详 + staged（成功）。→ 高概率指向**新上传临时图在短详情场景下未被服务端转正/采纳**。
+- **🔴 真正的失败原因（2026-11-19 19:35 只读取证，妙手「批量修改历史」→任务详情页）**：
+  - 历史列表第一条即 task 58 的提交：`综合修改(多字段修改) | 2026-11-19 17:40:04 | 商品数 1 | 状态=完成 | 成功数 0 | 失败数 1`。
+  - 任务详情页（`/product/batch/history/detail?taskId=36278985`）明确写：
+    **状态「更新失败」，失败原因「尺码表数据非法，存在尺码表值重复，或尺码表和 SKU 尺码不吻合，
+    你可以前往【批量修改】【尺码表】【方式1】AI智能生成后重新提交」**。
+  - → **整个批量修改任务失败，成功数 0，商品零变更。**
+- **🔴 推翻此前两条错误结论**：
+  1. 之前说「标题已保存成功」是**误判**：`baseline.title == artifacts.title`
+     （都是「室内健身鞋男女套脚软底条纹运动鞋多色可选常规加绒款」），**标题本来就没变**，
+     并非"标题保存了、图片没保存"。
+  2. 之前推断「5主2详 + 新上传临时图路径有验收缺口」**不成立**：图片根本没进入处理阶段，
+     失败发生在妙手服务端对尺码表的校验，与图片路径、临时图、空行、addDescImage 全无关。
+- **仍成立的观察（保留，但不是根因）**：客户端链路本身是正确的——复现 prepare 后预览里
+  `new_mains/new_details` 就是目标图；真实提交动作 `activate_batch_save` 的 guard 为
+  `options=[new,onlyPreview,replaceImgsByImgUrls]`、5 张目标 mains、**pairs 只有 2 对**（尾部空行已被正确剔除）；
+  实际保存 API `POST /api/v2/product/batch/saveBatchTask` 返回 200。这些只证明"提交前状态正确"。
+- **task 58 的真实性质**：不是代码缺陷，而是**该商品的尺码表数据本身非法**（尺码表值重复或与 SKU 尺码不吻合，
+  该商品有 121 个 SKU）。妙手对所有批量修改都会先做这项校验，因此任何"综合修改"都会被拒绝。
+- **修复所需（属授权外字段，须用户决定）**：按妙手提示修正尺码表——走
+  【批量修改】→【尺码表】→【方式1 AI 智能生成】或人工修正重复/不吻合的值，**再**重跑 task 58。
+  尺码表与 SKU 挂钩，超出"只改标题与图片"的既定授权，程序不得自行修改。
+- **本次写入的实际影响**：**零字段变更**（标题、图片、保护字段全部维持 baseline），无需回滚。
+  `submission_state=unknown` 是提交时未拿到响应所致；现有证据表明该次提交已终结且失败。
+- **完整链路（已跑通到提交）**：preflight（含 SKU 有限重试）→ recheck → agent next →
+  Codex 内置生图 7 张 → agent complete → `batch run --apply` → 妙手任务失败（尺码表）。
+- **素材与诊断脚本**：`work/materials-20261119/task58/`（gitignore）。
+
+### T-20261119-002-旧记录（已被上面取代，保留以防丢失上下文） · 图片未替换的初步分析
+
 - **发生了什么**：task 58（`3793430313384935495` 室内健身鞋，121 SKU，5主2详，仓库中）走完 preflight→recheck→agent next→
   Codex 内置生图出 7 张素材→agent complete→`batch run --apply`。写入返回
   `state=blocked / submission_state=unknown / miao_matches=false / doudian_matches=false`。
