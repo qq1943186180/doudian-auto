@@ -29,9 +29,11 @@ SECONDS_PER_SKU = 1.2
 # Below this many SKUs a single 30s budget already covers the whole holder (~6 rows per
 # round), so the caller's budget is used untouched.
 LARGE_LISTING_SKUS = 30
-# A wrap back to the top re-reads rows that are already known, so a scan that has covered
-# the holder shows several rounds with no new SKU. Stopping then is honest: the evidence
-# still says which codes were observed, and the caller rejects an incomplete set.
+# A scan that has genuinely covered the holder re-reads known rows, so continuing
+# forever is dishonest. The primary signal is a wall-clock settle window after the
+# geometry stops changing (lazy mounting can otherwise look like a stall); the round
+# ceiling is a fail-closed backstop, notably for runtimes that report no geometry.
+STALLED_SECONDS = 30.0
 STALLED_ROUNDS = 6
 
 
@@ -140,8 +142,15 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
     deadline = started + budget
     observed, navigation_id, rounds, operation = {}, None, 0, 'read'
     initial_shop_error = None
-    stalled = 0
+    # A 121-SKU listing can grow its virtual holder while lazy rows mount, so
+    # "no new SKU for N rounds" alone is not proof of a stall. Track geometry too:
+    # new codes, a downward advance, or a higher scroll ceiling all count as
+    # progress. Only a stable bottom with no geometry change starts the settle
+    # window, which is wall-clock bounded instead of bridge-round bounded.
+    no_progress_since = None
+    last_signature = None
     last_count = 0
+    stalled_rounds = 0
     while monotonic() < deadline:
         try:
             result = _probe(editor, operation, identity, navigation_id)
@@ -188,15 +197,36 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
                         'rows': rows, 'rows_sha256': code_rows_sha256(rows)}
             validate_sku_code_evidence(evidence, reference)
             return evidence
-        if len(observed) > last_count:
-            last_count, stalled = len(observed), 0
+        # Geometry comes from the same holder and the same probe as these rows.
+        # Missing geometry (older runtime) falls back to the row-count signal so
+        # the check stays fail-closed even without the new fields.
+        geometry = result.get('geometry')
+        top_now = geometry.get('scroll_top') if isinstance(geometry, dict) else None
+        ceiling = geometry.get('max') if isinstance(geometry, dict) else None
+        at_end = geometry.get('at_end') is True if isinstance(geometry, dict) else False
+        signature = (len(observed), top_now, ceiling)
+        progressed = len(observed) > last_count
+        if not progressed and signature != last_signature:
+            progressed = True  # holder moved or grew even though no new code appeared
+        if progressed:
+            last_count = len(observed)
+            last_signature = signature
+            no_progress_since = None
+            stalled_rounds = 0
         else:
-            stalled += 1
-            if stalled >= STALLED_ROUNDS:
+            stalled_rounds += 1
+            if no_progress_since is None:
+                no_progress_since = monotonic()
+            elapsed_stall = monotonic() - no_progress_since
+            # Round backstop always applies; with geometry the wall-clock window
+            # additionally protects against slow-but-live lazy mounting.
+            time_stopped = geometry is not None and elapsed_stall >= STALLED_SECONDS
+            if stalled_rounds >= STALLED_ROUNDS and (geometry is None or time_stopped):
+                detail = ('底部稳定' if at_end else '滚动无进展')
                 raise DoudianError(
                     'official_sku_code_incomplete',
-                    '连续{0}轮滚动未读到新的SKU（已确认{1}/{2}），已停止；缺失值不当作空值。'.format(
-                        stalled, len(observed), len(expected)))
+                    '{0}，连续{1:.0f}秒/{2}轮无新SKU或几何变化（已确认{3}/{4}），已停止；缺失值不当作空值。'.format(
+                        detail, elapsed_stall, stalled_rounds, len(observed), len(expected)))
         pending = result.get('pending_count')
         _require(type(pending) is int and pending >= 0)
         if not result['ready']:

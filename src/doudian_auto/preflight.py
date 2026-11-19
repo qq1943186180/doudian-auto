@@ -188,6 +188,33 @@ def _existing_ego_space(bridge, expected=None):
     return state['spaceId']
 
 
+# A 121-SKU listing was measured with an unreliable mount order: repeated fresh
+# reads sometimes cover all codes and sometimes stop a few short, even at the same
+# window size and budget. Each successful read is independently validated for full
+# coverage; a retry never merges partial reads or turns a missing code into "".
+SKU_READ_ATTEMPTS = 3
+
+
+def _stable_snapshot_with_sku_retry(editor, identity):
+    """Retry only a failed SKU-code read; keep every other failure fail-closed.
+
+    The snapshot helper opens the official editor fresh on every call, so each
+    attempt is an independent full read. Only `official_sku_code_incomplete`
+    (the measured timing-sensitive failure) is retried. All other errors, and a
+    final exhausted attempt, propagate unchanged with no write of any kind.
+    """
+    attempts = []
+    for attempt in range(1, SKU_READ_ATTEMPTS + 1):
+        try:
+            return batch._stable_doudian_snapshot(editor, identity), attempts
+        except DoudianError as error:
+            if error.code != 'official_sku_code_incomplete' or attempt >= SKU_READ_ATTEMPTS:
+                raise
+            attempts.append({'attempt': attempt, 'code': error.code,
+                             'message': _safe_text(str(error))[:200]})
+    raise AssertionError('unreachable')  # pragma: no cover
+
+
 def _validate_snapshot(snapshot, identity):
     if (not isinstance(snapshot, dict) or snapshot.get('product_id') != identity['product_id'] or
             snapshot.get('shop_confirmed') is not True or
@@ -298,9 +325,11 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                                 'edit_url': f'https://{HOST}/ffa/g/create?product_id={current["product_id"]}'}
                     read_started = time.monotonic()
                     try:
-                        snapshot = batch._stable_doudian_snapshot(editor, identity)
+                        snapshot, sku_retries = _stable_snapshot_with_sku_retry(editor, identity)
                     finally:
                         item['read_elapsed_seconds'] = round(time.monotonic() - read_started, 6)
+                    if sku_retries:
+                        item['evidence']['sku_read_retries'] = sku_retries
                     if not isinstance(snapshot, dict):
                         raise DoudianError('invalid_official_snapshot', '官方页面没有返回完整商品快照。')
                     safe = _safe_value({key: snapshot[key] for key in _SNAPSHOT_FIELDS if key in snapshot})

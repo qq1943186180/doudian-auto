@@ -74,40 +74,45 @@
   }
   // The measured table keeps every row in a virtual holder whose own scrollTop
   // decides which rows are mounted; the surrounding form scroller moves the whole
-  // block without changing them. Advance this holder - by half a page so
-  // consecutive views overlap - and wrap to the top once it cannot move further.
+  // block without changing them. Advance this holder by half a page so consecutive
+  // views overlap. Geometry is reported on every op (including `read`) so the Python
+  // side can tell "still advancing / dynamically growing" from "genuinely at the end".
   //
-  // Order matters, and getting it wrong is silent. `scroll_pending` used to call
-  // `scrollIntoView` on the trailing empty row *before* advancing the holder. Measured on
-  // a 121-SKU listing: that snap put scrollTop back to 389 on every round, so the advance
-  // to 639 was undone before the next read and fifty-five rounds all reported the same
-  // first screenful (11 of 121 codes). The holder can scroll to 4434 there, so the scan
-  // never even approached its limit. Advancing first and scrolling the placeholder into
-  // view only when the holder has nowhere left to go keeps the scan monotonic.
+  // Order matters. `scroll_pending` used to call `scrollIntoView` on the trailing empty
+  // row *before* advancing the holder; that snap undid the advance and fifty-five rounds
+  // re-read the same first screenful. Do not wrap back to the top when the holder cannot
+  // advance either: measured on a 121-SKU listing the holder grows while lazy rows mount,
+  // and an immediate jump to 0 hid the tail placeholder from the pending locator. Stay at
+  // the bottom and give the next read a chance to see the mounted row.
+  const holder = (withSkuCells.length &&
+                  withSkuCells[0].closest('.ecom-g-table-tbody-virtual-holder')) ||
+    root.querySelector('.ecom-g-table-tbody-virtual-holder');
+  const geometry = holder ? (() => {
+    const max = Math.max(0, Math.round(holder.scrollHeight - holder.clientHeight));
+    return {scroll_top: Math.round(holder.scrollTop), max,
+      scroll_height: Math.round(holder.scrollHeight), client_height: Math.round(holder.clientHeight),
+      at_end: holder.scrollTop >= max - 2};
+  })() : null;
+  let topBefore = geometry ? geometry.scroll_top : null;
+  let advancedDown = false;
   let rowScrolled = false;
-  if (op === 'scroll_pending' || op === 'scroll_rows') {
-    // Prefer the holder the SKU rows actually live in. A section that also carries a size
-    // table has its own virtual holder, and taking the first one in DOM order scrolled the
-    // wrong table without ever moving the rows being read.
-    const holder = (withSkuCells.length &&
-                    withSkuCells[0].closest('.ecom-g-table-tbody-virtual-holder')) ||
-      root.querySelector('.ecom-g-table-tbody-virtual-holder');
-    if (holder && holder.scrollHeight - holder.clientHeight > 1) {
-      const top = holder.scrollTop;
-      holder.scrollTop = top + Math.max(1, Math.floor(holder.clientHeight / 2));
-      rowScrolled = holder.scrollTop !== top;
-      if (!rowScrolled) {
-        holder.scrollTop = 0;
-        rowScrolled = holder.scrollTop !== top;
-      }
-    }
+  if ((op === 'scroll_pending' || op === 'scroll_rows') && holder &&
+      geometry.max > 1) {
+    holder.scrollTop = holder.scrollTop + Math.max(1, Math.floor(holder.clientHeight / 2));
+    rowScrolled = holder.scrollTop !== topBefore;
+    advancedDown = holder.scrollTop > topBefore + 1;
+    geometry.scroll_top = Math.round(holder.scrollTop);
+    geometry.max = Math.max(0, Math.round(holder.scrollHeight - holder.clientHeight));
+    geometry.scroll_height = Math.round(holder.scrollHeight);
+    geometry.at_end = holder.scrollTop >= geometry.max - 2;
   }
-  if (op === 'scroll_pending' && pending.length && !rowScrolled) {
-    // Nothing left to advance, so the placeholder may just be outside the viewport.
-    // This is the only move that remains and it cannot undo forward progress here.
+  if (op === 'scroll_pending' && pending.length && !advancedDown) {
+    // Holder cannot advance; the placeholder may just be outside the viewport.
+    // Locating it is not forward progress -- the geometry above says so honestly.
     pending[pending.length - 1].scrollIntoView({block: 'center'});
   }
   return {...identity, shop_confirmed: true, ready: nodes.length > 0,
     code_column: '商家编码', rows, row_count: nodes.length, pending_count: pending.length,
+    geometry, advanced_down: advancedDown,
     scrolled: (op === 'scroll_pending' && pending.length > 0) || rowScrolled};
 })

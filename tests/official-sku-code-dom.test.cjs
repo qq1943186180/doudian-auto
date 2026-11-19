@@ -98,12 +98,27 @@ test('scroll_rows advances the measured virtual holder by half a page, without t
   assert.deepEqual(f.scrolled, []);
 });
 
-test('scroll_rows wraps to the top once the virtual holder is already at its end', () => {
+test('scroll_rows stays at the end when the virtual holder cannot advance', () => {
   const f = fixture(); f.row(sku1);
   const holder = f.holder(2707, 523, 2184);
   const result = f.call('scroll_rows');
-  assert.equal(result.scrolled, true);
-  assert.equal(holder.scrollTop, 0);
+  // Do not wrap to 0: on a lazy-loading listing the jump hid the tail placeholder
+  // from the pending locator and the last SKU never mounted. Stay put and let the
+  // Python side decide from geometry whether this is a stable end.
+  assert.equal(holder.scrollTop, 2184);
+  assert.equal(result.advanced_down, false);
+  assert.equal(result.geometry.at_end, true);
+  assert.equal(result.geometry.max, 2184);
+});
+
+test('read reports holder geometry so a growing holder is not mistaken for a stall', () => {
+  const f = fixture(); f.row(sku1);
+  const holder = f.holder(2707, 523, 1000);
+  const result = f.call('read');
+  assert.equal(result.geometry.scroll_top, 1000);
+  assert.equal(result.geometry.max, 2184);
+  assert.equal(result.geometry.at_end, false);
+  assert.equal(holder.scrollTop, 1000);
 });
 
 test('scroll_rows on a layout with no virtual holder reports no scroll and keeps the read', () => {

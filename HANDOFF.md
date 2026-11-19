@@ -31,6 +31,39 @@
 
 ## 给人的说明
 
+### T-20261119-002 · ⛔ task 58 真实写入：标题已保存、7 张图一张未替换；维持 blocked 待专用修复入口
+
+- **发生了什么**：task 58（`3793430313384935495` 室内健身鞋，121 SKU，5主2详，仓库中）走完 preflight→recheck→agent next→
+  Codex 内置生图出 7 张素材→agent complete→`batch run --apply`。写入返回
+  `state=blocked / submission_state=unknown / miao_matches=false / doudian_matches=false`。
+- **只读核查结论（未重复提交）**：用只读诊断直接调 `_finalize_target_mappings` 拿到被吞掉的确切异常：
+  `final_asset_unchanged mains:1 保存后仍是原图片，目标替换未读回`。逐槽比对 URL 关键 hash 段：
+  - 妙手与抖店读回的 5 主 2 详**全部仍是 baseline 原图**（CDN 前缀不同但 hash 段一致）；
+  - `upload_map` 里 7 个 tmp_upload 临时图 UUID 与线上图片完全不同；
+  - 标题**已**保存为目标标题，`protected_match=true`，两端数量 5主2详都对。
+  即：**标题保存成功、7 张图片一张都没替换进去。**
+- **保存前证据（证明上传侧没问题）**：`writer_preparation_json` 的 `prepared_assets` 7 张
+  `asset_state=staged`、`content_verification.match=bytes`、`source_sha256` 与本地目标图一致，
+  `fresh_form=true`、`reused_slots=[]`、`uploaded_slots` 7 个。→ 临时素材上传且字节比对通过，
+  **但最终商品没有采用它们**。
+- **Codex 裁决（`/tmp/codex-t58-unchanged-20261119.md`）**：
+  1. 根因**不能确定**是 tmp_upload 不被采纳 / 只提交标题 / addDescImage 清理所致——三者均未被现有证据单独证实；
+     缺的关键证据是"实际提交采用的逐槽图片映射 + 服务端处理结果"。
+  2. **当前必须维持 blocked，不能纠正性重存**：图片不匹配+标题匹配不能证明原提交已终结；
+     授权本身不替代终结证据。
+  3. 后续若做纠正性保存，推荐**新增专用图片修复入口**（类似 `title_repair` 的受控设计，只写图片），
+     且必须先证明"7 槽实际替换映射与修改后预览均指向目标"，保存一次后双端逐槽验证，不匹配不得记成功。
+  4. `_finalize_target_mappings` 这次**正确拦截了失败，不能放宽它来解决**。
+- **确定暴露的验收缺口**：task 60 只验证了「5主2详 + 永久图复用」路径；**「5主2详 + 7 张新临时图」路径未被覆盖**。
+  已确定的问题是"临时素材已上传且内容正确，最终商品却保留全部原图"，应在 batch writer 的
+  「上传素材 → 表单绑定 → 预览 → 实际提交/持久化」链路定位。
+- **本轮同时完成的独立修复（已测试、待提交）**：官方页 SKU 商家编码读取的停滞判定改为
+  **几何签名 + 时间窗**（不再用固定 6 轮），删除"到底立即回顶"的旧行为；preflight 层新增
+  仅针对 `official_sku_code_incomplete` 的**最多 3 次**重试（每次 fresh 页面，只接受单次完整覆盖校验通过的证据）。
+  task 58 的 121 SKU 正是靠这个才拿到 `eligible=true`。回归：pytest 94 passed（目标文件）、npm 125 passed。
+- **状态**：task 58 维持 `blocked / submission_state=unknown / attempts=1`，**零重复提交、零字段再写入**。
+  素材与诊断脚本在 `work/materials-20261119/task58/`（gitignore）。
+
 ### T-20261119-001 · ✅ 变长槽位 5主2详 首次真实写入成功：双端 verified（task 60）
 - **结论**：task 60（`3784643089604411407` 波浪吸音棉，仓库中/下架）完成端到端写入并双端读回：
   `state=verified`、`submission_state=verified_by_readback`、`miao_matches=true`、`doudian_matches=true`，
