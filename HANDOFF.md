@@ -70,8 +70,22 @@
   ③ 刷新基线并重新 preflight/recheck，复核目标素材与槽位计划仍适用（不得沿用过期准备）；
   ④ 重新 prepare→upload→submit→verify，只提交一次；验收需妙手新任务终态成功 + 抖店独立读回，
   **不能以 HTTP 200、任务创建成功或"标题本来就相同"判成功**。
+- **本轮新增的恢复能力（提交 `18c78d4` + `33626db`）**：此前 `batch block` 有 `cannot_clear_unknown`、
+  `rebaseline` 明写 never recover an unknown submission 且要求 attempts=0，导致"平台已判定失败、双端零变更"的行
+  **永远无法重新排队**。新增 `batch requeue-failed --task-id --proof`（`src/doudian_auto/requeue_failed.py`）：
+  要求 proof 绑定 product/shop/target_version/baseline_sha256/manifest_sha256、30 分钟内观察、
+  平台任务**可指认**（task_id 非空且详情确认属于该商品）、finished、success_count==0、fail_count>=1 且有原因，
+  双端 unchanged 四字段全为 true；通过后写事件（含原 intent 摘要与**清空前的基线正文**：title/mains/details/protected/slot_plan）
+  并重置为 `not_attempted`/attempts=0、清 baseline/artifacts/upload_map/readback，
+  `last_error` 用**独立前缀** `prior_save_failed:`（`batch.RECOVERABLE_BLOCK_PREFIXES` 与 `commander` 均已支持，
+  `decide()` 会归到"可重新预检"而不是未分类隔离）。
+  Codex 复核提出的三项加固（任务指认、留档可复核基线、独立错误语义）均已落地；测试 25 条，全量 pytest 857 passed。
+- **真机结果**：对 task 58 执行核销成功（unknown → not_attempted），随后 `batch preflight` 返回
+  **eligible=true、121/121 SKU**。→ 一旦取得真实尺码依据，可直接从 preflight/recheck 重跑，无需再改队列。
+- ⚠️ **仍不可写入**：尺码表数值超限问题未解决（脚长>40 三行、脚宽>15 四行），Codex 裁定不能猜、
+  妙手 AI 生成也只能当草稿。**task 58 现在 eligible 但必须等真实尺码依据，不要跑 `batch run --apply`。**
 - **完整链路（已跑通到提交）**：preflight（含 SKU 有限重试）→ recheck → agent next →
-  Codex 内置生图 7 张 → agent complete → `batch run --apply` → 妙手任务失败（尺码表）。
+  Codex 内置生图 7 张 → agent complete → `batch run --apply` → 妙手任务失败（尺码表）→（新增）requeue-failed 核销。
 - **素材与诊断脚本**：`work/materials-20261119/task58/`（gitignore）。
 
 ### T-20261119-002-旧记录（已被上面取代，保留以防丢失上下文） · 图片未替换的初步分析
