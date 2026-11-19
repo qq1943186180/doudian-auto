@@ -76,7 +76,23 @@ export async function runEgo(request) {
   await save();
   const native=state.interaction_mode==='native';
   const ensureViewport=async page=>{
-    if(native)return; // Let Ego handle background layout and scrolling itself.
+    if(native){
+      // Ego hands new task spaces a minimized window, whose viewport is zero height.
+      // Lazy detail slides and virtual rows then never mount, and every read sees a
+      // half-rendered page. Restore the real window instead of faking a viewport in
+      // native mode, where Ego is meant to own the layout.
+      try{
+        const win=await page.cdp('Browser.getWindowForTarget',{});
+        const bounds=win&&win.bounds||{};
+        if(bounds.windowState==='minimized'||bounds.windowState==='fullscreen'){
+          await page.cdp('Browser.setWindowBounds',{windowId:win.windowId,bounds:{windowState:'normal'}});
+          await page.cdp('Browser.setWindowBounds',{windowId:win.windowId,bounds:{windowState:'maximized'}});
+        }else if(bounds.windowState==='normal'&&bounds.width>0&&bounds.width<1200){
+          await page.cdp('Browser.setWindowBounds',{windowId:win.windowId,bounds:{windowState:'maximized'}});
+        }
+      }catch(e){ /* a window we cannot inspect must not abort the read itself */ }
+      return;
+    }
     let info=await page.info();
     let viewport=state.viewport;
     if(!viewport||viewport.width<=0||viewport.height<=0){
@@ -278,11 +294,17 @@ export async function runEgo(request) {
   const actionStarted=Date.now();
   try {
     if(action==='cdp') {
-      if(!/^(Input\.(dispatchMouseEvent|dispatchKeyEvent|insertText)|Emulation\.setFocusEmulationEnabled)$/.test(args.method))
+      if(!/^(Input\.(dispatchMouseEvent|dispatchKeyEvent|insertText)|Emulation\.setFocusEmulationEnabled|Page\.bringToFront)$/.test(args.method))
         fail('ego_cdp_scope','Unsupported browser input protocol.');
       if(native){
-        if(args.method!=='Emulation.setFocusEmulationEnabled')fail('ego_native_input_required','Native pilot requires Page input controls.');
-        result={skipped:true};
+        // Bringing a task page to the front is what makes a background tab render its
+        // lazy images; without it the detail panel reports zero cards forever. It reads
+        // and reorders nothing, so it is allowed in native mode alongside focus emulation.
+        if(!['Emulation.setFocusEmulationEnabled','Page.bringToFront'].includes(args.method))
+          fail('ego_native_input_required','Native pilot requires Page input controls.');
+        result=args.method==='Page.bringToFront'
+          ? await page.cdp(args.method,args.params??{})
+          : {skipped:true};
       }else result=await page.cdp(args.method,args.params??{});
     } else if(action==='activate_batch_save') {
       const observed=await page.evaluate(inspectBatchSave,args.guard);
