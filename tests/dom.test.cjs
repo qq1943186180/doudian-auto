@@ -523,3 +523,25 @@ test('sections without a SKU grid carry no grid-free list',()=>{
   assert.equal(basics.sku_grid_rows, undefined);
   page.window.close();
 });
+
+test('records main_34_images and white_background_images separately on 图文信息 when present',()=>{
+  const {page,call} = fixture();
+  const media = page.window.document.getElementById('goodsEditScrollContainer-图文信息');
+  media.insertAdjacentHTML('afterbegin',
+    `<div attr-field-id="主图3:4">${image('m34_1')}${image('m34_2')}</div>` +
+    `<div attr-field-id="白底图">${image('wb_1')}</div>`);
+  const section = call('snapshot').protected.find(x=>x.section.endsWith('-图文信息'));
+  assert.deepEqual(section.main_34_images, [
+    'https://cdn.example/ecom-shop-material/m34_1.jpg',
+    'https://cdn.example/ecom-shop-material/m34_2.jpg',
+  ]);
+  assert.deepEqual(section.white_background_images, [
+    'https://cdn.example/ecom-shop-material/wb_1.jpg',
+  ]);
+  assert.deepEqual(section.images, [
+    'https://cdn.example/ecom-shop-material/m34_1.jpg',
+    'https://cdn.example/ecom-shop-material/m34_2.jpg',
+    'https://cdn.example/ecom-shop-material/wb_1.jpg',
+  ]);
+  page.window.close();
+});

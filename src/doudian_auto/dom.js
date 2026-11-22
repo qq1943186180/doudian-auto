@@ -275,6 +275,12 @@
         fields.inputs_without_sku_grid = sectionInputs
           .filter(e => !e.closest('tr[data-row-key]')).map(describeInput);
       }
+      if (section.id.endsWith('-图文信息')) {
+        const main34 = field('主图3:4');
+        const whiteBg = field('白底图');
+        if (main34 && section.contains(main34)) fields.main_34_images = images(main34);
+        if (whiteBg && section.contains(whiteBg)) fields.white_background_images = images(whiteBg);
+      }
       // A hidden section reports zero of everything, which is indistinguishable from
       // genuinely empty fields, so the observation state is recorded separately and never
       // inferred from absence. `innerText` of a hidden block is '' because layout never

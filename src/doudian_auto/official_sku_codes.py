@@ -35,6 +35,8 @@ LARGE_LISTING_SKUS = 30
 # ceiling is a fail-closed backstop, notably for runtimes that report no geometry.
 STALLED_SECONDS = 30.0
 STALLED_ROUNDS = 6
+PAINT_WAIT_SECONDS = 2.0
+BOTTOM_RESET_SETTLE_SECONDS = 3.0
 
 
 def _require(condition, code='official_sku_code_evidence_invalid',
@@ -151,6 +153,9 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
     last_signature = None
     last_count = 0
     stalled_rounds = 0
+    waiting_paint_since = None
+    pre_scroll_rows = None
+    did_reset = False
     while monotonic() < deadline:
         try:
             result = _probe(editor, operation, identity, navigation_id)
@@ -197,6 +202,14 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
                         'rows': rows, 'rows_sha256': code_rows_sha256(rows)}
             validate_sku_code_evidence(evidence, reference)
             return evidence
+        mounted_rows = frozenset(current)
+        if result.get('advanced_down') is True or result.get('reset_to_top') is True:
+            waiting_paint_since = monotonic()
+            pre_scroll_rows = mounted_rows
+        elif waiting_paint_since is not None:
+            if mounted_rows != pre_scroll_rows or (monotonic() - waiting_paint_since) >= PAINT_WAIT_SECONDS:
+                waiting_paint_since = None
+                pre_scroll_rows = None
         # Geometry comes from the same holder and the same probe as these rows.
         # Missing geometry (older runtime) falls back to the row-count signal so
         # the check stays fail-closed even without the new fields.
@@ -218,6 +231,15 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
             if no_progress_since is None:
                 no_progress_since = monotonic()
             elapsed_stall = monotonic() - no_progress_since
+            if (waiting_paint_since is None and not did_reset and geometry is not None and at_end and
+                    stalled_rounds >= STALLED_ROUNDS and elapsed_stall >= BOTTOM_RESET_SETTLE_SECONDS):
+                did_reset = True
+                no_progress_since = None
+                stalled_rounds = 0
+                last_signature = None
+                operation = 'reset_top'
+                sleep(min(0.2, max(0, deadline - monotonic())))
+                continue
             # Round backstop always applies; with geometry the wall-clock window
             # additionally protects against slow-but-live lazy mounting.
             time_stopped = geometry is not None and elapsed_stall >= STALLED_SECONDS
@@ -229,7 +251,7 @@ def collect_official_sku_codes(editor, identity, reference, *, seconds=30):
                         detail, elapsed_stall, stalled_rounds, len(observed), len(expected)))
         pending = result.get('pending_count')
         _require(type(pending) is int and pending >= 0)
-        if not result['ready']:
+        if not result['ready'] or waiting_paint_since is not None:
             operation = 'read'
         elif pending:
             operation = 'scroll_pending'

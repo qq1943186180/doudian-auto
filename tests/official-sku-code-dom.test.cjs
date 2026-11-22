@@ -294,3 +294,18 @@ test('the placeholder is still scrolled into view when the holder is at its end'
   assert.equal(result.scrolled, true);          // reported via the placeholder path
   assert.equal(placeholder.dataset.reached, '1');
 });
+
+test('reset_top rewinds a scrolled holder back to zero and reports updated geometry', () => {
+  const f = fixture(); f.row(sku1, 'A-1');
+  const holder = f.holder(2707, 523, 2184);
+  const result = f.call('reset_top');
+  assert.equal(holder.scrollTop, 0);
+  assert.equal(result.reset_to_top, true);
+  assert.equal(result.advanced_down, false);
+  assert.equal(result.scrolled, true);
+  assert.equal(result.geometry.scroll_top, 0);
+  assert.equal(result.geometry.at_end, false);
+  const alreadyTop = f.call('reset_top');
+  assert.equal(alreadyTop.reset_to_top, false);
+  assert.equal(alreadyTop.scrolled, false);
+});

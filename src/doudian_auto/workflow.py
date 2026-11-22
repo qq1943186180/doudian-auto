@@ -136,7 +136,10 @@ def _observations(index):
 # merely became observable as a commercial change. `sku_grid_rows` and
 # `inputs_without_sku_grid` are coverage metadata for the virtual SKU grid (see
 # `_prefer_grid_free_inputs`); the latter is only ever substituted back in for 价格库存.
-_METADATA_KEYS = ('section', 'observation', 'sku_grid_rows', 'inputs_without_sku_grid')
+_METADATA_KEYS = (
+    'section', 'observation', 'sku_grid_rows', 'inputs_without_sku_grid',
+    'main_34_images', 'white_background_images',
+)
 
 # The only section whose field list is replaced by its grid-free counterpart. Restricting
 # it keeps a crafted snapshot from hiding a change in any other block's `inputs`.
@@ -288,6 +291,48 @@ def _inactive_size_option_content(block, *, full_skus_compared):
     return {**content, 'inputs': ordered}
 
 
+def _auto_white_bg_mirror_content(name, left_block, right_block, left, right, *, before, after):
+    """Allow Doudian's empty->single-image `白底图` auto-mirror of a newly uploaded 1:1 main image.
+
+    When a listing starts with no `白底图` (all `图文信息.images` belong to `主图3:4`),
+    saving a new 1:1 white-background main image can cause Doudian to auto-mirror that
+    exact new `mains` asset into `[attr-field-id="白底图"]`. Require field-level DOM
+    evidence on the live read proving `主图3:4` is unchanged and `[attr-field-id="白底图"]`
+    holds only that single newly written main image.
+    """
+    if name != '图文信息' or not isinstance(left_block, dict) or not isinstance(right_block, dict):
+        return left, right
+    before_imgs = left.get('images')
+    after_imgs = right.get('images')
+    if (not isinstance(before_imgs, list) or not isinstance(after_imgs, list)
+            or not (1 <= len(before_imgs) <= 5)
+            or len(after_imgs) != len(before_imgs) + 1
+            or after_imgs[:-1] != before_imgs):
+        return left, right
+    raw_before_mains = before.get('mains') if isinstance(before, dict) else None
+    raw_after_mains = after.get('mains') if isinstance(after, dict) else None
+    if not isinstance(raw_before_mains, list) or not isinstance(raw_after_mains, list):
+        return left, right
+    before_mains = {resource_key(u) for u in raw_before_mains if isinstance(u, str) and u}
+    after_mains = {resource_key(u) for u in raw_after_mains if isinstance(u, str) and u}
+    appended = after_imgs[-1]
+    if not isinstance(appended, str) or not appended or appended not in (after_mains - before_mains) or appended in before_imgs:
+        return left, right
+    right_34 = right_block.get('main_34_images')
+    right_wb = right_block.get('white_background_images')
+    if not isinstance(right_34, list) or not isinstance(right_wb, list):
+        return left, right
+    if _normalize_images(right_34) != before_imgs or _normalize_images(right_wb) != [appended]:
+        return left, right
+    left_wb = left_block.get('white_background_images')
+    if left_wb is not None and (not isinstance(left_wb, list) or _normalize_images(left_wb) != []):
+        return left, right
+    left_34 = left_block.get('main_34_images')
+    if left_34 is not None and (not isinstance(left_34, list) or _normalize_images(left_34) != before_imgs):
+        return left, right
+    return left, {**right, 'images': after_imgs[:-1]}
+
+
 def compare_protected(before, after):
     """Fail unless every field outside the writable scope is provably unchanged.
 
@@ -342,6 +387,9 @@ def compare_protected(before, after):
         left_block, right_block = _prefer_grid_free_inputs(name, baseline[name], current[name])
         left = _normalize_images(_inactive_size_option_content(left_block, full_skus_compared=full_skus_compared))
         right = _normalize_images(_inactive_size_option_content(right_block, full_skus_compared=full_skus_compared))
+        left, right = _auto_white_bg_mirror_content(
+            name, left_block, right_block, left, right, before=before, after=after,
+        )
         if left != right:
             raise DoudianError('commercial_changed', '类目、规格、价格库存、服务或其他保留字段与编辑前不一致，已停止提交。')
 

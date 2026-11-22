@@ -215,3 +215,64 @@ def test_a_scan_that_keeps_producing_new_skus_is_not_cut_short(probe):
     proof = _collect(probe, seconds=60)
     assert proof['complete'] is True
     assert len(proof['rows']) == 3
+
+
+def test_waits_for_mounted_rows_to_repaint_after_scroll_advance(probe):
+    # Delayed paint: after advanced_down=True, React still shows SKUS[0] for several
+    # 0.2s ticks (>2 reads, < PAINT_WAIT_SECONDS) before repainting SKUS[1]. The collector
+    # must keep polling `read` instead of issuing another scroll step before mounted rows change.
+    probe.frames = [
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 0, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 400, 'max': 800, 'at_end': False}, advanced_down=True),
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 400, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 400, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 400, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[1])], geometry={'scroll_top': 400, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+    ]
+    proof = _collect(probe, seconds=60)
+    assert proof['complete'] is True
+    assert [call[0] for call in probe.calls] == ['read', 'scroll_rows', 'read', 'read', 'read', 'read', 'scroll_rows']
+
+
+def test_resets_to_top_once_after_bottom_settle_and_recovers_missed_sku(probe, monkeypatch):
+    monkeypatch.setattr(codes, 'STALLED_ROUNDS', 3)
+    monkeypatch.setattr(codes, 'BOTTOM_RESET_SETTLE_SECONDS', 0.4)
+    monkeypatch.setattr(codes, 'STALLED_SECONDS', 5.0)
+    # First pass misses SKUS[1]; bottom settles at at_end=True, triggering one reset_top
+    # followed by a read settle before recovering SKUS[1] on the second pass.
+    probe.frames = [
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 0, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 400, 'max': 800, 'at_end': False}, advanced_down=True),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 0, 'max': 800, 'at_end': False}, reset_to_top=True),
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 0, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[1])], geometry={'scroll_top': 400, 'max': 800, 'at_end': False}),
+    ]
+    proof = _collect(probe, seconds=60)
+    assert proof['complete'] is True
+    assert 'reset_top' in [call[0] for call in probe.calls]
+    reset_idx = [call[0] for call in probe.calls].index('reset_top')
+    assert probe.calls[reset_idx + 1][0] == 'read'
+
+
+def test_fails_closed_after_single_reset_if_sku_stays_missing(probe, monkeypatch):
+    monkeypatch.setattr(codes, 'STALLED_ROUNDS', 3)
+    monkeypatch.setattr(codes, 'BOTTOM_RESET_SETTLE_SECONDS', 0.4)
+    monkeypatch.setattr(codes, 'STALLED_SECONDS', 1.0)
+    probe.frames = [
+        _frame([_row(SKUS[0])], geometry={'scroll_top': 0, 'max': 800, 'at_end': False}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 0, 'max': 800, 'at_end': False}, reset_to_top=True),
+        _frame([_row(SKUS[2])], geometry={'scroll_top': 800, 'max': 800, 'at_end': True}),
+    ]
+    with pytest.raises(DoudianError, match='2/3') as caught:
+        _collect(probe, seconds=60)
+    assert caught.value.code == 'official_sku_code_incomplete'
+    assert [call[0] for call in probe.calls].count('reset_top') == 1

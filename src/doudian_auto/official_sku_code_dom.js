@@ -13,7 +13,7 @@
   const identity = {product_id: url.searchParams.get('product_id'), page_url: location.href,
     navigation_id: performance.timeOrigin};
   const fail = error => ({...identity, error});
-  if (!['read', 'scroll_pending', 'scroll_rows'].includes(op)) return fail('official_sku_code_operation');
+  if (!['read', 'scroll_pending', 'scroll_rows', 'reset_top'].includes(op)) return fail('official_sku_code_operation');
   if (url.protocol !== 'https:' || url.hostname !== 'fxg.jinritemai.com' ||
       url.pathname !== '/ffa/g/create' || identity.product_id !== p.product_id)
     return fail('wrong_identity');
@@ -95,6 +95,7 @@
   })() : null;
   let topBefore = geometry ? geometry.scroll_top : null;
   let advancedDown = false;
+  let resetToTop = false;
   let rowScrolled = false;
   if ((op === 'scroll_pending' || op === 'scroll_rows') && holder &&
       geometry.max > 1) {
@@ -106,6 +107,15 @@
     geometry.scroll_height = Math.round(holder.scrollHeight);
     geometry.at_end = holder.scrollTop >= geometry.max - 2;
   }
+  if (op === 'reset_top' && holder && geometry.scroll_top > 0) {
+    holder.scrollTop = 0;
+    rowScrolled = holder.scrollTop !== topBefore;
+    resetToTop = holder.scrollTop < topBefore;
+    geometry.scroll_top = Math.round(holder.scrollTop);
+    geometry.max = Math.max(0, Math.round(holder.scrollHeight - holder.clientHeight));
+    geometry.scroll_height = Math.round(holder.scrollHeight);
+    geometry.at_end = geometry.scroll_top >= geometry.max - 2;
+  }
   if (op === 'scroll_pending' && pending.length && !advancedDown) {
     // Holder cannot advance; the placeholder may just be outside the viewport.
     // Locating it is not forward progress -- the geometry above says so honestly.
@@ -113,6 +123,6 @@
   }
   return {...identity, shop_confirmed: true, ready: nodes.length > 0,
     code_column: '商家编码', rows, row_count: nodes.length, pending_count: pending.length,
-    geometry, advanced_down: advancedDown,
+    geometry, advanced_down: advancedDown, reset_to_top: resetToTop,
     scrolled: (op === 'scroll_pending' && pending.length > 0) || rowScrolled};
 })
