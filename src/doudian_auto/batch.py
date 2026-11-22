@@ -392,11 +392,13 @@ def complete_agent_task(task_id, owner, token, artifact_path, *, db_path=None):
                 WHERE task_id=? AND kind=? AND slot=? AND asset_sha256=?''',
                 (task_id, *key, asset['sha256'])).fetchone()
             if existing and existing['occurred_at'] < round_start:
-                raise DoudianError('visual_round_conflict',
-                    '上一轮重制的复核证据不能用于新一轮，须用新素材重新复核。')
-            if existing and existing['decision'] != decision:
-                raise DoudianError('visual_review_conflict', '同一张未修改的图片不能把失败记录改写为通过。')
-            if existing:
+                if existing['decision'] != 'pass' or decision != 'pass':
+                    raise DoudianError('visual_round_conflict',
+                        '上一轮重制的复核证据不能用于新一轮，须用新素材重新复核。')
+                attempt = existing['attempt']
+            elif existing:
+                if existing['decision'] != decision:
+                    raise DoudianError('visual_review_conflict', '同一张未修改的图片不能把失败记录改写为通过。')
                 attempt = existing['attempt']
             else:
                 attempt = 1 + conn.execute('''SELECT COUNT(*) FROM asset_reviews
@@ -1466,10 +1468,10 @@ def _stable_doudian_snapshot(editor, identity):
         # cards at 0x0. Focus emulation lets the browser finish its normal page layout
         # without bringing the tab over the user's foreground app.
         editor.open(identity, fresh=True)
-        sku_evidence = editor.read_skus(identity)
         editor.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
                                       'params': {'enabled': True}})
         focused = True
+        sku_evidence = editor.read_skus(identity)
         _scroll_details_after_schema_reload(editor, identity)
         editor.wait_details(identity, seconds=30)
         previous = None
@@ -2206,10 +2208,229 @@ def reopen_unreachable_task(task_id, *, reason, confirmed_by, db_path=None):
         conn.close()
 
 
+REOPENED_CLOSURE_PREFIX = 'manual_block: reopened_closure: '
+
+
+def release_reopened_closure(task_id, proof_path, *, db_path=None):
+    """Explicitly release a `manual_block: reopened_closure:` row after fresh dual preflight.
+
+    Automated `recheck` continues to reject `manual_block:` rows. Only this explicit
+    command accepts rows blocked solely by `reopen_unreachable_task`, and only when
+    there is no subsequent block, no prior write/asset/lease record, and a fresh
+    dual-platform preflight proof collected *after* the reopen confirms eligibility.
+    """
+    path = Path(proof_path).resolve()
+    proof = read_json(path)
+    proof_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    conn = _db(db_path)
+
+    def fail(code='reopen_unproven', message='没有在重开之后取得的有效双端只读预检证据，保持 blocked。'):
+        raise DoudianError(code, message)
+
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        record = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
+        if record is None:
+            raise DoudianError('unknown_task', '队列里没有这个任务。')
+        row = dict(record)
+        now = time.time()
+
+        # Idempotent retry guard: if this exact proof already released this row into
+        # `needs_agent` with zero further state changes, treat replay as a no-op.
+        latest_event = conn.execute(
+            'SELECT from_state,to_state,detail FROM product_events WHERE task_id=? ORDER BY id DESC LIMIT 1',
+            (task_id,),
+        ).fetchone()
+        if row['state'] == 'needs_agent' and latest_event and latest_event['to_state'] == 'needs_agent':
+            try:
+                latest_detail = json.loads(latest_event['detail'] or '{}')
+            except (TypeError, ValueError):
+                latest_detail = {}
+            if (isinstance(latest_detail, dict)
+                    and latest_detail.get('event_kind') == 'release_reopened_closure'
+                    and latest_detail.get('proof_sha256') == proof_sha256):
+                conn.commit()
+                return {
+                    'task_id': task_id,
+                    'state': 'needs_agent',
+                    'outcome': 'already_released',
+                    'proof_sha256': proof_sha256,
+                }
+
+        error = row['last_error'] or ''
+        try:
+            upload_map = json.loads(row['upload_map_json'] or '[]')
+        except (TypeError, ValueError):
+            upload_map = None
+        attempts = row['submission_attempts']
+        if (row['state'] != 'blocked'
+                or not isinstance(error, str)
+                or not error.startswith(REOPENED_CLOSURE_PREFIX)
+                or row['submission_state'] != 'not_attempted'
+                or type(attempts) is not int or attempts != 0
+                or row['baseline_hash'] or row['baseline_json'] not in (None, '')
+                or row['artifacts_path'] or row['artifacts_hash']
+                or row['submission_intent_json'] not in (None, '')
+                or row['readback_json'] not in (None, '')
+                or row['readback_hash'] not in (None, '')
+                or row['writer_preparation_json'] not in (None, '')
+                or upload_map != []
+                or row['execution_owner'] is not None or row['execution_token'] is not None
+                or any((row[key] or 0) >= now for key in ('lease_until', 'execution_until'))):
+            fail()
+        if conn.execute('SELECT 1 FROM products WHERE shop=? AND product_id=? AND id!=?',
+                        (row['shop'], row['product_id'], task_id)).fetchone():
+            fail()
+        if _active_doudian_job_conflict(row['shop'], row['product_id']):
+            fail()
+
+        events = conn.execute(
+            'SELECT id,to_state,occurred_at,detail FROM product_events WHERE task_id=? ORDER BY id ASC',
+            (task_id,),
+        ).fetchall()
+        reopen_ev = None
+        for ev in reversed(events):
+            try:
+                det = json.loads(ev['detail'] or '{}')
+            except (TypeError, ValueError):
+                det = {}
+            if (ev['to_state'] == 'blocked' and isinstance(det, dict)
+                    and det.get('event_kind') == 'reopen_unreachable'):
+                reopen_ev = ev
+                break
+        if reopen_ev is None:
+            fail(message='缺少有效的 reopen_unreachable 审计事件，不能释放该阻塞。')
+        if any(ev['id'] > reopen_ev['id'] and ev['to_state'] == 'blocked' for ev in events):
+            fail(message='重开之后出现过新的阻塞记录，不能按 reopened_closure 释放。')
+
+        items = proof.get('products') if isinstance(proof, dict) else None
+        item = next((entry for entry in items or []
+                     if isinstance(entry, dict) and entry.get('task_id') == task_id), None)
+        if item is None:
+            fail()
+        evidence = item.get('evidence') if isinstance(item.get('evidence'), dict) else {}
+        if (item.get('read_only') is not True
+                or item.get('product_id') != row['product_id'] or item.get('shop') != row['shop']
+                or item.get('target_version') != row['target_version']
+                or item.get('state') != 'eligible' or item.get('eligible') is not True):
+            fail()
+        if not 0 <= now - path.stat().st_mtime <= 1800:
+            fail()
+        observed = evidence.get('observed_at')
+        digest = evidence.get('snapshot_sha256')
+        if (evidence.get('snapshot_read') is not True
+                or type(observed) not in (int, float)
+                or not 0 <= now - observed <= 1800
+                or observed < float(reopen_ev['occurred_at'])
+                or not isinstance(digest, str)
+                or not re.fullmatch(r'[0-9a-f]{64}', digest, re.I)):
+            fail()
+        if evidence.get('miaoshou_listed') is not True:
+            raise DoudianError(
+                'miaoshou_listing_unproven',
+                '预检报告未证明该商品在妙手侧存在，不放回可运行（预检时加 --check-miaoshou）。')
+
+        detail = {
+            'event_kind': 'release_reopened_closure',
+            'aligned_by': 'release_reopened_closure',
+            'reopen_event_id': reopen_ev['id'],
+            'prior_error': error,
+            'proof_sha256': proof_sha256,
+            'snapshot_sha256': digest,
+            'observed_at': observed,
+            'report': str(path),
+        }
+        conn.execute(
+            "UPDATE products SET state='needs_agent',last_error=NULL,lease_owner=NULL,"
+            "lease_token=NULL,lease_until=NULL,updated_at=? "
+            "WHERE id=? AND state='blocked' AND last_error=? AND target_version=?",
+            (now, task_id, error, row['target_version']),
+        )
+        if conn.execute('SELECT changes()').fetchone()[0] != 1:
+            fail()
+        conn.execute(
+            'INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '
+            'VALUES(?,?,?,?,?)',
+            (task_id, 'blocked', 'needs_agent', now, json.dumps(detail, ensure_ascii=False, sort_keys=True)),
+        )
+        conn.commit()
+        return {
+            'task_id': task_id,
+            'state': 'needs_agent',
+            'outcome': 'released',
+            'prior_error': error,
+            'snapshot_sha256': digest,
+            'proof_sha256': proof_sha256,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 VISUAL_BLOCK_REASONS = (
     'visual_quality_failed_after_retry',
     'root_visual_review_failed_after_retry',
 )
+
+
+def _extract_root_quarantine_ref(text):
+    match = re.search(r'Root proof (.+?)\s+sha256=([0-9a-f]{64})\b', str(text or ''), re.I)
+    if not match:
+        return None
+    return match.group(1).strip(), match.group(2).lower()
+
+
+def _validate_root_quarantine_proof(conn, task_id, row, error):
+    """Verify the bound root-visual quarantine JSON when no `asset_reviews` fail rows exist."""
+    ref = _extract_root_quarantine_ref(error)
+    if not ref:
+        raise DoudianError('requeue_evidence_missing', '根视觉隔离记录缺少绑定的证明文件与摘要，不能开启新一轮重制。')
+    q_raw_path, persisted_sha = ref
+    ev = conn.execute(
+        "SELECT detail FROM product_events WHERE task_id=? AND to_state='blocked' ORDER BY id DESC LIMIT 1",
+        (task_id,)).fetchone()
+    if ev and ev['detail'] and str(ev['detail']).startswith('root_visual_review_failed_after_retry'):
+        ev_ref = _extract_root_quarantine_ref(ev['detail'])
+        if ev_ref and ev_ref != ref:
+            raise DoudianError('requeue_evidence_missing', '根视觉隔离事件与当前阻塞记录的证明引用不一致，拒绝重排。')
+    q_path = Path(q_raw_path)
+    if not q_path.is_file() or _digest(q_path) != persisted_sha:
+        raise DoudianError('requeue_evidence_missing', '根视觉隔离证明文件缺失或哈希校验不通过，不能开启新一轮重制。')
+    try:
+        q = read_json(q_path)
+    except (OSError, ValueError, TypeError) as exc:
+        raise DoudianError('requeue_evidence_missing', '根视觉隔离证明无法读取，不能开启新一轮重制。') from exc
+    if (not isinstance(q, dict)
+            or (q.get('task_id') is not None and q.get('task_id') != task_id)
+            or str(q.get('product_id') or '') != row['product_id']
+            or str(q.get('target_version') or '') != row['target_version']
+            or q.get('status') != 'fail_after_retry'
+            or q.get('uploads') != 0
+            or q.get('save_attempts') != 0):
+        raise DoudianError('requeue_evidence_missing', '根视觉隔离证明身份、状态或零写入记录不匹配。')
+    failed_slots = q.get('failed_slots')
+    if not isinstance(failed_slots, list) or not failed_slots:
+        raise DoudianError('requeue_evidence_missing', '根视觉隔离证明缺少明确的失败槽位与历史资产哈希。')
+    slot_hashes = []
+    for entry in failed_slots:
+        if not isinstance(entry, dict):
+            raise DoudianError('requeue_evidence_missing', '根视觉隔离失败槽位条目格式无效。')
+        kind, slot = entry.get('kind'), entry.get('slot')
+        if kind not in ('main', 'detail') or type(slot) is not int or slot < 1:
+            raise DoudianError('requeue_evidence_missing', '根视觉隔离失败槽位标识无效。')
+        bad = set()
+        for key, val in entry.items():
+            if isinstance(val, dict) and isinstance(val.get('sha256'), str):
+                h = val['sha256'].strip().lower()
+                if re.fullmatch(r'[0-9a-f]{64}', h):
+                    bad.add(h)
+        if not bad:
+            raise DoudianError('requeue_evidence_missing', f'根视觉隔离槽位 {kind}:{slot} 缺少历史失败图哈希。')
+        slot_hashes.append((kind, slot, bad))
+    return {'quarantine_proof_path': str(q_path), 'quarantine_proof_sha256': persisted_sha,
+            'slot_hashes': slot_hashes}
 
 
 def requeue_visual_task(task_id, proof_path, *, db_path=None, miaoshou_probe=None):
@@ -2256,12 +2477,26 @@ def requeue_visual_task(task_id, proof_path, *, db_path=None, miaoshou_probe=Non
                 or not any(error.startswith(reason) for reason in VISUAL_BLOCK_REASONS)):
             fail('requeue_not_allowed',
                  '只允许「视觉复核失败且从未写过」的 blocked 任务开启新一轮重制。')
+        try:
+            upload_map = json.loads(row['upload_map_json'] or '[]')
+        except (TypeError, ValueError):
+            upload_map = None
+        attempts = row['submission_attempts']
         if (row['submission_state'] != 'not_attempted'
-                or int(row['submission_attempts'] or 0) != 0
-                or row['baseline_hash'] or row['artifacts_path'] or row['artifacts_hash']
-                or json.loads(row['upload_map_json'] or '[]') != []
+                or type(attempts) is not int or attempts != 0
+                or row['baseline_hash'] or row['baseline_json'] not in (None, '')
+                or row['submission_intent_json'] not in (None, '')
+                or row['readback_json'] not in (None, '')
+                or row['readback_hash'] not in (None, '')
+                or row['writer_preparation_json'] not in (None, '')
+                or upload_map != []
+                or row['execution_owner'] is not None or row['execution_token'] is not None
                 or any((row[key] or 0) >= now for key in ('lease_until', 'execution_until'))):
-            fail('requeue_not_allowed', '该任务已有写入、素材或租约记录，不能开启新一轮。')
+            fail('requeue_not_allowed', '该任务已有写入、基线、准备或租约记录，不能开启新一轮。')
+        prior_artifacts_path = row['artifacts_path']
+        prior_artifacts_hash = row['artifacts_hash']
+        if prior_artifacts_hash and not re.fullmatch(r'[0-9a-f]{64}', str(prior_artifacts_hash), re.I):
+            fail('requeue_not_allowed', '旧素材摘要格式不可识别，不能开启新一轮。')
         listed = miaoshou_probe(row['shop'], row['product_id']) if callable(miaoshou_probe) else None
         if listed is not True:
             fail('miaoshou_listing_unproven',
@@ -2275,9 +2510,13 @@ def requeue_visual_task(task_id, proof_path, *, db_path=None, miaoshou_probe=Non
         failed_reviews = conn.execute(
             "SELECT COUNT(*) FROM asset_reviews WHERE task_id=? AND decision='fail'",
             (task_id,)).fetchone()[0]
+        quarantine_info = None
         if not failed_reviews:
-            fail('requeue_evidence_missing',
-                 '没有留存的视觉失败复核记录，不能证明这是同一批失败槽位的重制。')
+            if error.startswith('root_visual_review_failed_after_retry'):
+                quarantine_info = _validate_root_quarantine_proof(conn, task_id, row, error)
+            else:
+                fail('requeue_evidence_missing',
+                     '没有留存的视觉失败复核记录，不能证明这是同一批失败槽位的重制。')
         # The proof must be freshly produced, and later than the last known change to
         # this row: an old manifest cannot authorise a new round.
         if not 0 <= now - path.stat().st_mtime <= 1800:
@@ -2295,6 +2534,30 @@ def requeue_visual_task(task_id, proof_path, *, db_path=None, miaoshou_probe=Non
         review = manifest.get('visual_review') or {}
         if review.get('approved') is not True:
             fail('visual_review_failed', '新图未逐项通过目视检查，不得开启新一轮。')
+        if quarantine_info is not None:
+            new_by_slot = {(a['kind'], a['slot']): str(a['sha256']).lower() for a in manifest['assets']}
+            for kind, slot, bad_hashes in quarantine_info['slot_hashes']:
+                new_sha = new_by_slot.get((kind, slot))
+                if not new_sha or new_sha in bad_hashes:
+                    fail('requeue_evidence_stale',
+                         f'失败槽位 {kind}:{slot} 仍复用根视觉失败尝试的图片，必须全部替换重制。')
+        new_manifest_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if prior_artifacts_hash and new_manifest_sha256 == prior_artifacts_hash:
+            fail('requeue_evidence_stale', '新素材清单与本轮失败清单摘要完全一致，必须提供重制后的清单。')
+        if prior_artifacts_path:
+            prior_file = Path(prior_artifacts_path)
+            if prior_file.is_file():
+                try:
+                    prior_data = read_json(prior_file)
+                    prior_hashes = [
+                        item.get('asset_sha256')
+                        for item in ((prior_data.get('visual_review') or {}).get('items') or [])
+                        if isinstance(item, dict)
+                    ]
+                    if prior_hashes and prior_hashes == [a['sha256'] for a in manifest['assets']]:
+                        fail('requeue_evidence_stale', '新素材文件摘要与失败轮完全一致，必须替换失败槽位图片。')
+                except (OSError, ValueError, TypeError):
+                    pass
 
         round_no = 1 + conn.execute(
             "SELECT COUNT(*) FROM product_events WHERE task_id=? AND to_state='visual_round_opened'",
@@ -2302,14 +2565,22 @@ def requeue_visual_task(task_id, proof_path, *, db_path=None, miaoshou_probe=Non
         detail = {'event_kind': 'visual_requeue', 'round': round_no,
                   'miaoshou_listed': listed,
                   'prior_error': row['last_error'], 'proof': str(path),
-                  'proof_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                  'proof_sha256': new_manifest_sha256,
+                  'prior_artifacts_path': prior_artifacts_path,
+                  'prior_artifacts_hash': prior_artifacts_hash,
                   'asset_set_sha256': manifest['asset_set_sha256'],
                   'review_sha256': review['review_sha256'],
                   'reviewer': review['reviewer'],
                   'slots': [f"{a['kind']}:{a['slot']}" for a in manifest['assets']],
                   'failed_reviews_before_round': failed_reviews}
-        conn.execute("UPDATE products SET state='needs_agent',last_error=NULL,updated_at=? "
-                     "WHERE id=? AND state='blocked'", (now, task_id))
+        if quarantine_info is not None:
+            detail['quarantine_proof_path'] = quarantine_info['quarantine_proof_path']
+            detail['quarantine_proof_sha256'] = quarantine_info['quarantine_proof_sha256']
+            detail['replaced_failed_slots'] = [f'{k}:{s}' for k, s, _ in quarantine_info['slot_hashes']]
+        conn.execute("UPDATE products SET state='needs_agent',last_error=NULL,artifacts_path=NULL,"
+                     "artifacts_hash=NULL,lease_owner=NULL,lease_token=NULL,lease_until=NULL,"
+                     "updated_at=? WHERE id=? AND state='blocked' AND target_version=?",
+                     (now, task_id, row['target_version']))
         if conn.execute('SELECT changes()').fetchone()[0] != 1:
             fail('requeue_identity_changed', '任务在开启新一轮期间发生变化。')
         conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) '

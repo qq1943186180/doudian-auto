@@ -1286,3 +1286,47 @@ def test_legacy_recovery_records_miaoshou_proof(tmp_path):
         (task['id'],)).fetchone()[0])
     conn.close()
     assert detail.get('miaoshou_listed') is True
+
+
+@pytest.mark.parametrize('should_raise', [False, True])
+def test_stable_doudian_snapshot_enables_focus_emulation_before_read_skus_and_cleans_up(monkeypatch, should_raise):
+    events = []
+    monkeypatch.setattr(batch, '_scroll_details_after_schema_reload', lambda *a: events.append('scroll_details'))
+    monkeypatch.setattr('doudian_auto.workflow.compare_protected', lambda *a: None)
+
+    class FakeBridge:
+        def command(self, action, args=None):
+            assert action == 'cdp' and args['method'] == 'Emulation.setFocusEmulationEnabled'
+            events.append(('focus', args['params']['enabled']))
+
+    class FakeEditor:
+        def __init__(self):
+            self.bridge = FakeBridge()
+
+        def open(self, identity, *, fresh=False):
+            events.append(('open', identity['product_id'], fresh))
+
+        def read_skus(self, identity):
+            events.append(('read_skus', identity['product_id']))
+            if should_raise:
+                raise DoudianError('official_sku_code_incomplete', 'boom')
+            return {'complete': True, 'count': 1, 'rows': []}
+
+        def wait_details(self, identity, *, seconds=10):
+            return {'product_id': identity['product_id'], 'shop_confirmed': True,
+                    'mains': ['m'], 'details': ['d']}
+
+        def section_counts(self, identity):
+            return {'sec': {'inputs': 1, 'text': 1, 'visible': True}}
+
+    identity = {'product_id': '3850071725857440068', 'shop': '销霁百货'}
+    if should_raise:
+        with pytest.raises(DoudianError):
+            batch._stable_doudian_snapshot(FakeEditor(), identity)
+        assert events == [('open', '3850071725857440068', True), ('focus', True),
+                          ('read_skus', '3850071725857440068'), ('focus', False)]
+    else:
+        snap = batch._stable_doudian_snapshot(FakeEditor(), identity)
+        assert snap['sku_evidence'] == {'complete': True, 'count': 1, 'rows': []}
+        assert events == [('open', '3850071725857440068', True), ('focus', True),
+                          ('read_skus', '3850071725857440068'), 'scroll_details', ('focus', False)]

@@ -212,3 +212,232 @@ def test_an_unreadable_proof_is_refused(queue):
     with pytest.raises(Exception):
         requeue_failed_submission(queue.row['id'], path, db_path=queue.db)
     assert current(queue)['submission_state'] == 'unknown'
+
+
+@pytest.mark.parametrize('mode', ['valid', 'extra_selection_change', 'non_base_section_change', 'missing_interventions', 'status_on_shelf'])
+def test_requeue_failed_with_expected_attribute_additions(queue, mode):
+    import hashlib
+    from copy import deepcopy
+    from doudian_auto.official_skus import _normalize
+    sku_raw = [{'sku_id': '1001', 'id': '1001', 'price': '19.99', 'stock_info': {'stock_num': 50},
+                'step_stock_info': {'stock_num': 0}, 'spec_detail_ids': ['2001'], 'sku_status': True, 'code': 'C1'}]
+    specs = [{'name': '颜色', 'spec_values': [{'id': '2001', 'name': '白色'}]}]
+    sku_rows = [{'sku_id': '1001', 'spec_ids': ['2001'], 'price': '19.99', 'stock': 50, 'step_stock': 0, 'enabled': True, 'code': 'C1'}]
+    payload = {'rows': sku_rows, 'raw_rows': _normalize(sku_raw), 'specs': _normalize(specs)}
+    sku_sha = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    sku_ev = {'complete': True, 'product_id': PID, 'shop_id': '999', 'count': 1, **payload, 'sha256': sku_sha}
+
+    mains = [f'https://p3-aio.ecombdimg.com/obj/ecom-shop-material/png_m_{i:032x}_sx_100_www800-800' for i in range(1, 6)]
+    details = [f'https://p3-aio.ecombdimg.com/obj/ecom-shop-material/png_m_{i:032x}_sx_100_www800-800' for i in range(11, 15)]
+    base_dd = {
+        'product_id': PID, 'shop': SHOP, 'shop_confirmed': True, 'title': '原商品标题',
+        'mains': mains, 'details': details, 'draft_loaded': False, 'rejected': False,
+        'required_attributes': {'observed': True, 'completion_percent': 80, 'missing': ['硬度'],
+                                'fields': [{'name': '硬度', 'required': True, 'values': []}]},
+        'sku_evidence': sku_ev,
+        'protected': [
+            {'section': 'goodsEditScrollContainer-基础信息', 'observation': 'ready',
+             'inputs': [], 'selections': ['ABS'], 'static_fields': [], 'images': []},
+            {'section': 'goodsEditScrollContainer-价格库存', 'observation': 'ready',
+             'inputs': [], 'selections': ['现货'], 'static_fields': [], 'images': []},
+        ],
+    }
+    miao_prot = {
+        'status': 1, 'freightId': 1, 'startSaleType': 0, 'afterSaleService': {},
+        'specPrices': [{'skuId': 1001, 'specDetailIds': [2001], 'price': '19.99',
+                        'stockNum': 50, 'stepStockNum': 0, 'code': 'C1', 'skuStatus': True}],
+    }
+    saved_base = {
+        'product_id': PID, 'shop': SHOP, 'title': '原商品标题', 'mains': mains, 'details': details,
+        'slot_plan': {'mains': 5, 'details': 2}, 'protected': miao_prot, 'doudian_baseline': base_dd,
+    }
+    b_str = json.dumps(saved_base, ensure_ascii=False, sort_keys=True)
+    b_hash = hashlib.sha256(b_str.encode()).hexdigest()
+    with sqlite3.connect(queue.db) as conn:
+        conn.execute('UPDATE products SET baseline_json=?, baseline_hash=? WHERE id=?',
+                     (b_str, b_hash, queue.row['id']))
+    queue.row['baseline_hash'] = b_hash
+
+    curr_dd = deepcopy(base_dd)
+    curr_dd['required_attributes'] = {'observed': True, 'completion_percent': 100, 'missing': [],
+                                      'fields': [{'name': '硬度', 'required': True, 'values': ['软毛']}]}
+    curr_dd['protected'][0]['selections'] = ['ABS', '软毛']
+    if mode == 'extra_selection_change':
+        curr_dd['protected'][0]['selections'].append('额外未声明')
+    elif mode == 'non_base_section_change':
+        curr_dd['protected'][1]['selections'] = ['预售']
+    curr_miao = {'product_id': PID, 'shop': SHOP, 'protected_complete': True,
+                 'title': '原商品标题', 'mains': mains, 'details': details,
+                 'protected': {**miao_prot, 'status': 0 if mode == 'status_on_shelf' else 1}}
+
+    m_path = queue.tmp / 'miao_curr.json'
+    d_path = queue.tmp / 'dd_curr.json'
+    m_path.write_text(json.dumps(curr_miao, ensure_ascii=False), encoding='utf-8')
+    d_path.write_text(json.dumps(curr_dd, ensure_ascii=False), encoding='utf-8')
+    doc = proof(queue, miaoshou_task={'task_id': '36278985', 'finished': True, 'success_count': 0,
+                                      'fail_count': 1, 'reasons': ['缺硬度'], 'product_id_confirmed': PID})
+    doc['baseline_sha256'] = b_hash
+    doc['expected_attribute_additions'] = [{'field': '硬度', 'values': ['软毛']}]
+    doc['interventions'] = [] if mode == 'missing_interventions' else [{'action': 'fill_required_attr', 'detail': '硬度=软毛'}]
+    doc['snapshots'] = {
+        'miaoshou': {'path': m_path.name, 'sha256': hashlib.sha256(m_path.read_bytes()).hexdigest()},
+        'doudian': {'path': d_path.name, 'sha256': hashlib.sha256(d_path.read_bytes()).hexdigest()},
+    }
+    if mode == 'valid':
+        res = requeue_failed_submission(queue.row['id'], write(queue, doc), db_path=queue.db)
+        assert res['submission_state'] == 'not_attempted'
+        assert res['attribute_backfill']['actual_added_selections'] == ['软毛']
+        detail = json.loads(events(queue)[-1]['detail'])
+        assert detail['attribute_backfill']['actual_added_selections'] == ['软毛']
+    else:
+        with pytest.raises(DoudianError) as caught:
+            requeue_failed_submission(queue.row['id'], write(queue, doc), db_path=queue.db)
+        assert caught.value.code == 'requeue_failed_unproven'
+
+
+@pytest.mark.parametrize(
+    'case',
+    [
+        'empty_video_promo_valid',
+        'video_text_other_diff',
+        'wrong_section_same_text',
+        'extra_image_with_promo',
+        'start_sale_0_to_1_valid',
+        'start_sale_missing_flag',
+        'start_sale_1_to_0_reverse',
+        'start_sale_0_to_2',
+        'start_sale_status_0',
+        'start_sale_missing_status',
+        'start_sale_with_freight_diff',
+    ],
+)
+def test_requeue_failed_backfill_empty_video_and_warehouse_preservation(queue, case):
+    import hashlib
+    from copy import deepcopy
+    from doudian_auto.official_skus import _normalize
+
+    old_promo = '主图视频 发布优质主图视频，介绍商品卖点，展示试穿试用效果，预计 转化率+0.5%'
+    new_promo = old_promo + ' 一键生成'
+    sku_raw = [{'sku_id': '1001', 'id': '1001', 'price': '19.99', 'stock_info': {'stock_num': 50},
+                'step_stock_info': {'stock_num': 0}, 'spec_detail_ids': ['2001'], 'sku_status': True, 'code': 'C1'}]
+    specs = [{'name': '颜色', 'spec_values': [{'id': '2001', 'name': '白色'}]}]
+    sku_rows = [{'sku_id': '1001', 'spec_ids': ['2001'], 'price': '19.99', 'stock': 50, 'step_stock': 0, 'enabled': True, 'code': 'C1'}]
+    payload = {'rows': sku_rows, 'raw_rows': _normalize(sku_raw), 'specs': _normalize(specs)}
+    sku_sha = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    sku_ev = {'complete': True, 'product_id': PID, 'shop_id': '999', 'count': 1, **payload, 'sha256': sku_sha}
+
+    mains = [f'https://p3-aio.ecombdimg.com/obj/ecom-shop-material/png_m_{i:032x}_sx_100_www800-800' for i in range(1, 6)]
+    details = [f'https://p3-aio.ecombdimg.com/obj/ecom-shop-material/png_m_{i:032x}_sx_100_www800-800' for i in range(11, 15)]
+    base_dd = {
+        'product_id': PID, 'shop': SHOP, 'shop_confirmed': True, 'title': '原商品标题',
+        'mains': mains, 'details': details, 'draft_loaded': False, 'rejected': False,
+        'required_attributes': {'observed': True, 'completion_percent': 80, 'missing': ['硬度'],
+                                'fields': [{'name': '硬度', 'required': True, 'values': []}]},
+        'sku_evidence': sku_ev,
+        'protected': [
+            {'section': 'goodsEditScrollContainer-基础信息', 'observation': 'ready',
+             'inputs': [], 'selections': ['ABS'], 'static_fields': [], 'images': []},
+            {'section': 'goodsEditScrollContainer-图文信息', 'observation': 'ready',
+             'inputs': [], 'selections': [],
+             'static_fields': [{'field': '主图视频', 'text': old_promo}],
+             'images': []},
+        ],
+    }
+    miao_prot = {
+        'status': 1, 'freightId': 1, 'startSaleType': 0, 'afterSaleService': {},
+        'specPrices': [{'skuId': 1001, 'specDetailIds': [2001], 'price': '19.99',
+                        'stockNum': 50, 'stepStockNum': 0, 'code': 'C1', 'skuStatus': True}],
+    }
+    if case == 'start_sale_1_to_0_reverse':
+        miao_prot['startSaleType'] = 1
+    elif case == 'start_sale_status_0':
+        miao_prot['status'] = 0
+    saved_base = {
+        'product_id': PID, 'shop': SHOP, 'title': '原商品标题', 'mains': mains, 'details': details,
+        'slot_plan': {'mains': 5, 'details': 2}, 'protected': miao_prot, 'doudian_baseline': base_dd,
+    }
+    b_str = json.dumps(saved_base, ensure_ascii=False, sort_keys=True)
+    b_hash = hashlib.sha256(b_str.encode()).hexdigest()
+    with sqlite3.connect(queue.db) as conn:
+        conn.execute('UPDATE products SET baseline_json=?, baseline_hash=? WHERE id=?',
+                     (b_str, b_hash, queue.row['id']))
+    queue.row['baseline_hash'] = b_hash
+
+    curr_dd = deepcopy(base_dd)
+    curr_dd['required_attributes'] = {'observed': True, 'completion_percent': 100, 'missing': [],
+                                      'fields': [{'name': '硬度', 'required': True, 'values': ['软毛']}]}
+    curr_dd['protected'][0]['selections'] = ['ABS', '软毛']
+    curr_miao_prot = deepcopy(miao_prot)
+    intervention = {'action': 'fill_required_attr', 'detail': '硬度=软毛'}
+
+    if case == 'empty_video_promo_valid':
+        curr_dd['protected'][1]['static_fields'][0]['text'] = new_promo
+    elif case == 'video_text_other_diff':
+        curr_dd['protected'][1]['static_fields'][0]['text'] = '主图视频 已上传 video.mp4'
+    elif case == 'wrong_section_same_text':
+        base_dd_extra = deepcopy(base_dd)
+        base_dd_extra['protected'][0]['static_fields'] = [{'field': '主图视频', 'text': old_promo}]
+        saved_base['doudian_baseline'] = base_dd_extra
+        b_str = json.dumps(saved_base, ensure_ascii=False, sort_keys=True)
+        b_hash = hashlib.sha256(b_str.encode()).hexdigest()
+        with sqlite3.connect(queue.db) as conn:
+            conn.execute('UPDATE products SET baseline_json=?, baseline_hash=? WHERE id=?',
+                         (b_str, b_hash, queue.row['id']))
+        queue.row['baseline_hash'] = b_hash
+        curr_dd['protected'][0]['static_fields'] = [{'field': '主图视频', 'text': new_promo}]
+    elif case == 'extra_image_with_promo':
+        curr_dd['protected'][1]['static_fields'][0]['text'] = new_promo
+        curr_dd['protected'][1]['images'] = ['https://example.com/extra.jpg']
+    elif case == 'start_sale_0_to_1_valid':
+        curr_miao_prot['startSaleType'] = 1
+        intervention['preserves_warehouse_shelf'] = True
+    elif case == 'start_sale_missing_flag':
+        curr_miao_prot['startSaleType'] = 1
+    elif case == 'start_sale_1_to_0_reverse':
+        curr_miao_prot['startSaleType'] = 0
+        intervention['preserves_warehouse_shelf'] = True
+    elif case == 'start_sale_0_to_2':
+        curr_miao_prot['startSaleType'] = 2
+        intervention['preserves_warehouse_shelf'] = True
+    elif case == 'start_sale_status_0':
+        curr_miao_prot['startSaleType'] = 1
+        intervention['preserves_warehouse_shelf'] = True
+    elif case == 'start_sale_missing_status':
+        curr_miao_prot['startSaleType'] = 1
+        del curr_miao_prot['status']
+        intervention['preserves_warehouse_shelf'] = True
+    elif case == 'start_sale_with_freight_diff':
+        curr_miao_prot['startSaleType'] = 1
+        curr_miao_prot['freightId'] = 2
+        intervention['preserves_warehouse_shelf'] = True
+
+    curr_miao = {'product_id': PID, 'shop': SHOP, 'protected_complete': True,
+                 'title': '原商品标题', 'mains': mains, 'details': details,
+                 'protected': curr_miao_prot}
+    m_path = queue.tmp / 'miao_curr.json'
+    d_path = queue.tmp / 'dd_curr.json'
+    m_raw = json.dumps(curr_miao, ensure_ascii=False)
+    d_raw = json.dumps(curr_dd, ensure_ascii=False)
+    m_path.write_text(m_raw, encoding='utf-8')
+    d_path.write_text(d_raw, encoding='utf-8')
+
+    doc = proof(queue, miaoshou_task={'task_id': '36278985', 'finished': True, 'success_count': 0,
+                                      'fail_count': 1, 'reasons': ['缺硬度'], 'product_id_confirmed': PID})
+    doc['baseline_sha256'] = b_hash
+    doc['expected_attribute_additions'] = [{'field': '硬度', 'values': ['软毛']}]
+    doc['interventions'] = [intervention]
+    doc['snapshots'] = {
+        'miaoshou': {'path': m_path.name, 'sha256': hashlib.sha256(m_path.read_bytes()).hexdigest()},
+        'doudian': {'path': d_path.name, 'sha256': hashlib.sha256(d_path.read_bytes()).hexdigest()},
+    }
+
+    if case in ('empty_video_promo_valid', 'start_sale_0_to_1_valid'):
+        res = requeue_failed_submission(queue.row['id'], write(queue, doc), db_path=queue.db)
+        assert res['submission_state'] == 'not_attempted'
+        assert d_path.read_text(encoding='utf-8') == d_raw
+        if case == 'start_sale_0_to_1_valid':
+            assert res['attribute_backfill']['warehouse_shelf_preservation']['policy'] == 'preserve_warehouse_v1'
+    else:
+        with pytest.raises(DoudianError) as caught:
+            requeue_failed_submission(queue.row['id'], write(queue, doc), db_path=queue.db)
+        assert caught.value.code == 'requeue_failed_unproven'

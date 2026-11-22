@@ -133,6 +133,20 @@ def _preflight_blocked_recoverable(row):
     return batch._preflight_blocked_reason(row)
 
 
+def _reopened_closure_observable(row):
+    """Allow read-only `--recheck-blocked` on `manual_block: reopened_closure:` rows.
+
+    Does NOT broaden `batch._preflight_blocked_reason()`; only `release_reopened_closure()`
+    can actually transition such a row after validating the fresh dual report.
+    """
+    row = dict(row)
+    if (row.get('state') != 'blocked'
+            or row.get('submission_state') != 'not_attempted'
+            or int(row.get('submission_attempts') or 0) != 0):
+        return False
+    return str(row.get('last_error') or '').startswith(batch.REOPENED_CLOSURE_PREFIX)
+
+
 def _skip_reason(conn, row, *, recheck_blocked=False):
     siblings = [dict(item) for item in conn.execute(
         'SELECT state,submission_state FROM products WHERE shop=? AND product_id=? AND id!=?',
@@ -147,7 +161,9 @@ def _skip_reason(conn, row, *, recheck_blocked=False):
         return 'product_queue_conflict', '该商品另有队列版本，先核对现有任务。'
     if row['submission_state'] != 'not_attempted' or row['submission_attempts'] != 0:
         return 'prior_submission', '该商品已有保存尝试，不作为新的素材生成任务。'
-    recheckable = bool(recheck_blocked) and row['state'] == 'blocked' and _preflight_blocked_recoverable(row)
+    recheckable = bool(recheck_blocked) and row['state'] == 'blocked' and (
+        _preflight_blocked_recoverable(row) or _reopened_closure_observable(row)
+    )
     if row['state'] != 'needs_agent' and not recheckable:
         return 'queue_state_ineligible', f'队列状态为 {row["state"]}，不作为新素材候选。'
     now = time.time()
@@ -359,7 +375,7 @@ def preflight_products(endpoint, *, product_ids, batch_id=None, limit=20,
                         # that separately and never let a failed probe read as "absent".
                         try:
                             from .miaoshou_editor import MiaoshouEditor
-                            listed = MiaoshouEditor(bridge, current['shop']).row_present(
+                            listed = MiaoshouEditor(bridge, current['shop'], session=session).row_present(
                                 current['product_id'])
                         except Exception as error:            # noqa: BLE001
                             listed = None

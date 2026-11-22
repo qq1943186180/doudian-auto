@@ -178,6 +178,10 @@ def parser():
     batch_recheck = batch_sub.add_parser('recheck', help='凭新鲜只读预检报告，把「因预检失败而 blocked」的件对齐到最新事实')
     batch_recheck.add_argument('--task-id', required=True, type=int)
     batch_recheck.add_argument('--proof', required=True, help='preflight --report-dir 产出的 summary.json')
+    batch_release_reopened = batch_sub.add_parser(
+        'release-reopened', help='凭重开后采集的新鲜双端只读预检报告，显式释放 manual_block: reopened_closure: 阻塞')
+    batch_release_reopened.add_argument('--task-id', required=True, type=int)
+    batch_release_reopened.add_argument('--proof', required=True, help='preflight --report-dir 产出的 summary.json')
     batch_block = batch_sub.add_parser('block', help='把「待准备、从未写过」的任务收回 blocked，必须写明原因')
     batch_block.add_argument('--task-id', required=True, type=int)
     batch_block.add_argument('--reason', required=True)
@@ -202,6 +206,8 @@ def parser():
     batch_requeue.add_argument('--proof', required=True, help='完整 9 张素材的 artifacts.json（含 visual_review）')
     batch_requeue.add_argument('--check-miaoshou', action='store_true',
                                help='只读取证该商品在妙手快速编辑列表中；写入路径必经妙手，必须传')
+    batch_requeue.add_argument('--session', default='miaoshou-requeue',
+                               help='沿用当前任务浏览器会话，不另建替代空间')
     batch_quarantine = batch_sub.add_parser('quarantine', help='隔离已有编辑或保存结果未知的商品')
     batch_quarantine.add_argument('--product-id', required=True)
     batch_quarantine.add_argument('--reason', required=True)
@@ -215,9 +221,19 @@ def parser():
         'requeue-failed', help='以平台任务终态与双端零变更证据结清未知保存，并重新排队')
     batch_requeue_failed.add_argument('--task-id', required=True, type=int)
     batch_requeue_failed.add_argument('--proof', required=True)
+    batch_verify_legacy = batch_sub.add_parser(
+        'verify-legacy-readback', help='按最新双端读回与严格 SKU 网格字段差分解锁历史 readback_mismatch')
+    batch_verify_legacy.add_argument('--task-id', required=True, type=int)
+    batch_verify_legacy.add_argument('--proof', required=True)
     batch_recover_preflight = batch_sub.add_parser('recover-preflight', help='以新鲜双端证据恢复未开始上传/保存的旧缺属性任务')
     batch_recover_preflight.add_argument('--task-id', required=True, type=int)
     batch_recover_preflight.add_argument('--proof', required=True)
+    batch_reconcile_ext = batch_sub.add_parser('reconcile-external', help='核销已完成双端保存与回读验证的外部历史任务')
+    batch_reconcile_ext.add_argument('--task-id', required=True, type=int)
+    batch_reconcile_ext.add_argument('--proof', required=True)
+    batch_reset_collision = batch_sub.add_parser('reset-collision', help='去重后重置写前详情来源冲突任务的过期基线')
+    batch_reset_collision.add_argument('--task-id', required=True, type=int)
+    batch_reset_collision.add_argument('--proof', required=True)
     batch_recover_prepared = batch_sub.add_parser('recover-prepared', help='以两轮完整只读证据恢复尚未上传/保存的合格素材任务')
     batch_recover_prepared.add_argument('--task-id', required=True, type=int)
     batch_recover_prepared.add_argument('--proof', required=True)
@@ -963,6 +979,8 @@ def run(args):
                                           check_miaoshou=args.check_miaoshou)
             if args.batch_command == 'recheck':
                 return batch_queue.apply_preflight_report(args.task_id, args.proof)
+            if args.batch_command == 'release-reopened':
+                return batch_queue.release_reopened_closure(args.task_id, args.proof)
             if args.batch_command == 'block':
                 return batch_queue.block_task(args.task_id, args.reason)
             if args.batch_command == 'reopen-unreachable':
@@ -979,11 +997,9 @@ def run(args):
             if args.batch_command == 'requeue':
                 probe = None
                 if args.check_miaoshou:
-                    from doudian_auto.miaoshou_editor import MiaoshouEditor
-                    def _probe(shop, product_id):
-                        bridge = Bridge(DEFAULT_ENDPOINT, session='miaoshou-requeue', timeout=30)
-                        return MiaoshouEditor(bridge, shop).row_present(product_id)
-                    probe = _probe
+                    session = getattr(args, 'session', 'miaoshou-requeue')
+                    probe = lambda shop, product_id: _miaoshou_listing_probe(
+                        shop, product_id, endpoint=args.endpoint, session=session)
                 return batch_queue.requeue_visual_task(args.task_id, args.proof,
                                                        miaoshou_probe=probe)
             if args.batch_command == 'quarantine':
@@ -996,9 +1012,18 @@ def run(args):
             if args.batch_command == 'requeue-failed':
                 from .requeue_failed import requeue_failed_submission
                 return requeue_failed_submission(args.task_id, args.proof)
+            if args.batch_command == 'verify-legacy-readback':
+                from .legacy_readback import verify_legacy_sku_grid_readback
+                return verify_legacy_sku_grid_readback(args.task_id, args.proof)
             if args.batch_command == 'recover-preflight':
                 from .rebaseline import recover_preflight
                 return recover_preflight(args.task_id, args.proof)
+            if args.batch_command == 'reconcile-external':
+                from .rebaseline import reconcile_external_verified
+                return reconcile_external_verified(args.task_id, args.proof)
+            if args.batch_command == 'reset-collision':
+                from .rebaseline import reset_prewrite_source_collision
+                return reset_prewrite_source_collision(args.task_id, args.proof)
             if args.batch_command == 'recover-prepared':
                 from .prepared_recovery import recover_prepared_after_reads
                 return recover_prepared_after_reads(args.task_id, args.proof)
@@ -1129,15 +1154,15 @@ def run(args):
     raise DoudianError('unknown_command', '未知命令。')
 
 
-def _miaoshou_listing_probe(shop, product_id):
+def _miaoshou_listing_probe(shop, product_id, *, endpoint=DEFAULT_ENDPOINT, session='miaoshou-requeue'):
     """Read-only proof that the product is in 妙手's quick-edit list.
 
     True / False / None are kept distinct by the caller: an unreadable list must
     never be reported as "product absent".
     """
     from doudian_auto.miaoshou_editor import MiaoshouEditor
-    bridge = Bridge(DEFAULT_ENDPOINT, session='miaoshou-requeue', timeout=30)
-    return MiaoshouEditor(bridge, shop).row_present(product_id)
+    bridge = Bridge(endpoint, session=session, timeout=30)
+    return MiaoshouEditor(bridge, shop, session=session).row_present(product_id)
 
 
 def main(argv=None):

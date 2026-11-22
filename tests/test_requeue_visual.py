@@ -214,3 +214,126 @@ def test_an_unreadable_miaoshou_probe_is_not_treated_as_absent(queue, tmp_path):
                                   miaoshou_probe=lambda *_: None)
     assert exc.value.code == 'miaoshou_listing_unproven'
     assert _state(queue) == 'blocked'
+
+
+def test_requeue_replaces_prewrite_artifacts_reference_and_rejects_unchanged_assets(queue, tmp_path):
+    old_proof = make_manifest(queue, tmp_path, name='old_art')
+    old_hash = hashlib.sha256(old_proof.read_bytes()).hexdigest()
+    block_visually(queue, reason='root_visual_review_failed_after_retry: detail:3 failed')
+    with sqlite3.connect(queue.db) as conn:
+        conn.execute('UPDATE products SET artifacts_path=?, artifacts_hash=? WHERE id=?',
+                     (str(old_proof), old_hash, queue.row['id']))
+    # Reusing identical manifest hash must be refused.
+    with pytest.raises(DoudianError) as same_exc:
+        batch.requeue_visual_task(queue.row['id'], old_proof, db_path=queue.db,
+                                  miaoshou_probe=lambda *_: True)
+    assert same_exc.value.code == 'requeue_evidence_stale'
+
+    # Providing regenerated assets supersedes prior_artifacts_path and records audit detail.
+    new_proof = make_manifest(queue, tmp_path, name='new_art')
+    Image.new('RGB', (1024, 1536), (11, 22, 33)).save(tmp_path / 'new_art' / 'detail-3.png')
+    # Re-create manifest hashes cleanly via make_manifest on a fresh dir with unique content
+    new_dir = tmp_path / 'new_art_2'
+    new_proof = make_manifest(queue, tmp_path, name='new_art_2')
+    # Mutate detail-3 color in make_manifest by rewriting its content & hashes? Easier: reuse make_manifest?
+    # Note: make_manifest uses deterministic RGB by slot, so alter detail-3 and update manifest hashes cleanly.
+    data = json.loads(new_proof.read_text(encoding='utf-8'))
+    d3 = new_dir / 'detail-3.png'
+    Image.new('RGB', (1024, 1536), (11, 22, 33)).save(d3)
+    new_sha = _sha(d3)
+    for item in data['visual_review']['items']:
+        if item['kind'] == 'detail' and item['slot'] == 3:
+            item['asset_sha256'] = new_sha
+    new_proof.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+    res = batch.requeue_visual_task(queue.row['id'], new_proof, db_path=queue.db,
+                                    miaoshou_probe=lambda *_: True)
+    assert res['state'] == 'needs_agent'
+    with sqlite3.connect(queue.db) as conn:
+        row = conn.execute('SELECT artifacts_path, artifacts_hash, state FROM products WHERE id=?',
+                           (queue.row['id'],)).fetchone()
+    assert tuple(row) == (None, None, 'needs_agent')
+
+
+def test_requeue_still_rejects_any_baseline_intent_or_preparation(queue, tmp_path):
+    block_visually(queue, reason='root_visual_review_failed_after_retry: x')
+    new_proof = make_manifest(queue, tmp_path, name='blocked_art')
+    with sqlite3.connect(queue.db) as conn:
+        conn.execute("UPDATE products SET baseline_json='{}' WHERE id=?", (queue.row['id'],))
+    with pytest.raises(DoudianError) as exc:
+        batch.requeue_visual_task(queue.row['id'], new_proof, db_path=queue.db,
+                                  miaoshou_probe=lambda *_: True)
+    assert exc.value.code == 'requeue_not_allowed'
+
+
+@pytest.mark.parametrize('mode', [
+    'valid', 'tampered_sha', 'wrong_product', 'missing_hashes',
+    'reuse_first_attempt', 'reuse_final_attempt', 'conflict_event',
+])
+def test_root_quarantine_requeue_with_zero_asset_reviews(queue, tmp_path, mode):
+    old_first = make_manifest(queue, tmp_path, name='old_first')
+    first_data = json.loads(old_first.read_text(encoding='utf-8'))
+    first_d2_sha = first_data['visual_review']['items'][6]['asset_sha256']
+    final_d2 = tmp_path / 'final_d2.png'
+    Image.new('RGB', (1024, 1536), (111, 222, 33)).save(final_d2)
+    final_d2_sha = _sha(final_d2)
+
+    q_path = tmp_path / 'root-visual-quarantine.json'
+    q_doc = {
+        'task_id': queue.row['id'],
+        'product_id': PID if mode != 'wrong_product' else '9999999999999999999',
+        'target_version': queue.row['target_version'],
+        'reviewer': 'root-reviewer',
+        'status': 'fail_after_retry',
+        'uploads': 0,
+        'save_attempts': 0,
+        'failed_slots': [{
+            'kind': 'detail',
+            'slot': 2,
+            'checks': ['identity'],
+            'final_asset': {} if mode == 'missing_hashes' else {'sha256': final_d2_sha},
+            'first_failed_asset': {} if mode == 'missing_hashes' else {'sha256': first_d2_sha},
+        }],
+    }
+    q_path.write_text(json.dumps(q_doc, ensure_ascii=False), encoding='utf-8')
+    q_sha = _sha(q_path)
+    if mode == 'tampered_sha':
+        q_doc['reason'] = 'tampered'
+        q_path.write_text(json.dumps(q_doc, ensure_ascii=False), encoding='utf-8')
+    err_str = f'root_visual_review_failed_after_retry: detail2 failed. Root proof {q_path} sha256={q_sha}'
+    block_visually(queue, reason=err_str, fail_rows=0)
+    if mode == 'conflict_event':
+        with sqlite3.connect(queue.db) as conn:
+            conn.execute('INSERT INTO product_events(task_id,from_state,to_state,occurred_at,detail) VALUES(?,?,?,?,?)',
+                         (queue.row['id'], 'agent_claimed', 'blocked', time.time() - 50,
+                          f'root_visual_review_failed_after_retry: other. Root proof {q_path} sha256={"0"*64}'))
+
+    new_proof = make_manifest(queue, tmp_path, name='fresh_round')
+    new_data = json.loads(new_proof.read_text(encoding='utf-8'))
+    if mode == 'reuse_first_attempt':
+        # Already uses identical make_manifest deterministic pixel for detail-2 (same sha as first_d2_sha!)
+        pass
+    elif mode == 'reuse_final_attempt':
+        p = Path(new_data['details'][1])
+        p.write_bytes(final_d2.read_bytes())
+        for it in new_data['visual_review']['items']:
+            if it['kind'] == 'detail' and it['slot'] == 2:
+                it['asset_sha256'] = final_d2_sha
+        new_proof.write_text(json.dumps(new_data, ensure_ascii=False), encoding='utf-8')
+    else:
+        p = Path(new_data['details'][1])
+        Image.new('RGB', (1024, 1536), (77, 88, 99)).save(p)
+        fixed_sha = _sha(p)
+        for it in new_data['visual_review']['items']:
+            if it['kind'] == 'detail' and it['slot'] == 2:
+                it['asset_sha256'] = fixed_sha
+        new_proof.write_text(json.dumps(new_data, ensure_ascii=False), encoding='utf-8')
+
+    if mode == 'valid':
+        res = batch.requeue_visual_task(queue.row['id'], new_proof, db_path=queue.db,
+                                        miaoshou_probe=lambda *_: True)
+        assert res['state'] == 'needs_agent'
+        assert res['round'] == 1
+    else:
+        with pytest.raises(DoudianError):
+            batch.requeue_visual_task(queue.row['id'], new_proof, db_path=queue.db,
+                                      miaoshou_probe=lambda *_: True)

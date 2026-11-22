@@ -42,3 +42,42 @@ def test_preflight_cannot_be_changed_into_an_apply_command(monkeypatch, capsys):
     assert cli.main(['--json', 'batch', 'preflight', '--product-id', '3850072900438720563', '--apply']) == 1
     result = json.loads(capsys.readouterr().out)
     assert result['error']['code'] == 'invalid_arguments'
+
+
+def test_requeue_cli_forwards_same_session_to_bridge_and_miaoshou_editor(monkeypatch, capsys, tmp_path):
+    from doudian_auto import batch, miaoshou_editor
+    seen = {}
+    proof = tmp_path / 'art.json'
+    proof.write_text('{}', encoding='utf-8')
+
+    class DummyBridge:
+        def __init__(self, endpoint, session='default', timeout=30):
+            seen['bridge'] = (endpoint, session)
+
+    class DummyMiaoshou:
+        def __init__(self, bridge, shop, *, session='miaoshou-auto-batch-20261028'):
+            seen['editor'] = (shop, session)
+
+        def row_present(self, pid):
+            seen['row_present'] = pid
+            return True
+
+    def fake_requeue(task_id, proof_path, *, miaoshou_probe=None, **kwargs):
+        assert miaoshou_probe is not None
+        assert miaoshou_probe('样板店', '3850072900438720563') is True
+        return {'task_id': task_id, 'state': 'needs_agent'}
+
+    monkeypatch.setattr(cli, 'Bridge', DummyBridge)
+    monkeypatch.setattr(miaoshou_editor, 'MiaoshouEditor', DummyMiaoshou)
+    monkeypatch.setattr(batch, 'requeue_visual_task', fake_requeue)
+
+    assert cli.main(['--json', 'batch', 'requeue', '--task-id', '27', '--proof', str(proof), '--check-miaoshou']) == 0
+    capsys.readouterr()
+    assert seen['bridge'] == ('ego', 'miaoshou-requeue')
+    assert seen['editor'] == ('样板店', 'miaoshou-requeue')
+
+    assert cli.main(['--json', 'batch', 'requeue', '--task-id', '27', '--proof', str(proof),
+                     '--check-miaoshou', '--session', 'unblock-p3']) == 0
+    capsys.readouterr()
+    assert seen['bridge'] == ('ego', 'unblock-p3')
+    assert seen['editor'] == ('样板店', 'unblock-p3')
