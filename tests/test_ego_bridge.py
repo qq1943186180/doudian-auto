@@ -117,3 +117,53 @@ def test_broken_pending_record_stops_before_launch(tmp_path, monkeypatch):
         with pytest.raises(DoudianError) as refused:
             bridge.command('snapshot')
         assert refused.value.code == 'ego_operation_unsettled'
+
+
+def test_subprocess_calls_detach_stdin_with_devnull(tmp_path, monkeypatch):
+    monkeypatch.setattr('doudian_auto.ego_bridge.DATA_ROOT', tmp_path)
+    monkeypatch.setattr('doudian_auto.ego_bridge.shutil.which', lambda name: 'ego-browser.cmd')
+    recorded = []
+
+    def fake_run(command, **kwargs):
+        recorded.append((command, kwargs))
+        spaces = list(tmp_path.rglob('*.space.mjs'))
+        if spaces:
+            sp = max(spaces, key=lambda p: p.stat().st_mtime_ns)
+            out = sp.with_suffix('.json')
+            if not out.exists():
+                out.write_text(json.dumps({'ok': True, 'spaceId': 1}), encoding='utf-8')
+                return
+        requests = [p for p in tmp_path.rglob('*.json') if len(p.stem) == 32]
+        if requests:
+            req = max(requests, key=lambda p: p.stat().st_mtime_ns)
+            req.with_name(req.stem + '.result.json').write_text(
+                json.dumps({'ok': True, 'data': {'space': True}}), encoding='utf-8')
+
+    monkeypatch.setattr('doudian_auto.ego_bridge.subprocess.run', fake_run)
+    bridge = Bridge('ego', session='stdin-check')
+    bridge.command('snapshot')
+    bridge.align_space()
+    assert len(recorded) == 2
+    assert all(kw.get('stdin') is subprocess.DEVNULL for _, kw in recorded)
+
+
+def test_child_reading_stdin_eof_exits_when_parent_stdin_is_open_pipe(tmp_path, monkeypatch):
+    import sys
+
+    script = 'import sys; sys.stdin.read(); print("eof")'
+    proc = subprocess.Popen(
+        [sys.executable, '-c',
+         'import subprocess, sys; r = subprocess.run([sys.executable, "-c", '
+         + repr(script)
+         + '], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3); '
+         'sys.exit(0 if "eof" in r.stdout else 1)'],
+        stdin=subprocess.PIPE,
+    )
+    try:
+        rc = proc.wait(timeout=5)
+        assert rc == 0
+    finally:
+        if proc.stdin:
+            proc.stdin.close()
+        if proc.poll() is None:
+            proc.kill()

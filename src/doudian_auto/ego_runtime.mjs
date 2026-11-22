@@ -337,7 +337,7 @@ export async function runEgo(request) {
             for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;}
             const r=el.getBoundingClientRect();return r.width>0&&r.height>0;
           });return {count:xs.length,disabled:!!xs[0]?.disabled,name:xs[0]?.name,
-            imageFooter:xs.length===1&&xs[0].matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box')&&
+            imageFooter:xs.length===1&&xs[0].matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box,.base-edit-list .operate-btn-add,.base-edit-list .operate-btn-add button')&&
               location.hostname==='v2-dd.chengji-inc.com'&&location.pathname==='/product/batch/edit'&&
               !!document.querySelector('.batch-edit-footer-ms')};
         },args.selector);
@@ -367,9 +367,9 @@ export async function runEgo(request) {
         if(nodes.length!==1)return {count:nodes.length};
         const el=nodes[0];el.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
         const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);
-        const pickerControl=el.matches('.replace-image-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-dialog__headerbtn')||
-          (el.matches('.replace-image-dialog button,.select-product-filter-dialog button')&&/^(关闭|确定)$/.test(el.innerText.trim()));
-        const imageSlot=(el.matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box')||pickerControl)&&
+        const pickerControl=el.matches('.replace-image-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-tabs__item')||
+          (el.matches('.replace-image-dialog button,.select-product-filter-dialog button')&&/^(关闭|确定|添加要过滤的图片)$/.test(el.innerText.trim()));
+        const imageSlot=(el.matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box,.base-edit-list .operate-btn-add,.base-edit-list .operate-btn-add button')||pickerControl)&&
           location.hostname==='v2-dd.chengji-inc.com'&&location.pathname==='/product/batch/edit';
         return {count:1,x,y,actionable:!!hit&&(hit===el||el.contains(hit)),disabled:!!el.disabled,fieldName:el.name||null,imageSlot};
       },args.selector);
@@ -385,9 +385,9 @@ export async function runEgo(request) {
           // Keep this pointer input in the measured CDP coordinate space.
           const point=await page.evaluate(selector=>{
             const xs=[...document.querySelectorAll(selector)];if(xs.length!==1)return null;
-            const el=xs[0],pickerControl=el.matches('.replace-image-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-dialog__headerbtn')||
-              (el.matches('.replace-image-dialog button,.select-product-filter-dialog button')&&/^(关闭|确定)$/.test(el.innerText.trim()));
-            if(!el.matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box')&&!pickerControl)return null;
+            const el=xs[0],pickerControl=el.matches('.replace-image-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-dialog__headerbtn,.select-product-filter-dialog .el-tabs__item')||
+              (el.matches('.replace-image-dialog button,.select-product-filter-dialog button')&&/^(关闭|确定|添加要过滤的图片)$/.test(el.innerText.trim()));
+            if(!el.matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box,.base-edit-list .operate-btn-add,.base-edit-list .operate-btn-add button')&&!pickerControl)return null;
             const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);
             return r.width>0&&r.height>0&&hit&&(hit===el||el.contains(hit))?{x,y}:null;
           },args.selector);

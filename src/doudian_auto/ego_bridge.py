@@ -120,7 +120,7 @@ class EgoBridge(Bridge):
                     # The JSON result is written by the script. On Windows a CLI
                     # child can inherit PIPE handles and keep communicate() stuck
                     # after its parent times out. No pipes are needed here.
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
                     encoding='utf-8', errors='replace', timeout=65 if action == 'upload' else 35)
             except subprocess.TimeoutExpired as exc:
@@ -194,7 +194,7 @@ class EgoBridge(Bridge):
             try:
                 subprocess.run([executable, 'nodejs', '-e',
                     "await import('" + script.as_uri() + "')"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
                     encoding='utf-8', errors='replace', timeout=60)
             except subprocess.TimeoutExpired as exc:

@@ -363,6 +363,16 @@ class MiaoshouBatchEditor:
         self._mark_and_click(probe, marker, 'miaoshou_batch_control_not_unique',
                              f'妙手批量页控件「{text}」不唯一或缺失。')
 
+    def _wait_actionable_text(self, selector, text, message, *, index=0, seconds=10):
+        code = ("(()=>{const xs=[...document.querySelectorAll('" + selector + "')].filter(x=>"
+                "x.offsetParent!==null&&(x.innerText||x.textContent||'').replace(/\\s+/g,' ').trim()===" +
+                json.dumps(text, ensure_ascii=True) + ");const el=xs[" + str(index) + "];"
+                "if(!el)return false;const r=el.getBoundingClientRect();"
+                "if(r.width<=0||r.height<=0)return false;"
+                "const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);"
+                "return !!hit&&(hit===el||el.contains(hit))})()")
+        return self._wait_eval(code, lambda ok: ok is True, message, seconds=seconds)
+
     def _ensure_checkbox(self, value, checked):
         marker = 'miao-batch-' + uuid.uuid4().hex
         quoted = json.dumps(str(value), ensure_ascii=True)
@@ -457,7 +467,9 @@ class MiaoshouBatchEditor:
     def _upload_open_image_dialog(self, path, read_slot, before_url=None, reuse=None, *, detail=False):
         selector = '.select-product-filter-dialog' if detail else '.replace-image-dialog'
         if detail:
-            self._click_exact_text(selector + ' .el-tabs__item', '输入图片链接' if reuse else '本地上传')
+            tab_text = '输入图片链接' if reuse else '本地上传'
+            self._wait_actionable_text(selector + ' .el-tabs__item', tab_text, '详情图片选择弹窗标签未就绪。')
+            self._click_exact_text(selector + ' .el-tabs__item', tab_text)
         probe = self.bridge.evaluate(
             "(()=>{const ds=[...document.querySelectorAll('" + selector + "')].filter(x=>x.offsetParent!==null);"
             "const f=ds.length===1?[...ds[0].querySelectorAll('input[type=file]')].filter(x=>!x.disabled):[];"
@@ -545,12 +557,14 @@ class MiaoshouBatchEditor:
     def _ensure_detail_rows(self, count=4):
         current = self._detail_lists()
         while current < count:
+            self._ensure_checkbox('replaceImgsByImgUrls', True)
             marker = 'miao-batch-' + uuid.uuid4().hex
             probe = ("(()=>{const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>"
                      "x.querySelectorAll('.add-img-box').length===2);if(xs.length!==" + str(current) + ")"
                      "return {count:0,total:xs.length};const b=[...xs[xs.length-1].querySelectorAll('.operate-btn-add')]"
                      ".filter(x=>x.offsetParent!==null&&!x.classList.contains('disabled'));"
-                     "if(b.length!==1)return {count:0};b[0].setAttribute('data-codex-miao-batch','__MARKER__');"
+                     "if(b.length!==1)return {count:0};const target=b[0].querySelector('button')||b[0];"
+                     "target.setAttribute('data-codex-miao-batch','__MARKER__');"
                      "return {count:1,total:xs.length}})()")
             self._mark_and_click(probe, marker, 'miaoshou_batch_detail_rows',
                                  '详情替换行的“添加”按钮不唯一，已停止。')
@@ -558,6 +572,7 @@ class MiaoshouBatchEditor:
                 "(()=>[...document.querySelectorAll('.base-edit-list')].filter(x=>"
                 "x.querySelectorAll('.add-img-box').length===2).length)()",
                 lambda value: value > current, '详情替换行没有增加。', seconds=10)
+        self._ensure_checkbox('replaceImgsByImgUrls', True)
         if current != count:
             raise DoudianError('miaoshou_batch_detail_rows', '详情替换行数不是4，拒绝继续。')
 
@@ -610,6 +625,7 @@ class MiaoshouBatchEditor:
             # A populated box is not an upload button. Clicking it bubbles to the
             # wrapping checkbox and disables the entire detail replacement mode.
             raise DoudianError('miaoshou_batch_source_mismatch', '已有详情来源与本次基线不同，需重新核对表单。')
+        self._ensure_checkbox('replaceImgsByImgUrls', True)
         # Mark and click the first image box in the exact source/target row.
         marker = 'miao-batch-' + uuid.uuid4().hex
         qurl = json.dumps(url, ensure_ascii=True)
@@ -627,9 +643,20 @@ class MiaoshouBatchEditor:
         self._wait_eval(
             "(()=>[...document.querySelectorAll('.select-product-filter-dialog')].filter(x=>x.offsetParent!==null).length)()",
             lambda count: count == 1, '详情图片来源选择窗口没有打开。', seconds=10)
+        self._wait_actionable_text('.select-product-filter-dialog .el-tabs__item', '输入图片链接',
+                                   '详情图片来源选择弹窗标签未就绪。')
         self._click_exact_text('.select-product-filter-dialog .el-tabs__item', '输入图片链接')
+        self._wait_eval(
+            "(()=>{const ta=document.querySelector('.select-product-filter-dialog textarea[placeholder*=\"过滤的图片链接\"]');"
+            "return !!ta&&ta.offsetParent!==null})()",
+            lambda ready: ready is True, '输入图片链接文本框未切换就绪。', seconds=10)
         self.bridge.command('fill', {'selector': '.select-product-filter-dialog textarea[placeholder*="过滤的图片链接"]',
                                      'value': url})
+        self._wait_eval(
+            "(()=>{const ta=document.querySelector('.select-product-filter-dialog textarea[placeholder*=\"过滤的图片链接\"]');"
+            "const btn=[...document.querySelectorAll('.select-product-filter-dialog button')].find(x=>x.offsetParent!==null&&(x.innerText||x.textContent||'').replace(/\\s+/g,' ').trim()==='添加要过滤的图片');"
+            "return !!ta&&!!ta.value.trim()&&!!btn&&!btn.disabled})()",
+            lambda ready: ready is True, '添加要过滤的图片按钮未就绪。', seconds=5)
         self._click_exact_text('.select-product-filter-dialog button', '添加要过滤的图片')
         self._wait_eval(
             "(()=>{const xs=[...document.querySelectorAll('.base-edit-list')].filter(x=>"
@@ -688,6 +715,7 @@ class MiaoshouBatchEditor:
         self._ensure_checkbox('onlyPreview', True)
         self._ensure_checkbox('replaceImgsByImgUrls', True)
         self._ensure_detail_rows(4)
+        self._ensure_checkbox('replaceImgsByImgUrls', True)
         reused = []
         def previous(kind, slot, path):
             item = reuse_by_slot.get(f'{kind}:{slot}') or {}
