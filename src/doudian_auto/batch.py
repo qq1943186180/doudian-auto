@@ -40,7 +40,12 @@ PREFLIGHT_BLOCK_PREFIX = 'preflight_exception:'
 # failure: the row really did reach a click. It still belongs to "no write survived", so
 # it may be re-read -- but under its own reason so the two cases stay distinguishable.
 PRIOR_SAVE_FAILED_PREFIX = 'prior_save_failed:'
-RECOVERABLE_BLOCK_PREFIXES = (PREFLIGHT_BLOCK_PREFIX, PRIOR_SAVE_FAILED_PREFIX)
+LEGACY_SLOT_BLOCK_PREFIX = 'writer_image_slots_incomplete:'
+RECOVERABLE_BLOCK_PREFIXES = (
+    PREFLIGHT_BLOCK_PREFIX,
+    PRIOR_SAVE_FAILED_PREFIX,
+    LEGACY_SLOT_BLOCK_PREFIX,
+)
 
 
 def _db(path=None):

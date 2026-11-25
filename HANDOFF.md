@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-25 16:45（Asia/Shanghai）；当前执行：Antigravity；最近任务 T-20261125-002（**按用户授权将刚完成的 `#23/#39/#50` 执行妙手上架，并通过妙手快速编辑与抖店官方 `/ffa/g/list` 双端读回核验全部处于 `上架 审核通过` / `售卖中`**）。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**52 verified / 0 ready / 3 blocked（均为上架中 `status=0`：`#57/#59/#61`，受 `warehouse_scope_only` 保护不改写）/ 6 closed_unreachable（`#12/#22/#33/#36/#46/#52`）**（2026-11-25 实读 `batch.sqlite3`）。Ego 浏览器全部 `doudian-*` 与 `tbauto-p3-gen-*` 临时空间已清理完毕。
+更新：2026-11-25 18:56（Asia/Shanghai）；当前执行：Antigravity；最近任务 T-20261125-003（**61 件全量收官：52 件已核验商品全量上架 `售卖中` + 最后 3 件在售阻塞品 `#57/#59/#61` 按用户 `"你都干"` 授权下架优化、22 图 Web-GPT 重制质检、双端 `verified` 后重新上架 `售卖中`**）。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**55 verified（全部 55/55 已上架 `售卖中`） / 0 ready / 0 needs_agent / 0 blocked / 6 closed_unreachable（`#12/#22/#33/#36/#46/#52`）**（2026-11-25 实读 `batch.sqlite3`）。Ego 浏览器全部 `doudian-*` 与 `tbauto-p3-gen-*` 临时空间已清理完毕。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -30,6 +30,16 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261125-003 · 🏁 全仓 61 件队列 100% 闭环收官：52 件上架核验 + 最后 3 件 `#57/#59/#61` 优化重上架（55/55 `verified` 且全部在线 `售卖中`）
+
+- **阶段一 · 已核验 52 件全量上架验证**：继 `#23/#39/#50` 后，执行其余 49 件 `verified` 仓库品批量上架检查（15 件本就在售，34 件新执行妙手「上架」并逐件独立访问抖店官方 `/ffa/g/list?product_id=...` 确认 `onSale=true` / `售卖中`），至此原 52 件 `verified` 商品 **52/52 实时在售**（证据 `work/materials-20261125/list-all-verified-20261125.json`）。
+- **代码修复 · 历史槽位阻塞可复检**：`src/doudian_auto/batch.py` 新增 `LEGACY_SLOT_BLOCK_PREFIX = 'writer_image_slots_incomplete:'` 并纳入 `RECOVERABLE_BLOCK_PREFIXES`，`tests/test_slot_plan.py` 补回归测试 `test_legacy_slot_block_prefix_is_recheckable`（`pytest tests/test_slot_plan.py tests/test_preflight.py` **97 passed in 4.48s**），使 `#61` 这类历史 0 次写入的槽位阻塞项可走 `--recheck-blocked` 复开。
+- **阶段二 · 最后 3 件 `#57/#59/#61` 下架优化 + 双端 verified + 重上架 `售卖中`（获用户 `"你都干"` 授权）**：
+  - 临时在妙手下架 `#57/#59/#61`（`status=1`），采集双端基线并复开为 `needs_agent`。经 `tb-auto` 网页版 ChatGPT「生图」项目（Ego `Profile 3`）生成共 **22 张**商品图（`#57` 5 主 2 详、`#59` 5 主 2 详、`#61` 4 主 4 详，其中 `#61` `main-4`/`detail-3` 因初始贴边裁切微调安全边距重制并通过五维目视复核），绑定 `generator="web-gpt-ego"` 完成 `agent complete`。
+  - `#59`（`3790019980637110699`，`车载灭火器固定绑带汽车后备箱防滚魔术贴三道可调节束带`，2 SKU 黑/红，全套明确标注「仅售绑带 不含灭火器」，`readback_sha256=040889e2bd53`）与 `#61`（`3767496214443065490`，`防风防撞橡胶门塞加高防滑门堵免打孔安全门楔子顶门阻门器`，4 主 4 详 14 SKU，`readback_sha256=49024f09d180`）一次 `batch run --apply` 双端 `verified`（`attempts=1`），随即妙手上架并经抖店 `/ffa/g/list` 核验 **`售卖中`**（`#59` ￥28.88 90 分、`#61` ￥3.88~￥4.88 92 分）。
+  - `#57`（`3793434417251352651`，`滴胶门禁卡小区电梯卡挂绳钥匙扣多图案CUID芯片感应卡`，5 主 2 详 44 SKU）：首次 `batch run` 因抖店类目预测校验拦截（妙手 `taskId=38876801` 0 成功 1 失败：`门禁系统` 需改用建议类目 `家装建材>全屋智能>智能家居设备配件`）→ 按受控流程走 `batch requeue-failed` 核销零变更失败提交 → 在妙手「编辑商品」将类目与目标标题切至 `家装建材>全屋智能>智能家居设备配件` 并确认双端 `completion=100%` / `下架` → 重跑新鲜 preflight/recheck/`agent complete`/`batch run --apply`（妙手 `taskId=38877207` 更新成功、同步 `下架 审核通过`）→ 只读对账转为 **`verified`**（`readback_sha256=54ce18c37766`，`miao_matches=True`、`doudian_matches=True`、`attempts=1`）→ 妙手上架并经抖店 `/ffa/g/list` 确认 **`售卖中`**（￥5.48~￥7.48，89 分，上架时间 `2026/11/25 18:54:34`）。3 件合并证据：`work/materials-20261125/listing-57-59-61-20261125.json`。
+- **最终队列终盘（61 件，Linear `194-76` `Done`）**：**55 `verified`（55/55 在售 `售卖中`） / 6 `closed_unreachable`（`#12/#22/#33/#36/#46/#52`） / 0 `ready` / 0 `needs_agent` / 0 `blocked`**；Ego 临时空间 `remainingDoudianSpaces=[]`、`remainingTbAuto=[]`。
 
 ### T-20261125-002 · ✅ 刚完成的 3 件商品 `#23/#39/#50` 已上架并完成双端「售卖中 / 上架」读回核验
 

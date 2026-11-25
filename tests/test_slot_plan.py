@@ -265,3 +265,53 @@ def test_readback_compares_only_the_planned_prefix(monkeypatch):
     changed_tail = {**after, 'details': after['details'][:2] +
                     ['https://p3.example/ecom-shop-material/key-tail-2']}
     assert batch._matches_doudian_target(before, changed_tail, '同标题', mappings, plan) is False
+
+
+def test_legacy_slot_block_prefix_is_recheckable(tmp_path):
+    import json
+    import time
+
+    db_path = tmp_path / 'batch.sqlite3'
+    src_path = tmp_path / 'src.json'
+    pid = '3767496214443065490'
+    src_path.write_text(json.dumps({
+        'shop': '销霁百货',
+        'products': [{'product_id': pid, 'shop': '销霁百货', 'title': '门塞门堵'}],
+    }, ensure_ascii=False), encoding='utf-8')
+    created = batch.create_batch(str(src_path), shop='销霁百货', db_path=db_path)
+    task_id = batch.batch_status(created['batch_id'], db_path=db_path)['products'][0]['id']
+    conn = batch._db(db_path)
+    try:
+        conn.execute(
+            "UPDATE products SET state='blocked', last_error=? WHERE id=?",
+            ('writer_image_slots_incomplete: 官方及妙手均为4张主图/4张详情，v5要求5张原主图。', task_id),
+        )
+        conn.commit()
+        row = conn.execute('SELECT * FROM products WHERE id=?', (task_id,)).fetchone()
+        target_version = row['target_version']
+        assert batch._preflight_blocked_reason(row) is True
+    finally:
+        conn.close()
+
+    proof_path = tmp_path / 'summary.json'
+    proof_path.write_text(json.dumps({
+        'products': [{
+            'task_id': task_id,
+            'product_id': pid,
+            'shop': '销霁百货',
+            'target_version': target_version,
+            'read_only': True,
+            'state': 'eligible',
+            'eligible': True,
+            'evidence': {
+                'snapshot_read': True,
+                'observed_at': time.time(),
+                'snapshot_sha256': 'a' * 64,
+                'miaoshou_listed': True,
+            },
+        }],
+    }, ensure_ascii=False), encoding='utf-8')
+    out = batch.apply_preflight_report(task_id, str(proof_path), db_path=db_path)
+    assert out['state'] == 'needs_agent'
+    assert out['outcome'] == 'reopened'
+
