@@ -57,3 +57,102 @@ def test_remembered_sku_tab_switches_once_inside_original_read_budget(monkeypatc
     assert budgets == [30, 30]
     assert len(dialog_reads) == 2
     assert all('save' not in str(args).lower() for action, args in bridge.calls)
+
+
+def test_open_product_waits_for_query_loading_and_total_hint_before_edit_click(monkeypatch):
+    pid = '3853482303460343870'
+    events = []
+
+    class Bridge:
+        def require_ready(self):
+            pass
+
+        def command(self, action, args):
+            events.append((action, args))
+            return {'requests': []}
+
+        def wait(self, read, predicate, message, seconds):
+            value = read()
+            if predicate(value):
+                return value
+            raise AssertionError(message)
+
+    bridge = Bridge()
+    editor = MiaoshouEditor(bridge, '销霁百货', session='unit')
+    monkeypatch.setattr('doudian_auto.miaoshou_editor.time.sleep', lambda _s: None)
+    monkeypatch.setattr(editor, '_mark_control', lambda op, product_id=None: (events.append(('mark', op)), op)[1])
+
+    probe_states = iter([
+        {'filter_applied': True, 'loading': False, 'errors': [], 'total_hint': 58, 'exact_rows': 1},
+        {'filter_applied': True, 'loading': True, 'errors': [], 'total_hint': 58, 'exact_rows': 1},
+        {'filter_applied': True, 'loading': False, 'errors': [], 'total_hint': 1, 'exact_rows': 1},
+    ])
+
+    def visible_dom(op, *args):
+        if op == 'probe':
+            state = next(probe_states)
+            events.append(('probe', state['loading'], state['total_hint']))
+            return state
+        if op == 'navigation_toggle':
+            return {'count': 0}
+        if op == 'dialog':
+            return {'count': 1, 'identity': True}
+        return {'count': 1, 'selector': 'information_tab', 'identity': True}
+
+    monkeypatch.setattr(editor, '_visible_dom', visible_dom)
+    monkeypatch.setattr(
+        editor,
+        '_wait_tree',
+        lambda predicate, message, seconds=30: (
+            {'tree_text': '您好【销霁百货】'}
+            if predicate({'tree_text': '您好【销霁百货】'})
+            else {'tree_text': f'ID：{pid} 商品标题：'}
+        ),
+    )
+
+    assert '商品标题：' in editor.open_product(pid)['tree_text']
+    probe_indices = [i for i, e in enumerate(events) if e[0] == 'probe']
+    edit_click_idx = events.index(('click', {'selector': 'edit_button'}))
+    assert len(probe_indices) == 3
+    assert max(probe_indices) < edit_click_idx
+    assert ('click', {'selector': 'query_button'}) in events
+    assert events.index(('click', {'selector': 'query_button'})) < min(probe_indices)
+
+
+def test_close_replace_popup_uses_native_click_on_ego_endpoint():
+    calls = []
+    closed = {'value': False}
+
+    class NativeBridge:
+        endpoint = 'ego'
+
+        def require_ready(self):
+            pass
+
+        def evaluate(self, code):
+            calls.append(('evaluate', code))
+            if 'removeAttribute' in code:
+                return True
+            if '.replace-image-dialog' in code and 'open:' in code:
+                return {'open': True, 'dialogs': 1, 'closeButtons': 1, 'x': 120.0, 'y': 60.0}
+            return closed['value']
+
+        def command(self, action, args):
+            calls.append((action, args))
+            if action == 'click':
+                assert args['selector'].startswith('[data-codex-miaoshou-close="miaoshou-close-')
+                closed['value'] = True
+            return {'success': True}
+
+        def wait(self, read, predicate, message, seconds):
+            value = read()
+            if predicate(value):
+                return value
+            raise AssertionError(message)
+
+    editor = MiaoshouEditor(NativeBridge(), '销霁百货', session='unit')
+    editor._close_replace_popup()
+    actions = [c[0] for c in calls]
+    assert 'click' in actions
+    assert 'cdp' not in actions
+

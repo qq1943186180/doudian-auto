@@ -191,12 +191,12 @@ export async function runEgo(request) {
         const r=xs.length===1?xs[0].getBoundingClientRect():null;
         const onBatch=location.hostname==='v2-dd.chengji-inc.com'&&location.pathname==='/product/batch/edit';
         const hit=onBatch&&r?document.elementFromPoint(r.x+r.width/2,r.y+r.height/2):null;
-        return {count:xs.length,footerOccluded:!!hit?.closest('.batch-edit-footer-ms')};
+        return {count:xs.length,occluded:!!(onBatch&&r&&(!hit||(hit!==xs[0]&&!xs[0].contains(hit))))};
       },selector);
       if(labels.count!==1)fail('ego_checkbox_not_unique','No unique native control label.');
-      // A measured native click on the unselected detail switch hit the fixed
-      // footer. Center only this observed obstruction before one ordinary click.
-      if(labels.footerOccluded)await page.evaluate(s=>document.querySelector(s)?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}),selector);
+      // Center observed obstructions (e.g., fixed footer or sticky header) on
+      // the batch edit route before one ordinary click.
+      if(labels.occluded)await page.evaluate(s=>document.querySelector(s)?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}),selector);
       await page.click(selector,{label:'select verified modification option'});
       await page.waitForFunction(p=>document.querySelector(p.selector)?.checked===p.checked,args,{timeout:3000});
       const checked=await page.evaluate(s=>document.querySelector(s)?.checked,args.selector);
@@ -336,17 +336,22 @@ export async function runEgo(request) {
           const xs=[...document.querySelectorAll(selector)].filter(el=>{
             for(let n=el;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;}
             const r=el.getBoundingClientRect();return r.width>0&&r.height>0;
-          });return {count:xs.length,disabled:!!xs[0]?.disabled,name:xs[0]?.name,
+          });
+          const el=xs.length===1?xs[0]:null;
+          const r=el?el.getBoundingClientRect():null;
+          const hit=r?document.elementFromPoint(r.x+r.width/2,r.y+r.height/2):null;
+          return {count:xs.length,disabled:!!xs[0]?.disabled,name:xs[0]?.name,
             imageFooter:xs.length===1&&xs[0].matches('.replace-img-item .add-img-box,.base-edit-list .add-img-box,.base-edit-list .operate-btn-add,.base-edit-list .operate-btn-add button')&&
               location.hostname==='v2-dd.chengji-inc.com'&&location.pathname==='/product/batch/edit'&&
-              !!document.querySelector('.batch-edit-footer-ms')};
+              !!document.querySelector('.batch-edit-footer-ms'),
+            occluded:!!(el&&(!hit||(hit!==el&&!el.contains(hit))))};
         },args.selector);
         if(observed.count!==1||observed.disabled)fail('ego_target_not_unique','No unique enabled native control.');
         if(action==='click'){
           // Live task5: native nearest-scroll left detail4's center underneath
-          // Miaoshou's fixed footer. Center only image slots on this proven route;
-          // native click still resolves/hit-checks the element and dispatches once.
-          if(observed.imageFooter)await page.evaluate(s=>document.querySelector(s)?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}),args.selector);
+          // Miaoshou's fixed footer. Center image slots or any occluded target
+          // before native click resolves/hit-checks the element once.
+          if(observed.imageFooter||observed.occluded)await page.evaluate(s=>document.querySelector(s)?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}),args.selector);
           result=await page.click(args.selector,{label:'activate verified product control'});
         }
         else {

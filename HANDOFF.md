@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-25 18:56（Asia/Shanghai）；当前执行：Antigravity；最近任务 T-20261125-003（**61 件全量收官：52 件已核验商品全量上架 `售卖中` + 最后 3 件在售阻塞品 `#57/#59/#61` 按用户 `"你都干"` 授权下架优化、22 图 Web-GPT 重制质检、双端 `verified` 后重新上架 `售卖中`**）。执行前仍须重查仓库和本机状态——本文数字是快照，不是实时值。队列 61 件＝**55 verified（全部 55/55 已上架 `售卖中`） / 0 ready / 0 needs_agent / 0 blocked / 6 closed_unreachable（`#12/#22/#33/#36/#46/#52`）**（2026-11-25 实读 `batch.sqlite3`）。Ego 浏览器全部 `doudian-*` 与 `tbauto-p3-gen-*` 临时空间已清理完毕。
+更新：2026-11-25 21:40（Asia/Shanghai）；当前执行：Antigravity；最近任务 T-20261125-004（**新独立批次 `batch-20261125-195825-5396214a` 2/2 仓库品 `#62/#63` 完成 18 图 Web-GPT 优化、双端 `verified` 与上架 `售卖中` + 1688 试铺 `3856034020915806527` 落入草稿箱待补「生产企业名称」**）。历史 61 件队列不变：**55 verified（全部 55/55 已上架 `售卖中`） / 0 ready / 0 needs_agent / 0 blocked / 6 closed_unreachable（`#12/#22/#33/#36/#46/#52`）**；新增批次 `batch-20261125-195825-5396214a`：**2 verified（2/2 已上架 `售卖中`）**（2026-11-25 实读 `batch.sqlite3`）。Ego 浏览器全部 `doudian-*` 临时空间已清理完毕。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -30,6 +30,20 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261125-004 · ✅ 新批次 `batch-20261125-195825-5396214a`（2/2 `verified` + 上架 `售卖中`）+ 1688 选品试铺（1 件草稿待补属性）
+
+- **新独立批次优化并上架（`#62/#63`，排除测试品 `3853110071722639434`）**：
+  - 全流程经 `tb-auto`（网页版 ChatGPT「生图」项目，`Profile 3`）为两件下架品生成共 **18 张**图片（各 5 主 `1024×1024` + 4 详 `1024×1536`，全量 `read_file` 目视复核通过），绑定 `generator="web-gpt-ego"` 后以 `interaction_mode="native"` 完成 `batch run --apply`。
+  - `#62`（`3853482303460343870`，`麦歌娜酒店生物酶除臭剂空气清新柠檬分解异味卫生间大桶配喷壶`，`readback_sha256=57cc0fd544b4`，`miao_matches=True` / `doudian_matches=True` / `attempts=1`）→ 妙手上架并经抖店 `/ffa/g/list` 独立核验 **`售卖中`**（`￥85.88 ~ ￥139.88` · `90分` · 上架时间 `2026/11/25 21:34:51`）。
+  - `#63`（`3853454064050373417`，`适用极氪001/007/7X/009车门限位器保护套液态硅胶防锈减震垫`，`readback_sha256=102955ef5208`，`miao_matches=True` / `doudian_matches=True` / `attempts=1`；首次 `saveBatchTask` 后因妙手缓存同步延迟致即时读回 `unknown`，经妙手「同步数据」+ 只读 `batch resume --apply` 核销通过）→ 妙手上架并经抖店 `/ffa/g/list` 独立核验 **`售卖中`**（`￥15.48 ~ ￥27.48` · `90分` · 上架时间 `2026/11/25 21:35:01`）。
+  - 上架与双端核验证据：`work/materials-20261125/listing-62-63-20261125.json`；`doudian-*` 临时浏览器空间清理确认 `remainingDoudianSpaces=[]`。
+- **1688 选品分销试跑（`源价 × 3 + 5` · `放入仓库`）**：
+  - 候选 `#2`（`source_offer_id=806867081415`，`抗金属NFC贴纸华为一碰传电脑多屏协同不干胶贴片标签ios13自动化`）已复制到抖店商品 `3856034020915806527`（`工业品>工业包装>标签标识系统`）。因抖店类目必填项 **`生产企业名称`** 在 1688 源头缺失，按安全策略落入 **`草稿箱 / 未提审`**，待人工确认填报（详见 `C:/Users/19431/.doudian-auto/dropship/dropship-806867081415-cf618af284aafb98/manual-attributes.json`，`reference_supplier: 广州市勿忧勇平科技有限公司`），未纳入优化批。
+- **代码可靠性修复与全量测试**：
+  - `src/doudian_auto/miaoshou_editor.py`：`open_product` 点击查询后新增 `_wait_query_settled` 等待加载遮罩与 `total_hint` 落稳；`_close_replace_popup` 在 `is_native_endpoint(...)` 下改用 `click` 选择器关闭替换图弹窗。
+  - `src/doudian_auto/ego_runtime.mjs`：`native` 模式下 `checkbox` 与 `click` 改为基于中心 `elementFromPoint` 通用检测任意遮挡并在点击前居中滚动（`scrollIntoView({block:'center',inline:'nearest',behavior:'instant'})`）。
+  - `tests/test_miaoshou_information_tab.py` 与 `tests/ego-runtime.test.cjs`：补齐查询稳定等待、弹窗原生点击关闭与通用遮挡居中测试；`pytest -q` **933 passed**、`npm test` **127 passed**（0 failed）。
 
 ### T-20261125-003 · 🏁 全仓 61 件队列 100% 闭环收官：52 件上架核验 + 最后 3 件 `#57/#59/#61` 优化重上架（55/55 `verified` 且全部在线 `售卖中`）
 

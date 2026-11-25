@@ -425,7 +425,7 @@ for(const mode of ['footer','other','clear','wrong-route','lost'])test('native c
   f.page.waitForFunction=async(fn,arg)=>assert.equal(await f.page.evaluate(fn,arg),true);
   if(mode==='lost')await assert.rejects(f.run('checkbox',{selector:'#choice',checked:true}),/lost native result/);
   else await f.run('checkbox',{selector:'#choice',checked:true});
-  assert.equal(centers,['footer','lost'].includes(mode)?1:0);assert.equal(clicks,1);
+  assert.equal(centers,['footer','other','lost'].includes(mode)?1:0);assert.equal(clicks,1);
   assert.equal(f.calls.some(x=>typeof x==='string'&&/Emulation|dispatchMouse/.test(x)),false);
   dom.window.close();
 });

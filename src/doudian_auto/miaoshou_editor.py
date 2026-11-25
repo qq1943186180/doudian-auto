@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .bridge import is_native_endpoint
 from .errors import DoudianError, WaitingHuman
 from .jobs import HOST
 from .workflow import (is_permanent_material_key, is_permanent_material_url,
@@ -274,6 +275,37 @@ class MiaoshouEditor:
                 'observed_at': time.time(), 'market': 'miaoshou_quick_edit',
                 'verdict': verdict, 'reason': reason, 'signals': signals}
 
+    def _wait_query_settled(self, product_id, *, timeout=15):
+        """Wait for quick-edit query results and loading mask to clear before clicking."""
+        first = self._visible_dom('probe', product_id)
+        if not isinstance(first, dict) or 'loading' not in first:
+            return first
+        time.sleep(0.8)
+        deadline = time.monotonic() + timeout
+        last = None
+        while True:
+            state = self._visible_dom('probe', product_id)
+            if isinstance(state, dict) and state.get('error') is None:
+                settled = (
+                    state.get('filter_applied') is True
+                    and not state.get('loading')
+                    and not state.get('errors')
+                    and state.get('exact_rows') == 1
+                )
+                if settled and state.get('total_hint') == 1:
+                    return state
+                if (
+                    settled
+                    and state.get('total_hint') is None
+                    and last is not None
+                    and state.get('row_status') == last.get('row_status')
+                ):
+                    return state
+                last = state
+            if time.monotonic() >= deadline:
+                return last
+            time.sleep(0.4)
+
     def open_product(self, product_id, *, fresh=True):
         if not str(product_id).isdigit():
             raise DoudianError('invalid_product', '商品ID必须按字符串传入数字。')
@@ -285,6 +317,7 @@ class MiaoshouEditor:
         self.bridge.command('fill', {'selector': self._mark_control('search_input'),
                                      'value': str(product_id)})
         self.bridge.command('click', {'selector': self._mark_control('query_button')})
+        self._wait_query_settled(product_id)
         navigation = self._visible_dom('navigation_toggle', product_id)
         if isinstance(navigation, dict) and navigation.get('count') == 1:
             self.bridge.command('click', {'selector': navigation['selector']})
@@ -696,19 +729,22 @@ class MiaoshouEditor:
                 raise DoudianError('miaoshou_replace_close_not_unique', '已导入的图片窗口无法唯一定位关闭按钮。')
             focus_enabled = False
             try:
-                # This modal ignores synthetic DOM click events. Send trusted browser
-                # mouse input at the measured, uniquely marked visible close button.
-                self.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
-                                            'params': {'enabled': True}})
-                focus_enabled = True
-                self.bridge.command('cdp', {'method': 'Input.dispatchMouseEvent',
-                                            'params': {'type': 'mouseMoved', 'x': state['x'], 'y': state['y']}})
-                self.bridge.command('cdp', {'method': 'Input.dispatchMouseEvent',
-                                            'params': {'type': 'mousePressed', 'x': state['x'], 'y': state['y'],
-                                                       'button': 'left', 'clickCount': 1}})
-                self.bridge.command('cdp', {'method': 'Input.dispatchMouseEvent',
-                                            'params': {'type': 'mouseReleased', 'x': state['x'], 'y': state['y'],
-                                                       'button': 'left', 'clickCount': 1}})
+                if is_native_endpoint(getattr(self.bridge, 'endpoint', None)):
+                    self.bridge.command('click', {'selector': f'[data-codex-miaoshou-close="{marker}"]'})
+                else:
+                    # This modal ignores synthetic DOM click events. Send trusted browser
+                    # mouse input at the measured, uniquely marked visible close button.
+                    self.bridge.command('cdp', {'method': 'Emulation.setFocusEmulationEnabled',
+                                                'params': {'enabled': True}})
+                    focus_enabled = True
+                    self.bridge.command('cdp', {'method': 'Input.dispatchMouseEvent',
+                                                'params': {'type': 'mouseMoved', 'x': state['x'], 'y': state['y']}})
+                    self.bridge.command('cdp', {'method': 'Input.dispatchMouseEvent',
+                                                'params': {'type': 'mousePressed', 'x': state['x'], 'y': state['y'],
+                                                           'button': 'left', 'clickCount': 1}})
+                    self.bridge.command('cdp', {'method': 'Input.dispatchMouseEvent',
+                                                'params': {'type': 'mouseReleased', 'x': state['x'], 'y': state['y'],
+                                                           'button': 'left', 'clickCount': 1}})
                 self.bridge.wait(
                     lambda: self.bridge.evaluate(
                         "(()=>![...document.querySelectorAll('.replace-image-dialog')].some(x=>x.offsetParent!==null))()"),
