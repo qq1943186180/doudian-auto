@@ -160,7 +160,11 @@ def test_close_replace_popup_uses_native_click_on_ego_endpoint():
     assert 'cdp' not in actions
 
 
-def _make_close_race_bridge(dialog_closed_on_recheck: bool):
+def _make_close_race_bridge(
+    dialog_closed_on_recheck: bool,
+    error_code: str = 'ego_target_not_unique',
+    error_message: str = 'No unique enabled native control.',
+):
     calls = []
 
     class RaceBridge:
@@ -180,7 +184,7 @@ def _make_close_race_bridge(dialog_closed_on_recheck: bool):
         def command(self, action, args):
             calls.append((action, args))
             if action == 'click':
-                raise DoudianError('ego_target_not_unique', 'No unique enabled native control.')
+                raise DoudianError(error_code, error_message)
             return {'success': True}
 
         def wait(self, read, predicate, message, seconds):
@@ -208,6 +212,33 @@ def test_close_replace_popup_raises_ego_target_not_unique_if_dialog_stays_open()
     with pytest.raises(DoudianError) as exc_info:
         editor._close_replace_popup()
     assert exc_info.value.code == 'ego_target_not_unique'
+    assert len([c for c in calls if c[0] == 'click']) == 2
+
+
+def test_close_replace_popup_returns_when_dialog_auto_hides_zero_box():
+    bridge, calls = _make_close_race_bridge(
+        dialog_closed_on_recheck=True,
+        error_code='ego_error',
+        error_message='page.click timed out after 3000ms: element has a zero-sized bounding box',
+    )
+    editor = MiaoshouEditor(bridge, '销霁百货', session='unit')
+    editor._close_replace_popup()
+    click_calls = [c for c in calls if c[0] == 'click']
+    cleanup_evals = [c for c in calls if c[0] == 'evaluate' and 'removeAttribute' in c[1]]
+    assert len(click_calls) == 1
+    assert len(cleanup_evals) == 1
+
+
+def test_close_replace_popup_raises_ego_error_if_dialog_stays_open():
+    bridge, calls = _make_close_race_bridge(
+        dialog_closed_on_recheck=False,
+        error_code='ego_error',
+        error_message='page.click timed out after 3000ms: element has a zero-sized bounding box',
+    )
+    editor = MiaoshouEditor(bridge, '销霁百货', session='unit')
+    with pytest.raises(DoudianError) as exc_info:
+        editor._close_replace_popup()
+    assert exc_info.value.code == 'ego_error'
     assert len([c for c in calls if c[0] == 'click']) == 2
 
 

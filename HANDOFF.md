@@ -2,7 +2,7 @@
 
 🔴 **出图强制约定（用户 2026-11-14 重申，11-14 又纠正通道）**：所有商品图**一律用网页版 GPT/ChatGPT 生图，在「生图项目」`C:/Users/19431/tb-auto` 里做**，通道是 **ego-browser 直接**（`browser_command` → `ego_backend.command_ego`，在 ego 里打开 chatgpt.com）；**2026-11-04 起 Kimi WebBridge 回退已整体删除，10086 不用了**；零 API 成本；**禁止在本项目里调内置 ImageGen**。出好的图再拷回本项目素材目录。详见用户级 `MEMORY.md`。
 
-更新：2026-11-26 13:35（Asia/Shanghai）；当前执行：Antigravity；最近任务 T-20261126-001（**Wave 2 收口：`batch-20261125-223659-e20761f4` 合格品 `#65`（`3856053756206645376`）9 图 Web-GPT 优化、双端 `verified` 与上架 `售卖中`（92 分）+ `_close_replace_popup()` 自动关闭竞态修复（`935 passed` / `127 passed`）+ NFC 贴纸/读卡器两件驳回件排阻留证**）。历史 61 件队列：**55 verified（55/55 `售卖中`） / 6 closed_unreachable**；批次 `batch-20261125-195825-5396214a`：**2 verified（2/2 `售卖中`）**；新增批次 `batch-20261125-223659-e20761f4`：**1 verified（`#65` `售卖中`） / 1 needs_agent（`#64` `3856051600124674360` 预检因 `审核驳回` 排除）**（2026-11-26 实读 `batch.sqlite3`）。Ego `doudian-*` 及 `tbauto-p3-gen-*` 活动空间已清零。
+更新：2026-11-27 01:28（Asia/Shanghai）；当前执行：Antigravity；最近任务 T-20261126-002（**Wave 3 选品优化与上架闭环：`batch-20261127-000341-e94e0238`（`#66` `3856247313395745222` `￥12.88`/92 分、`#67` `3856247210123591981` `￥11.88~13.88`/90 分）2/2 Web-GPT 优化、双端 `verified` 与抖店 `售卖中` + `_close_replace_popup()` `ego_error` 零宽高竞态修复（`937 passed` / `127 passed`）+ Wave 2 两件驳回品从妙手与抖店彻底清理**）。历史 61 件队列：**55 verified（55/55 `售卖中`） / 6 closed_unreachable**；批次 `batch-20261125-195825-5396214a`：**2 verified（2/2 `售卖中`）**；批次 `batch-20261125-223659-e20761f4`：**1 verified（`#65` `售卖中`） / 1 needs_agent（`#64` 驳回未写入）**；新增批次 `batch-20261127-000341-e94e0238`：**2 verified（2/2 `售卖中`）**（2026-11-27 实读 `batch.sqlite3`）。Ego `doudian-*` 及 `tbauto-p3-gen-*` 活动空间已清零。
 
 > **39 件 blocked 按「卡在谁身上」互斥分类，合计 39（2026-11-14 18:55 逐件重检后实测）。程序侧能自己推的已经推到头。**
 >
@@ -30,6 +30,23 @@
 > 上架是对外经营动作，**没有明确授权就不自动点**（`dropship.py:208`：初版只允许放入仓库）。
 
 ## 给人的说明
+
+### T-20261126-002 · ✅ Wave 3 选品优化与上架闭环（`batch-20261127-000341-e94e0238` 2/2 `verified` & `售卖中`）+ `_close_replace_popup()` `ego_error` 零宽高竞态修复
+
+- **Wave 2 驳回品彻底清理**：
+  - 于妙手 `quick_edit` 删除两件 Wave 2 审核驳回品 `3856034020915806527`（NFC 贴纸）与 `3856051600124674360`（IC/ID 读卡器，`remainingRows=0`），并经抖店 `/ffa/g/list` 核实 `全部` 列表中均已无记录（`rowCount=0`，证据见 `work/materials-20261126/wave3/rejected-cleanup.json`）。
+- **Wave 3 日用家居新铺（`源价 × 3 + 5` · `放入仓库`）**：
+  - 在妙手选品页精确匹配「商机关键词」输入框并开启「一件代发 + 支持抖音密文」过滤后，成功铺出两件日用百货且直接 `审核通过`、`已下架`（无需进草稿箱救援）：
+    1. `3856247313395745222`（`1016116406939` 桌面长方形收纳盒，源价 `￥2.58`，类目 `居家日用>收纳整理工具>收纳盒`）。
+    2. `3856247210123591981`（`840380653704` 高弹缓震鞋垫，源价 `￥2.25`，类目 `鞋靴>鞋配件>鞋垫`）。
+- **独立批次 `batch-20261127-000341-e94e0238` 全流程优化、双端核验与上架**：
+  - 预检 `2/2 eligible`（`miaoshou_listed=true`）；全量下载并 `read_file` 目视核验参考图（`#66` 18 张 / `#67` 52 张）；经 `tb-auto`（`Profile 3` ChatGPT「生图」项目）产出共 **18 张**图片（各 5 主 `1024×1024` + 4 详 `1024×1536`，期间发现 `#66 main_5` 边缘微裁切及 `#67 main_4` 边缘鞋垫裁切并即刻重绘至全幅留白，100% 目视复核通过），关闭生图空间确认 `remainingActive=[]`。
+  - `#66`（`3856247313395745222`）：优化标题 `奶油白桌面长方形收纳盒抽屉分隔杂物整理盒厨房餐具化妆品塑料盒`（`title check` `60 units`）→ `verified_by_readback` → 妙手上架翻为「下架」→ 抖店 `/ffa/g/list` 独立确认 **`售卖中`**（**`￥12.88`** · 库存 `8432194` · **92 分** · `2026/11/27 01:26:11`）。
+  - `#67`（`3856247210123591981`）：优化标题 `高弹缓震运动鞋垫男女通用透气吸汗软弹减震可裁剪艾草日常鞋垫`（`title check` `58 units`，移除「踩屎感/治脚臭」等风险表述与供应商水印）→ 首轮批改落盘后因妙手同步延迟呈 `unknown`，经新建只读会话妙手「同步数据」+ 只读 `batch resume --apply` 核销为 **`verified_by_readback`** → 妙手上架翻为「下架」→ 抖店 `/ffa/g/list` 独立确认 **`售卖中`**（**`￥11.88 ~ ￥13.88`** · 库存 `209895584` · **90 分** · `2026/11/27 01:26:36`）。
+  - 上架证据见 `work/materials-20261126/wave3/listing-verified.json`；全量清理 `doudian-*` 及 `tbauto-p3-gen-*` 后活动空间均为空。
+- **代码可靠性修复与全量测试**：
+  - `src/doudian_auto/miaoshou_editor.py`：`MiaoshouEditor._close_replace_popup()` 在 `native` 端点除 `ego_target_not_unique` 外亦兼容处理 `ego_error`（`.replace-image-dialog` 于 `evaluate` 与 `click` 间隙自动隐藏引发 `zero-sized bounding box`），若弹窗已关闭则干净返回，未关闭才重试/抛错。
+  - `tests/test_miaoshou_information_tab.py`：参数化 `_make_close_race_bridge` 并新增零宽高自动隐藏竞态单测 2 项；全量回归 **`pytest -q` → `937 passed`**（202.43s），**`npm.cmd test` → `127 passed`**（10.71s）。
 
 ### T-20261126-001 · ✅ Wave 2 选品优化与上架闭环（`#65` `3856053756206645376` `verified` & `售卖中`）+ `_close_replace_popup()` 竞态修复
 

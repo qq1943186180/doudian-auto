@@ -752,7 +752,7 @@ class MiaoshouEditor:
                     '妙手图片导入弹窗没有关闭。', seconds=10)
                 return
             except DoudianError as exc:
-                if (exc.code == 'ego_target_not_unique' and
+                if (exc.code in ('ego_target_not_unique', 'ego_error') and
                         is_native_endpoint(getattr(self.bridge, 'endpoint', None))):
                     closed = self.bridge.evaluate(
                         "(()=>![...document.querySelectorAll('.replace-image-dialog')].some(x=>x.offsetParent!==null))()")
