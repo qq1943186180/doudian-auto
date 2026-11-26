@@ -1,3 +1,6 @@
+import pytest
+
+from doudian_auto.errors import DoudianError
 from doudian_auto.miaoshou_editor import MiaoshouEditor
 
 
@@ -155,4 +158,56 @@ def test_close_replace_popup_uses_native_click_on_ego_endpoint():
     actions = [c[0] for c in calls]
     assert 'click' in actions
     assert 'cdp' not in actions
+
+
+def _make_close_race_bridge(dialog_closed_on_recheck: bool):
+    calls = []
+
+    class RaceBridge:
+        endpoint = 'ego'
+
+        def require_ready(self):
+            pass
+
+        def evaluate(self, code):
+            calls.append(('evaluate', code))
+            if 'removeAttribute' in code:
+                return True
+            if '.replace-image-dialog' in code and 'open:' in code:
+                return {'open': True, 'dialogs': 1, 'closeButtons': 1, 'x': 120.0, 'y': 60.0}
+            return dialog_closed_on_recheck
+
+        def command(self, action, args):
+            calls.append((action, args))
+            if action == 'click':
+                raise DoudianError('ego_target_not_unique', 'No unique enabled native control.')
+            return {'success': True}
+
+        def wait(self, read, predicate, message, seconds):
+            value = read()
+            if predicate(value):
+                return value
+            raise AssertionError(message)
+
+    return RaceBridge(), calls
+
+
+def test_close_replace_popup_returns_when_dialog_auto_closes_before_native_click():
+    bridge, calls = _make_close_race_bridge(dialog_closed_on_recheck=True)
+    editor = MiaoshouEditor(bridge, '销霁百货', session='unit')
+    editor._close_replace_popup()
+    click_calls = [c for c in calls if c[0] == 'click']
+    cleanup_evals = [c for c in calls if c[0] == 'evaluate' and 'removeAttribute' in c[1]]
+    assert len(click_calls) == 1
+    assert len(cleanup_evals) == 1
+
+
+def test_close_replace_popup_raises_ego_target_not_unique_if_dialog_stays_open():
+    bridge, calls = _make_close_race_bridge(dialog_closed_on_recheck=False)
+    editor = MiaoshouEditor(bridge, '销霁百货', session='unit')
+    with pytest.raises(DoudianError) as exc_info:
+        editor._close_replace_popup()
+    assert exc_info.value.code == 'ego_target_not_unique'
+    assert len([c for c in calls if c[0] == 'click']) == 2
+
 
